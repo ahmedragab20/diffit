@@ -71,6 +71,58 @@ describe('server-auth', () => {
   })
 })
 
+describe('auth-boundary: Host/Origin checks must cover HTML routes, not only /api/*', () => {
+  const HTML = '<html><head></head><body>review</body></html>'
+
+  const buildApp = () => {
+    const app = new Hono()
+    app.use('*', createServerAuthMiddleware({
+      bindHost: '127.0.0.1',
+      authToken: 'secret-token',
+    }))
+    app.get('/', (c) => c.html(HTML))
+    app.get('/plan/test', (c) => c.html(HTML))
+    app.get('/api/ping', (c) => c.json({ ok: true }))
+    return app
+  }
+
+  it('rejects a hostile Host header with 403 on HTML routes (/ and /plan/test), not only /api/*', async () => {
+    const app = buildApp()
+    expect((await app.fetch(new Request('http://127.0.0.1/', { headers: { Host: 'evil.test' } }))).status).toBe(403)
+    expect((await app.fetch(new Request('http://127.0.0.1/plan/test', { headers: { Host: 'evil.test' } }))).status).toBe(403)
+    // Sanity: the API surface already rejects hostile Host.
+    expect((await app.fetch(new Request('http://127.0.0.1/api/ping', { headers: { Host: 'evil.test' } }))).status).toBe(403)
+  })
+
+  it('rejects a hostile Origin with 403 on HTML and API routes even with the correct token header', async () => {
+    const app = buildApp()
+    const htmlReq = new Request('http://127.0.0.1/', {
+      headers: { Host: '127.0.0.1', Origin: 'http://evil.test', [SESSION_TOKEN_HEADER]: 'secret-token' },
+    })
+    expect((await app.fetch(htmlReq)).status).toBe(403)
+    const planReq = new Request('http://127.0.0.1/plan/test', {
+      headers: { Host: '127.0.0.1', Origin: 'http://evil.test', [SESSION_TOKEN_HEADER]: 'secret-token' },
+    })
+    expect((await app.fetch(planReq)).status).toBe(403)
+    const apiReq = new Request('http://127.0.0.1/api/ping', {
+      headers: { Host: '127.0.0.1', Origin: 'http://evil.test', [SESSION_TOKEN_HEADER]: 'secret-token' },
+    })
+    expect((await app.fetch(apiReq)).status).toBe(403)
+  })
+
+  it('accepts a matching Origin/Host header with the correct token on HTML and API routes', async () => {
+    const app = buildApp()
+    const htmlReq = new Request('http://127.0.0.1/', {
+      headers: { Host: '127.0.0.1', Origin: 'http://127.0.0.1', [SESSION_TOKEN_HEADER]: 'secret-token' },
+    })
+    expect((await app.fetch(htmlReq)).status).toBe(200)
+    const apiReq = new Request('http://127.0.0.1/api/ping', {
+      headers: { Host: '127.0.0.1', Origin: 'http://127.0.0.1', [SESSION_TOKEN_HEADER]: 'secret-token' },
+    })
+    expect((await app.fetch(apiReq)).status).toBe(200)
+  })
+})
+
 describe('injectSessionTokenIntoHtml', () => {
   it('injects a global token script before </head>', () => {
     const html = '<html><head><title>x</title></head><body></body></html>'
