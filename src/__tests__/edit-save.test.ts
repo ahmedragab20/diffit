@@ -1,14 +1,53 @@
 // @vitest-environment node
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+// REAL native-helper integration tests for POST /api/edit-save.
+//
+// Unlike the other file-route suites, lib/native-fs.js is NOT mocked here and
+// lib/path.ts stays real: the request flows through the genuine native fs
+// client (`getNativeRepositoryFs`) spawning the actual `diffing-tui` binary.
+// node:fs / node:fs/promises are real too — every disk assertion below reads
+// real bytes. Only `node:fs.watch` is wrapped (partial mock) so the SSE
+// watchers createApp registers inside the owned fixture can be closed before
+// teardown. Everything happens inside a self-owned temp fixture; nothing
+// outside it is ever read or written.
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, readdirSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import {
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  existsSync,
+  readdirSync,
+  symlinkSync,
+} from 'node:fs'
+import { readFile, rm } from 'node:fs/promises'
 import type { Hono } from 'hono'
 import type { CommentStore } from '../lib/comments.js'
+import { closeNativeRepositoryFs } from '../lib/native-fs.js'
 
-// --- Mocked modules (hoisted vi.mock factories, per server.test.ts pattern) ---
+// --- Watcher tracking (partial node:fs mock) ---------------------------------
+// Every real node:fs export is kept; only `watch` is wrapped so the repo and
+// storage-dir watchers createApp opens inside the owned fixture are tracked
+// and closable. Hoisted so the mock factory can reference it.
+const watchers = vi.hoisted(
+  () => [] as Array<import('node:fs').FSWatcher>,
+)
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    watch: (...args: unknown[]) => {
+      const w = (actual.watch as (...a: unknown[]) => import('node:fs').FSWatcher)(...args)
+      watchers.push(w)
+      return w
+    },
+  }
+})
+
+// --- Mocked modules (only what the routes need beyond native I/O) ------------
 
 const mockGetGitDiff = vi.fn()
 const mockGetCustomGitDiff = vi.fn()
@@ -19,8 +58,6 @@ const mockGetTabSizeForFiles = vi.fn()
 const mockGetUntrackedFilePaths = vi.fn()
 const mockLoadSettings = vi.fn()
 const mockSaveSettings = vi.fn()
-const mockIsSafePath = vi.fn()
-const mockToSafeRelativePath = vi.fn((filePath: string) => filePath)
 const mockGetRepoRoot = vi.fn()
 const mockGetProjectStorageDir = vi.fn()
 
@@ -70,15 +107,10 @@ vi.mock('../lib/settings.js', () => ({
   saveSettings: mockSaveSettings,
 }))
 
-vi.mock('../lib/path.js', () => ({
-  isSafePath: mockIsSafePath,
-  toSafeRelativePath: mockToSafeRelativePath,
-}))
+// lib/path.ts is intentionally NOT mocked — the real toSafeRelativePath /
+// toSafeLiteralRelativePath decide reachability exactly as in production.
 
-// Real fs is used for all disk assertions (atomic write, conflict check,
-// temp-file leftovers) — node:fs / node:fs/promises are NOT mocked here.
-
-// --- Comment store with an `update` spy (per gh-pr.test.ts lines 58-100) ---
+// --- Comment store with an `update` spy --------------------------------------
 
 class MockCommentStore implements CommentStore {
   update = vi.fn(async (_id: string, fields: any) => ({ id: _id, ...fields }))
@@ -105,8 +137,6 @@ class MockCommentStore implements CommentStore {
   }
 }
 
-const clientDir = '/tmp/diffing-edit-client'
-
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex')
 
 function postSave(app: Hono, body: unknown) {
@@ -117,18 +147,37 @@ function postSave(app: Hono, body: unknown) {
   }))
 }
 
-describe('POST /api/edit-save', () => {
+describe('POST /api/edit-save (native helper integration)', () => {
   let app: Hono
   let mockStore: MockCommentStore
+  let fixtureRoot: string
   let repoRoot: string
+  let clientDir: string
+
+  beforeAll(async () => {
+    // The native fs client spawns the real `diffing-tui` helper built next to
+    // the package root. No skip/install/build here — hard-fail with guidance.
+    const { findFileAccessTuiBinary } = await import('../lib/find-tui-binary.js')
+    const binary = await findFileAccessTuiBinary(
+      new URL('../lib/native-fs.ts', import.meta.url).href,
+    )
+    if (!binary) {
+      throw new Error('Run pnpm build:tui:debug before native integration tests')
+    }
+  })
 
   beforeEach(async () => {
-    repoRoot = mkdtempSync(join(tmpdir(), 'diffing-edit-'))
+    // Fully owned fixture: everything (repo, client dir, storage dir, sentinels)
+    // lives under fixtureRoot and is removed in afterEach.
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'diffing-edit-'))
+    repoRoot = join(fixtureRoot, 'repo')
+    mkdirSync(repoRoot)
+    clientDir = join(fixtureRoot, 'client')
+    mkdirSync(clientDir)
+
     vi.clearAllMocks()
     mockGetRepoRoot.mockReturnValue(repoRoot)
-    mockGetProjectStorageDir.mockReturnValue(join(tmpdir(), 'diffing-edit-test-store'))
-    mockToSafeRelativePath.mockImplementation((filePath: string) => filePath)
-    mockIsSafePath.mockReturnValue(true)
+    mockGetProjectStorageDir.mockReturnValue(join(fixtureRoot, 'storage'))
     mockGetRepoName.mockReturnValue('test-repo')
     mockGetBranchName.mockReturnValue('main')
     mockLoadSettings.mockReturnValue({})
@@ -155,21 +204,49 @@ describe('POST /api/edit-save', () => {
     app = createApp(clientDir, DEFAULTS, mockStore)
   })
 
-  afterEach(() => {
-    rmSync(repoRoot, { recursive: true, force: true })
-    vi.clearAllMocks()
+  afterEach(async () => {
+    // Close tracked watchers first (they hold fds inside the fixture), then
+    // drop the native fs singleton so the helper process doesn't outlive the
+    // fixture, then restore spies, and finally delete the fixture — WITHOUT
+    // `force`, so a non-owned path would fail loudly instead of vanishing.
+    for (const w of watchers.splice(0)) {
+      try {
+        w.close()
+      } catch {
+        /* already closed */
+      }
+    }
+    await closeNativeRepositoryFs()
+    vi.restoreAllMocks()
+    await rm(fixtureRoot, { recursive: true, maxRetries: 5, retryDelay: 50 })
   })
 
   it('400 when filePath is missing', async () => {
     const res = await postSave(app, { content: 'hello\n' })
     expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'Missing filePath or content' })
+    const body = await res.json()
+    expect(body.error).toBe('Invalid edit-save request')
   })
 
   it('400 when content is missing', async () => {
     const res = await postSave(app, { filePath: 'sub/file.txt' })
     expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'Missing filePath or content' })
+    const body = await res.json()
+    expect(body.error).toBe('Invalid edit-save request')
+  })
+
+  it("400 with code invalid-path for '../outside.txt' traversal, sentinel untouched", async () => {
+    const outsidePath = join(fixtureRoot, 'outside.txt')
+    writeFileSync(outsidePath, 'sentinel\n')
+
+    const res = await postSave(app, { filePath: '../outside.txt', content: 'clobber\n' })
+    expect(res.status).toBe(400)
+    const body = await res.json()
+    expect(body.code).toBe('invalid-path')
+
+    // The traversal target (inside the owned fixture, outside the repo) is
+    // byte-for-byte untouched.
+    expect(readFileSync(outsidePath, 'utf-8')).toBe('sentinel\n')
   })
 
   it('403 in PR mode', async () => {
@@ -190,16 +267,9 @@ describe('POST /api/edit-save', () => {
     expect(await res.json()).toEqual({ error: 'Editing is not available in this review scope' })
   })
 
-  it('403 when toSafeRelativePath returns null', async () => {
-    mockToSafeRelativePath.mockReturnValue(null)
-    const res = await postSave(app, { filePath: '../etc/passwd', content: 'hello\n' })
-    expect(res.status).toBe(403)
-    expect(await res.json()).toEqual({ error: 'Forbidden file path' })
-  })
-
-  it('200 writes atomically: file on disk, hash matches, no temp leftovers', async () => {
+  it('200 writes atomically through the native helper: real bytes, hash, no temp leftovers', async () => {
     const subDir = join(repoRoot, 'sub')
-    mkdirSync(subDir, { recursive: true })
+    mkdirSync(subDir)
     const content = 'hello\n'
 
     const res = await postSave(app, { filePath: 'sub/file.txt', content })
@@ -212,15 +282,17 @@ describe('POST /api/edit-save', () => {
     const diskPath = join(subDir, 'file.txt')
     expect(await readFile(diskPath, 'utf-8')).toBe(content)
 
-    // Temp file never survives: nothing named .diffing-edit-*.tmp remains.
+    // Temp files never survive a completed atomic write — neither the current
+    // `.diffing-write-*` prefix nor the retired `.diffing-edit-*` one.
     const entries = readdirSync(repoRoot, { recursive: true })
+    expect(entries.filter((e) => String(e).includes('.diffing-write-'))).toHaveLength(0)
     expect(entries.filter((e) => String(e).includes('.diffing-edit-'))).toHaveLength(0)
     expect(entries).toContain(join('sub', 'file.txt'))
   })
 
   it('409 on base-hash conflict leaves the disk file untouched, then 200 with the right hash', async () => {
     const subDir = join(repoRoot, 'sub')
-    mkdirSync(subDir, { recursive: true })
+    mkdirSync(subDir)
     const diskPath = join(subDir, 'file.txt')
     writeFileSync(diskPath, 'original\n')
     const correctHash = sha256('original\n')
@@ -228,12 +300,11 @@ describe('POST /api/edit-save', () => {
     const conflict = await postSave(app, {
       filePath: 'sub/file.txt',
       content: 'clobber\n',
-      baseHash: 'wrong-hash',
+      baseHash: sha256('wrong content'),
     })
     expect(conflict.status).toBe(409)
     const conflictBody = await conflict.json()
     expect(conflictBody.conflict).toBe(true)
-    expect(conflictBody.error).toContain('changed on disk')
     // Disk is unchanged.
     expect(readFileSync(diskPath, 'utf-8')).toBe('original\n')
 
@@ -249,7 +320,7 @@ describe('POST /api/edit-save', () => {
 
   it('writes without a conflict check when baseHash is absent', async () => {
     const subDir = join(repoRoot, 'sub')
-    mkdirSync(subDir, { recursive: true })
+    mkdirSync(subDir)
     const diskPath = join(subDir, 'file.txt')
     writeFileSync(diskPath, 'seeded\n')
 
@@ -259,15 +330,13 @@ describe('POST /api/edit-save', () => {
     expect(readFileSync(diskPath, 'utf-8')).toBe('replaced\n')
   })
 
-  it('applies anchorUpdates: valid anchors call store.update, invalid anchors are skipped', async () => {
+  it('applies anchorUpdates: only the two valid anchors reach store.update', async () => {
     const res = await postSave(app, {
       filePath: 'f.txt',
       content: 'x\n',
       anchorUpdates: [
         { id: 'a', side: 'additions', lineNumber: 5 },
         { id: 'b', side: 'deletions', lineNumber: 3, startLineNumber: 1 },
-        { id: 'no-line' },
-        { lineNumber: 9 },
       ],
     })
     expect(res.status).toBe(200)
@@ -285,9 +354,54 @@ describe('POST /api/edit-save', () => {
     })
   })
 
+  it('400s the whole request on any malformed anchor: no store.update, no file write', async () => {
+    const res = await postSave(app, {
+      filePath: 'f.txt',
+      content: 'x\n',
+      anchorUpdates: [
+        { id: 'missing-id' } as never, // missing lineNumber
+        { lineNumber: 9 } as never, // missing id
+        { id: 'c', side: 'additions', lineNumber: 5, startLineNumber: 7 }, // start > end
+      ],
+    })
+    expect(res.status).toBe(400)
+
+    expect(mockStore.update).not.toHaveBeenCalled()
+    // Nothing was written to disk either.
+    expect(existsSync(join(repoRoot, 'f.txt'))).toBe(false)
+  })
+
+  it('403: a leaf file symlinked outside the repo cannot be written through the API', async () => {
+    const outsidePath = join(fixtureRoot, 'outside.txt')
+    writeFileSync(outsidePath, 'sentinel\n')
+    const leafLink = join(repoRoot, 'leaf.txt')
+    symlinkSync(outsidePath, leafLink, process.platform === 'win32' ? 'file' : undefined)
+
+    const res = await postSave(app, { filePath: 'leaf.txt', content: 'clobber\n' })
+    expect(res.status).toBe(403)
+    expect(readFileSync(outsidePath, 'utf-8')).toBe('sentinel\n')
+    expect(mockStore.update).not.toHaveBeenCalled()
+  })
+
+  it('403: a symlinked parent directory pointing outside the repo cannot be written through', async () => {
+    const outsideDir = join(fixtureRoot, 'outside-dir')
+    mkdirSync(outsideDir)
+    const sentinel = join(outsideDir, 'file.txt')
+    writeFileSync(sentinel, 'sentinel\n')
+
+    // On Windows a directory junction; on POSIX a normal directory symlink.
+    const linkPath = join(repoRoot, 'linked')
+    symlinkSync(outsideDir, linkPath, process.platform === 'win32' ? 'junction' : undefined)
+
+    const res = await postSave(app, { filePath: join('linked', 'file.txt'), content: 'clobber\n' })
+    expect(res.status).toBe(403)
+    expect(readFileSync(sentinel, 'utf-8')).toBe('sentinel\n')
+    expect(mockStore.update).not.toHaveBeenCalled()
+  })
+
   it('SSE: broadcasts a `change` event after a successful edit-save', async () => {
     const subDir = join(repoRoot, 'sub')
-    mkdirSync(subDir, { recursive: true })
+    mkdirSync(subDir)
 
     const res = await app.fetch(new Request('http://localhost/api/live'))
     expect(res.status).toBe(200)
@@ -314,7 +428,7 @@ describe('POST /api/edit-save', () => {
               return
             }
             pump()
-          } catch (e) {
+          } catch {
             clearTimeout(timer)
             resolve('error')
           }
@@ -322,18 +436,21 @@ describe('POST /api/edit-save', () => {
         pump()
       })
 
-    // Confirm the connection is registered (heartbeat arrives on open).
-    const heartbeat = await readUntil((t) => t.includes('event: heartbeat'), 3000)
-    expect(heartbeat).toBe('match')
+    try {
+      // Confirm the connection is registered (heartbeat arrives on open).
+      const heartbeat = await readUntil((t) => t.includes('event: heartbeat'), 3000)
+      expect(heartbeat).toBe('match')
 
-    // Now mutate the watched tree through the API; the repo watcher should
-    // broadcast `change` (200ms debounce) shortly after the atomic write.
-    const save = await postSave(app, { filePath: 'sub/file.txt', content: 'sse\n' })
-    expect(save.status).toBe(200)
+      // Now mutate the watched tree through the API; the repo watcher should
+      // broadcast `change` (debounced) shortly after the atomic write.
+      const save = await postSave(app, { filePath: 'sub/file.txt', content: 'sse\n' })
+      expect(save.status).toBe(200)
 
-    const change = await readUntil((t) => t.includes('event: change'), 3000)
-    expect(change).toBe('match')
-
-    await reader.cancel()
+      const change = await readUntil((t) => t.includes('event: change'), 3000)
+      expect(change).toBe('match')
+    } finally {
+      // Always cancel the SSE body so no reader/stream leaks into teardown.
+      await reader.cancel().catch(() => undefined)
+    }
   })
 })
