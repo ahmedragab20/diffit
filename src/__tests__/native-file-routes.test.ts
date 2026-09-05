@@ -204,6 +204,27 @@ describe('POST /api/save-file', () => {
     expect(spies.write).not.toHaveBeenCalled()
   })
 
+  it('still reports ok:true with a gitAddError string when gitAddFile throws after a successful write', async () => {
+    spies.gitAddFile.mockImplementation(() => {
+      throw new Error('synthetic git add failure')
+    })
+    const res = await postJson(app, '/api/save-file', {
+      filePath: 'a.txt',
+      content: 'new\n',
+      gitAdd: true,
+    })
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.ok).toBe(true)
+    expect(typeof body.gitAddError).toBe('string')
+    // The file itself was still saved exactly once, with the exact bytes.
+    expect(spies.write).toHaveBeenCalledTimes(1)
+    const [writtenPath, writtenBytes] = spies.write.mock.calls[0]
+    expect(writtenPath).toBe('a.txt')
+    expect(Buffer.isBuffer(writtenBytes)).toBe(true)
+    expect((writtenBytes as Buffer).equals(NEW)).toBe(true)
+  })
+
   it('returns 413 for an explicit Content-Length over the 70 MiB request bound, without allocating', async () => {
     // Only a header is sent: bodyLimit rejects on Content-Length before the
     // body is consumed, so no 70 MiB payload is ever built.
@@ -294,6 +315,33 @@ describe('POST /api/edit-save', () => {
     expect(unavailable.status).toBe(503)
   })
 
+  it('returns 500 with fileSaved:true and the saved hash when anchor metadata persistence fails after the write', async () => {
+    // Own app+store pair so the spy targets the exact store instance the
+    // route uses for anchorUpdates persistence.
+    const { app: localApp, store } = await makeApp()
+    const updateSpy = vi
+      .spyOn(store, 'update')
+      .mockRejectedValue(new Error('synthetic metadata failure'))
+    const res = await postJson(localApp, '/api/edit-save', {
+      filePath: 'a.txt',
+      content: 'new\n',
+      anchorUpdates: [{ id: 'c1', lineNumber: 1 }],
+    })
+    expect(res.status).toBe(500)
+    const body = (await res.json()) as Record<string, unknown>
+    // The file bytes were committed before the metadata failure: report the
+    // saved state, never a success envelope.
+    expect(body.fileSaved).toBe(true)
+    expect(body.hash).toBe(NEW_SHA)
+    expect(body.ok).toBeUndefined()
+    // Exactly one native write, with the full new bytes.
+    expect(spies.write).toHaveBeenCalledTimes(1)
+    const [writtenPath, writtenBytes] = spies.write.mock.calls[0]
+    expect(writtenPath).toBe('a.txt')
+    expect((writtenBytes as Buffer).equals(NEW)).toBe(true)
+    expect(updateSpy).toHaveBeenCalledTimes(1)
+  })
+
   it('maps a pending-write timeout to 504 with outcomeUnknown:true and no success', async () => {
     spies.write.mockRejectedValue(new NativeFsError('timeout', true))
     const res = await postJson(app, '/api/edit-save', {
@@ -339,6 +387,23 @@ describe('POST /api/comments/:id/apply-suggestion', () => {
     expect(res.status).toBe(403)
     const comments = await listComments(app)
     expect(comments[0].status).toBe('open')
+  })
+
+  it('returns 500 with fileSaved:true and leaves the comment open when comment persistence fails after the write', async () => {
+    const updateSpy = vi
+      .spyOn(store, 'update')
+      .mockRejectedValue(new Error('synthetic metadata failure'))
+    const res = await postJson(app, '/api/comments/c1/apply-suggestion', {})
+    expect(res.status).toBe(500)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.fileSaved).toBe(true)
+    expect(body.ok).toBeUndefined()
+    // The native replacement succeeded exactly once, but the comment must
+    // stay open so the user can retry resolving it.
+    expect(spies.write).toHaveBeenCalledTimes(1)
+    const comments = await listComments(app)
+    expect(comments[0].status).toBe('open')
+    expect(updateSpy).toHaveBeenCalledTimes(1)
   })
 
   it('leaves the comment open when the native write conflicts', async () => {
@@ -434,5 +499,18 @@ describe('GET /api/file-content and /api/file-text native errors', () => {
     const res = await get(app, url)
     expect(res.status).toBe(400)
     expect(spies.getFileContent).not.toHaveBeenCalled()
+  })
+
+  it('serves an SVG with image/svg+xml, sandboxed CSP, and byte-for-byte content', async () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>')
+    spies.getFileContent.mockResolvedValue(svg)
+    const res = await get(app, '/api/file-content?path=sample.svg&version=new')
+    expect(res.status).toBe(200)
+    expect(res.headers.get('Content-Type')).toBe('image/svg+xml')
+    const csp = res.headers.get('Content-Security-Policy')
+    expect(csp).toContain('sandbox')
+    expect(csp).toContain("default-src 'none'")
+    const body = Buffer.from(await res.arrayBuffer())
+    expect(body.equals(svg)).toBe(true)
   })
 })
