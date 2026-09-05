@@ -114,8 +114,19 @@ diffing [options] [<revision>...] [-- <path>...]
 
 - `--port <port>`: The port to bind a new server to. If omitted, the OS assigns an available port atomically. A compatible live session is reused before any bind is attempted.
 - `--host <host>`: Host address to bind the server to (default: `127.0.0.1`). Loopback binds generate a per-session API token stored in the server lockfile; the web UI authenticates via an HttpOnly cookie (set when HTML is served) and optional `x-diffing-token` header on fetch. CLI and MCP read the token from the lockfile and send the header. Browseable URLs never include `?token=`. To expose the dashboard on your LAN, pass `0.0.0.0` together with `--insecure-no-auth` (disables API authentication).
-- `--insecure-no-auth`: Required when binding to `0.0.0.0` or `::`. Allows LAN clients to reach the API without a token. Ignored on loopback binds.
+- `--insecure-no-auth`: Required when binding to a wildcard address (`0.0.0.0` or `::`). Disables API authentication entirely when supplied — including on loopback binds, where tokens are otherwise issued. This is an explicit, unsafe opt-out for trusted networks only.
 - `--no-open`: Prevents the CLI from automatically launching your browser when the server starts.
+
+#### Server security (loopback binds vs wildcard binds)
+
+When bound to a loopback address (`127.0.0.1` or `::1`), the server applies layered browser-facing hardening:
+
+- **Host checks**: HTML pages and `/api/` endpoints validate the `Host` header against the bound loopback host to block DNS-rebinding requests.
+- **Same-origin Origin checks**: browser mutations verify the `Origin` header matches the loopback origin.
+- **Response headers**: responses set `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`.
+- **Auth on non-loopback binds (auth enabled)**: HTML pages and deep links require the session token via header or HttpOnly cookie; an unauthenticated request returns `401` and never discloses whether a token exists.
+- The loopback bootstrap flow (token in lockfile, cookie set when HTML is served, `x-diffing-token` header on fetch) is unchanged. The browser only sends `x-diffing-token` on same-origin `/api/` fetches.
+- `--insecure-no-auth` remains an explicit, unsafe opt-out that disables authentication when supplied.
 - `--reuse-session`: Open the active session (print URL / launch browser), regardless of its scope.
 - `--replace-session`: Stop the active session and start a replacement with the current arguments.
 - `--new-session`: Always start a separate review, even when an identical mode and scope are already live.
@@ -1749,6 +1760,15 @@ When review comments are exported (either via copying from the UI clipboard or r
      - **Multi-line**: Formatted as a multi-line string inside CDATA where *each individual line* is prefixed with `+` or `-` (e.g. `+ line1\n+ line2`).
      - **File-level**: The `<code>` node is completely omitted when `line="file"`.
 7. **`<body>`**: The markdown content of the comment thread, safely wrapped in CDATA.
+
+### XML Escaping & Serialization Rules
+
+- **Instructions text**: the `<instructions>` payload is serialized as CDATA text, not raw XML.
+- **Attribute escaping**: all attribute values (e.g. `path`, `line`, `side`, `status`, `severity`, `model`) are XML-escaped, including whitespace characters.
+- **CDATA safety**: literal `]]>` sequences inside comment bodies are safely split (as `]]]]><![CDATA[>`) so the document stays well-formed.
+- **Carriage returns**: CR characters are preserved via numeric character references rather than being normalized away.
+- **Invalid characters**: XML-invalid control characters and unpaired surrogates are replaced with the Unicode replacement character `U+FFFD` instead of producing malformed XML.
+- **No prompt-injection guarantee**: the `<instructions>` block is guidance for the consuming agent, not a security boundary; diffing does not guarantee review content is free of injected instructions.
 8. **`<replies>` (Optional)**: Groups chronological replies to the comment thread.
 9. **`<reply id="..." created-at="..." role="..." model="...">`**:
    - **`id`**: Reply UUID.

@@ -395,8 +395,9 @@ Diffing Server Options:
                        binds require a per-session API token. To expose the
                        review UI on your LAN, pass 0.0.0.0 together with
                        --insecure-no-auth (disables API authentication).
-  --insecure-no-auth   Allow binding to 0.0.0.0 without API tokens (unsafe on
-                       shared networks). Ignored on loopback binds.
+  --insecure-no-auth   Required when binding to wildcard addresses (0.0.0.0
+                       or ::). Disables API authentication entirely, including
+                       loopback token issuance (unsafe on shared networks).
   --no-open            Don't open the browser automatically
   --reuse-session      Open the active review, regardless of its scope
   --replace-session    Stop the active review and start a replacement

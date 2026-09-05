@@ -45,7 +45,7 @@ TTY opens the interactive UI. Pipe or redirect prints a unified patch like `git 
 | Area | Highlights |
 |------|------------|
 | **Review UI** | Split/unified diffs, inline comments + severity, suggestions, image diffs, themes (52), search |
-| **Agents** | `await-review`, reply/resolve, progress, MCP (**37** tools), skills via `npx skills add ahmedragab20/diffing` |
+| **Agents** | `await-review`, reply/resolve, progress, MCP (**55** tools), skills via `npx skills add ahmedragab20/diffing` |
 | **Plan review** | Submit markdown → human verdict → approved / changes-requested / rejected |
 | **GitHub PR** | Local PR sessions (`--gh-pr`), bounded inspect, optional authorized publish |
 | **Sessions** | Concurrent web/TUI/PR reviews; `diffing sessions` task manager |

@@ -20,7 +20,7 @@ Drop-in for `git diff` revisions, options, and pathspecs. On a TTY, opens the pr
 | ------ | ------------- |
 | `--port <port>` | Fixed port; default is a random free port |
 | `--host <host>` | Bind address (default `127.0.0.1`) |
-| `--insecure-no-auth` | Required with non-loopback binds; disables API auth |
+| `--insecure-no-auth` | Required with wildcard binds (`0.0.0.0`/`::`); disables API auth, including loopback tokens |
 | `--no-open` | Do not auto-open browser |
 | `--reuse-session` | Open active session and exit |
 | `--replace-session` | Stop active, then start with current args |

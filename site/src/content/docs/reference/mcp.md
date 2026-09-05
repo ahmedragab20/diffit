@@ -1,6 +1,6 @@
 ---
 title: MCP tools
-description: All 48 Model Context Protocol tools exposed by diffing mcp.
+description: All 55 Model Context Protocol tools exposed by diffing mcp.
 summary: Session, bounded diff inspect, comments, plan review, mockup review, and GitHub PR tools over stdio MCP.
 order: 2
 section: reference
@@ -26,7 +26,7 @@ Client snippet:
 }
 ```
 
-Successful calls return readable text plus schema-validated `structuredContent`. Count verified against `src/mcp.ts` `registerTool` (**48** tools).
+Successful calls return readable text plus schema-validated `structuredContent`. Count verified against `src/mcp.ts` `registerTool` (**55** tools).
 
 ## Session
 
