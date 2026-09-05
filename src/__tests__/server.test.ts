@@ -103,6 +103,16 @@ class MockCommentStore implements CommentStore {
     Object.assign(c, fields)
     return c
   }
+  async resolveAllOpen(): Promise<number> {
+    let n = 0
+    for (const c of this.comments) {
+      if (c.status === 'open') {
+        c.status = 'resolved'
+        n++
+      }
+    }
+    return n
+  }
   async remove(id: string) {
     const idx = this.comments.findIndex((x) => x.id === id)
     if (idx === -1) return false
