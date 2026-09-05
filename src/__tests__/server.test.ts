@@ -91,6 +91,20 @@ vi.mock('node:fs', async (importOriginal) => {
   }
 })
 
+// Native I/O seam: hoisted spies wired through a partial mock that retains the
+// real NativeFsError (instanceof checks in server.ts keep working) and the rest
+// of the module, overriding only the repository-fs factory.
+const mockNativeRead = vi.hoisted(() => vi.fn())
+const mockNativeWrite = vi.hoisted(() => vi.fn())
+
+vi.mock('../lib/native-fs.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/native-fs.js')>()
+  return {
+    ...actual,
+    getNativeRepositoryFs: () => ({ read: mockNativeRead, write: mockNativeWrite }),
+  }
+})
+
 const defaultSettings = { staged: true, untracked: true, diffStyle: 'split', defaultTabSize: 4 }
 
 class MockCommentStore implements CommentStore {
@@ -166,6 +180,13 @@ describe('server', () => {
     mockGetProjectStorageDir.mockReturnValue('/tmp/test-project-storage')
     mockGetRepoRoot.mockReturnValue('/tmp/test-repo')
     mockExistsSync.mockImplementation((p: string) => originalExistsSync(p))
+
+    const { NativeFsError } = await import('../lib/native-fs.js')
+    mockNativeRead.mockReset()
+    mockNativeWrite.mockReset()
+    // Routes ignore the write info payload; the read default is a miss.
+    mockNativeWrite.mockResolvedValue({ sha256: '0'.repeat(64), size: 0 })
+    mockNativeRead.mockRejectedValue(new NativeFsError('not-found'))
 
     mockGetRepoRootAsync.mockResolvedValue('/tmp/test-repo')
     mockGetBranchNameAsync.mockResolvedValue('main')
@@ -933,39 +954,53 @@ diff --git a/gone.ts b/gone.ts
       })
     })
     describe('GET /api/attachments/:filename', () => {
-      it('serves file with correct MIME type', async () => {
-        mockGetProjectStorageDir.mockReturnValue('/tmp/test-project-storage')
-        mockReadFile.mockResolvedValue(Buffer.from('my-image-data'))
+      it('serves file with correct MIME type via the native read', async () => {
+        const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+        mockNativeRead.mockResolvedValueOnce({ bytes: png, sha256: '0'.repeat(64) })
 
         const res = await app.fetch(new Request('http://localhost/api/attachments/test-img.png'))
         expect(res.status).toBe(200)
         expect(res.headers.get('Content-Type')).toBe('image/png')
-        expect(await res.text()).toBe('my-image-data')
+        expect(Buffer.from(await res.arrayBuffer())).toEqual(png)
+        expect(mockNativeRead).toHaveBeenCalledWith('attachments/test-img.png')
       })
 
-      it('returns 403 on path traversal attempt', async () => {
-        mockGetProjectStorageDir.mockReturnValue('/tmp/test-project-storage')
+      it('returns 403 on path traversal attempt without any native read', async () => {
         const res = await app.fetch(new Request('http://localhost/api/attachments/..%2F..%2Fetc%2Fpasswd'))
+        expect(res.status).toBe(403)
+        expect(mockNativeRead).not.toHaveBeenCalled()
+      })
+
+      it('returns 404 when the native read reports not-found', async () => {
+        const { NativeFsError } = await import('../lib/native-fs.js')
+        mockNativeRead.mockRejectedValueOnce(new NativeFsError('not-found'))
+        const res = await app.fetch(new Request('http://localhost/api/attachments/missing.png'))
+        expect(res.status).toBe(404)
+        expect(mockReadFile).not.toHaveBeenCalled()
+      })
+
+      it('returns 403 when the native read denies access', async () => {
+        const { NativeFsError } = await import('../lib/native-fs.js')
+        mockNativeRead.mockRejectedValueOnce(new NativeFsError('denied'))
+        const res = await app.fetch(new Request('http://localhost/api/attachments/test-img.png'))
         expect(res.status).toBe(403)
       })
 
-      it('returns 404 if file reading fails', async () => {
-        mockGetProjectStorageDir.mockReturnValue('/tmp/test-project-storage')
-        mockReadFile.mockRejectedValue(new Error('ENOENT'))
-        const res = await app.fetch(new Request('http://localhost/api/attachments/missing.png'))
-        expect(res.status).toBe(404)
+      it('returns 503 when native file access is unavailable', async () => {
+        const { NativeFsError } = await import('../lib/native-fs.js')
+        mockNativeRead.mockRejectedValueOnce(new NativeFsError('unavailable'))
+        const res = await app.fetch(new Request('http://localhost/api/attachments/test-img.png'))
+        expect(res.status).toBe(503)
       })
     })
 
     describe('POST /api/attachments', () => {
-      it('saves pasted/uploaded image', async () => {
-        mockGetProjectStorageDir.mockReturnValue('/tmp/test-project-storage')
-        mockGetRepoRoot.mockReturnValue('/tmp/test-repo')
+      it('saves pasted/uploaded image through native writes', async () => {
+        const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
         mockMkdir.mockResolvedValue(undefined)
-        mockWriteFile.mockResolvedValue(undefined)
 
         const formData = new FormData()
-        formData.append('file', new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], 'screenshot.png', { type: 'image/png' }))
+        formData.append('file', new File([new Uint8Array(png)], 'screenshot.png', { type: 'image/png' }))
 
         const res = await app.fetch(new Request('http://localhost/api/attachments', {
           method: 'POST',
@@ -976,8 +1011,50 @@ diff --git a/gone.ts b/gone.ts
         const body = await res.json()
         expect(body.url).toContain('/api/attachments/pasted_image_')
         expect(body).toMatchObject({ name: 'screenshot.png', mimeType: 'image/png', size: 8 })
-        expect(mockMkdir).toHaveBeenCalledWith('/tmp/test-project-storage/attachments', { recursive: true })
-        expect(mockWriteFile).toHaveBeenCalledWith('/tmp/test-project-storage/repo_path.txt', '/tmp/test-repo', 'utf-8')
+        // Only the trusted storage root is created with ambient authority.
+        expect(mockMkdir).toHaveBeenCalledWith('/tmp/test-project-storage', { recursive: true })
+        expect(mockNativeWrite).toHaveBeenCalledWith('repo_path.txt', Buffer.from('/tmp/test-repo', 'utf8'))
+        const imageWrite = mockNativeWrite.mock.calls.find((call) =>
+          /^attachments\/pasted_image_.*\.png$/.test(String(call[0])),
+        )
+        expect(imageWrite).toBeDefined()
+        expect(Buffer.isBuffer(imageWrite![1])).toBe(true)
+        expect(imageWrite![1]).toEqual(png)
+        expect(imageWrite![2]).toEqual({ createParents: true })
+        expect(mockWriteFile).not.toHaveBeenCalled()
+      })
+
+      it('returns 403 and saves nothing when the native write is denied', async () => {
+        const { NativeFsError } = await import('../lib/native-fs.js')
+        mockMkdir.mockResolvedValue(undefined)
+        mockNativeWrite.mockRejectedValue(new NativeFsError('denied'))
+
+        const formData = new FormData()
+        formData.append('file', new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], 'screenshot.png', { type: 'image/png' }))
+
+        const res = await app.fetch(new Request('http://localhost/api/attachments', { method: 'POST', body: formData }))
+        expect(res.status).toBe(403)
+        const body = await res.json()
+        expect(body.url).toBeUndefined()
+        expect(mockNativeWrite).toHaveBeenCalledWith('repo_path.txt', Buffer.from('/tmp/test-repo', 'utf8'))
+      })
+
+      it('rejects a declared oversized multipart body with 413 before any native write', async () => {
+        const boundary = '----diffingboundary'
+        const rawBody = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="screenshot.png"\r\nContent-Type: image/png\r\n\r\npng\r\n--${boundary}--\r\n`
+        const request = new Request('http://localhost/api/attachments', {
+          method: 'POST',
+          headers: {
+            'Content-Type': `multipart/form-data; boundary=${boundary}`,
+            'Content-Length': String(11 * 1024 * 1024 + 1),
+          },
+          body: rawBody,
+        })
+        expect(request.headers.get('content-length')).toBe(String(11 * 1024 * 1024 + 1))
+
+        const res = await app.fetch(request)
+        expect(res.status).toBe(413)
+        expect(mockNativeWrite).not.toHaveBeenCalled()
       })
 
       it('returns 400 if no file uploaded', async () => {
