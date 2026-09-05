@@ -23,6 +23,7 @@ index 1111111..2222222 100644
 +const neu = 1;
  context two
  context three
+ context four
 `
 
 /** Two files: first has two hunks (one replacement, one pure addition). */
@@ -30,12 +31,12 @@ const multiHunkMultiFilePatch = `diff --git a/src/b.ts b/src/b.ts
 index 3333333..4444444 100644
 --- a/src/b.ts
 +++ b/src/b.ts
-@@ -1,4 +1,4 @@
+@@ -1,3 +1,3 @@
  keep
 -old one
 +new one
  keep
-@@ -10,3 +10,4 @@
+@@ -10,2 +10,3 @@
  still
 +added late
  here
@@ -43,7 +44,7 @@ diff --git a/src/c.ts b/src/c.ts
 index 5555555..6666666 100644
 --- a/src/c.ts
 +++ b/src/c.ts
-@@ -1,2 +1,3 @@
+@@ -1,1 +1,2 @@
  ctx
 +added
 `
@@ -72,7 +73,7 @@ const noNewlineMarkerPatch = `diff --git a/src/noeol.ts b/src/noeol.ts
 index 9999999..aaaaaaa 100644
 --- a/src/noeol.ts
 +++ b/src/noeol.ts
-@@ -1,2 +1,2 @@
+@@ -1 +1 @@
 -old value
 \\ No newline at end of file
 +new value

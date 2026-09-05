@@ -79,6 +79,13 @@ describe('server-auth-bootstrap', () => {
       headers: { Host: '127.0.0.1', [SESSION_TOKEN_HEADER]: TOKEN },
     }))
     expect(root.status).toBe(200)
+
+    const loopback = createApp(
+      CLIENT_DIR, DEFAULTS, new InMemoryCommentStore(), undefined, undefined,
+      false, { bindHost: '127.0.0.1', authToken: TOKEN }, undefined, undefined,
+      new AiService([]),
+    )
+    expect((await loopback.fetch(new Request('http://127.0.0.1/'))).status).toBe(200)
   })
 
   it('rejects a hostile Origin with 403 on authenticated HTML and API routes', async () => {

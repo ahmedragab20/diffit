@@ -1,18 +1,5 @@
 // @vitest-environment node
-//
-// Edge regression tests for request-size limits on POST /api/comments.
-// These describe the *desired* contract: payloads at or above the 1 MiB
-// request-size ceiling must be rejected with 413 and must leave the comment
-// store untouched. The helper/runtime fixes are lead-owned and uncommitted;
-// these tests are expected to fail until they land here.
-//
-// Isolation rules (mirrors src/__tests__/comment-validation.test.ts):
-// - node:fs `watch` is partially mocked (returns an unref-able stub) so no
-//   real filesystem watcher is ever registered.
-// - A fresh InMemoryCommentStore is injected into createApp for every test,
-//   so no real state (files, git, network) is touched and the server is
-//   never started.
-// - Only app.fetch is used; the HTTP server is never bound to a port.
+// In-memory checks for declared and streamed comment request-size limits.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { Hono } from 'hono'
 import { InMemoryCommentStore } from '../lib/comments.js'
@@ -94,7 +81,7 @@ describe('POST /api/comments request size', () => {
   })
 
   it('rejects a request that declares an oversized Content-Length with 413 and an empty store', async () => {
-    const res = await app.fetch(`${BASE}/api/comments`, {
+    const request = new Request(`${BASE}/api/comments`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -102,6 +89,8 @@ describe('POST /api/comments request size', () => {
       },
       body: JSON.stringify(VALID_CREATE),
     })
+    expect(request.headers.get('content-length')).toBe(String(1024 * 1024 + 1))
+    const res = await app.fetch(request)
     expect(res.status).toBe(413)
     expect(await listComments(app)).toHaveLength(0)
   })

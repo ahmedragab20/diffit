@@ -21,8 +21,8 @@ function readTokenFromSessionStorage(): string | null {
 }
 
 function resolveSessionToken(): string | null {
-  return (typeof window !== 'undefined' ? window.__DIFFING_SESSION_TOKEN__ ?? null : null)
-    ?? readTokenFromSessionStorage()
+  if (typeof window === 'undefined') return null
+  return window.__DIFFING_SESSION_TOKEN__ ?? readTokenFromSessionStorage()
 }
 
 function persistSessionToken(token: string): void {
@@ -37,7 +37,12 @@ function persistSessionToken(token: string): void {
 /** Strip legacy `?token=` from the address bar; persist token for fetch headers. */
 function migrateTokenFromAddressBar(): void {
   if (typeof window === 'undefined') return
-  const parsed = new URL(window.location.href)
+  let parsed: URL
+  try {
+    parsed = new URL(window.location.href)
+  } catch {
+    return
+  }
   const fromUrl = parsed.searchParams.get(SESSION_TOKEN_QUERY)
   if (!fromUrl) return
   persistSessionToken(fromUrl)
@@ -79,13 +84,22 @@ export function installSessionAuth(): void {
 
   const originalFetch = window.fetch.bind(window)
   window.fetch = (input: RequestInfo | URL, init?: RequestInit) => {
-    const headers = new Headers(init?.headers)
     const url = typeof input === 'string'
       ? input
       : input instanceof URL
         ? input.toString()
         : input.url
-    if (url.includes('/api/')) headers.set(SESSION_TOKEN_HEADER, sessionToken!)
+    let target: URL
+    try {
+      target = new URL(url, window.location.href)
+    } catch {
+      return originalFetch(input, init)
+    }
+    if (target.origin !== window.location.origin || !target.pathname.startsWith('/api/')) {
+      return originalFetch(input, init)
+    }
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+    headers.set(SESSION_TOKEN_HEADER, sessionToken!)
     return originalFetch(input, { ...init, headers })
   }
 }

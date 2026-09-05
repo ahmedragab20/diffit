@@ -36,8 +36,10 @@ export function buildMinimapSegments(fileDiff: FileDiffMetadata): MinimapSegment
 
   let cursor = 0
   return hunks.map((h, i) => {
-    const adds = h.additionCount ?? h.additionLines ?? 0
-    const dels = h.deletionCount ?? h.deletionLines ?? 0
+    const adds = h.additionLines ?? h.additionCount ?? 0
+    const dels = h.deletionLines ?? h.deletionCount ?? 0
+    const newLineCount = h.additionCount ?? adds
+    const oldLineCount = h.deletionCount ?? dels
     const height = weights[i] / total
     const start = cursor
     cursor += height
@@ -49,10 +51,10 @@ export function buildMinimapSegments(fileDiff: FileDiffMetadata): MinimapSegment
     const delStart = h.deletionStart || 0
     const line = addStart || delStart || 1
     const rangeEnd =
-      addStart && adds > 0
-        ? addStart + Math.max(0, adds - 1)
-        : delStart && dels > 0
-          ? delStart + Math.max(0, dels - 1)
+      addStart && newLineCount > 0
+        ? addStart + Math.max(0, newLineCount - 1)
+        : delStart && oldLineCount > 0
+          ? delStart + Math.max(0, oldLineCount - 1)
           : line
     const rangeLabel =
       rangeEnd !== line ? `L${line}–${rangeEnd}` : `L${line}`

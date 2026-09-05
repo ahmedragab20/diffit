@@ -116,23 +116,20 @@ diffing [options] [<revision>...] [-- <path>...]
 - `--host <host>`: Host address to bind the server to (default: `127.0.0.1`). Loopback binds generate a per-session API token stored in the server lockfile; the web UI authenticates via an HttpOnly cookie (set when HTML is served) and optional `x-diffing-token` header on fetch. CLI and MCP read the token from the lockfile and send the header. Browseable URLs never include `?token=`. To expose the dashboard on your LAN, pass `0.0.0.0` together with `--insecure-no-auth` (disables API authentication).
 - `--insecure-no-auth`: Required when binding to a wildcard address (`0.0.0.0` or `::`). Disables API authentication entirely when supplied — including on loopback binds, where tokens are otherwise issued. This is an explicit, unsafe opt-out for trusted networks only.
 - `--no-open`: Prevents the CLI from automatically launching your browser when the server starts.
-
-#### Server security (loopback binds vs wildcard binds)
-
-When bound to a loopback address (`127.0.0.1` or `::1`), the server applies layered browser-facing hardening:
-
-- **Host checks**: HTML pages and `/api/` endpoints validate the `Host` header against the bound loopback host to block DNS-rebinding requests.
-- **Same-origin Origin checks**: browser mutations verify the `Origin` header matches the loopback origin.
-- **Response headers**: responses set `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`.
-- **Auth on non-loopback binds (auth enabled)**: HTML pages and deep links require the session token via header or HttpOnly cookie; an unauthenticated request returns `401` and never discloses whether a token exists.
-- The loopback bootstrap flow (token in lockfile, cookie set when HTML is served, `x-diffing-token` header on fetch) is unchanged. The browser only sends `x-diffing-token` on same-origin `/api/` fetches.
-- `--insecure-no-auth` remains an explicit, unsafe opt-out that disables authentication when supplied.
 - `--reuse-session`: Open the active session (print URL / launch browser), regardless of its scope.
 - `--replace-session`: Stop the active session and start a replacement with the current arguments.
 - `--new-session`: Always start a separate review, even when an identical mode and scope are already live.
 - `--gh-pr <ref>`: Open a GitHub PR review session instead of a working-tree diff. The `<ref>` accepts the same forms as `gh pr <ref>` (bare number, `owner/repo#N`, or full GitHub URL). Equivalent to the quoted form `diffing "gh pr <ref>"`. See [§4c. GitHub PR Review Subcommands](#4c-github-pr-review-subcommands) for the full flow.
 - `--view`: Open the focused, read-only native diff viewer. Equivalent to `diffing view`.
 - `--tui`: Open the opt-in native-Rust terminal UI instead of the web server when a compatible `diffing-tui` executable has been installed or built. The same review flow (diff render, file tree, comments, agent handoff) runs in your terminal — no browser. You can also make it the interactive default with `diffing mode tui`. See [§4d. TUI Subcommands (Native Terminal UI)](#4d-tui-subcommands-native-terminal-ui) for installation, fallback, and the full flow.
+
+#### Server security
+
+- Loopback binds reject non-loopback `Host` headers on HTML and API routes. Any supplied `Origin` must match the request origin; mismatches return `403`, including on reads and bootstrap pages.
+- Responses use `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`.
+- With authentication enabled on a non-loopback bind, HTML and deep links require the session header or cookie. Unauthenticated requests return `401` without a credential in the body or cookies. There is no automatic unauthenticated LAN bootstrap.
+- Loopback browser bootstrap is unchanged. The browser fetch wrapper adds `x-diffing-token` only to same-origin `/api/` requests and preserves existing request headers.
+- `--insecure-no-auth` disables authentication, not Host/Origin checks. Use loopback unless you explicitly intend to expose an unauthenticated review server.
 
 #### Concurrent session lifecycle
 
@@ -1760,29 +1757,26 @@ When review comments are exported (either via copying from the UI clipboard or r
      - **Multi-line**: Formatted as a multi-line string inside CDATA where *each individual line* is prefixed with `+` or `-` (e.g. `+ line1\n+ line2`).
      - **File-level**: The `<code>` node is completely omitted when `line="file"`.
 7. **`<body>`**: The markdown content of the comment thread, safely wrapped in CDATA.
-
-### XML Escaping & Serialization Rules
-
-- **Instructions text**: the `<instructions>` payload is serialized as CDATA text, not raw XML.
-- **Attribute escaping**: all attribute values (e.g. `path`, `line`, `side`, `status`, `severity`, `model`) are XML-escaped, including whitespace characters.
-- **CDATA safety**: literal `]]>` sequences inside comment bodies are safely split (as `]]]]><![CDATA[>`) so the document stays well-formed.
-- **Carriage returns**: CR characters are preserved via numeric character references rather than being normalized away.
-- **Invalid characters**: XML-invalid control characters and unpaired surrogates are replaced with the Unicode replacement character `U+FFFD` instead of producing malformed XML.
-- **No prompt-injection guarantee**: the `<instructions>` block is guidance for the consuming agent, not a security boundary; diffing does not guarantee review content is free of injected instructions.
 8. **`<replies>` (Optional)**: Groups chronological replies to the comment thread.
 9. **`<reply id="..." created-at="..." role="..." model="...">`**:
    - **`id`**: Reply UUID.
    - **`role`**: The poster's identity. Either `"user"` (human developer) or `"agent"` (AI coding assistant).
    - **`model`**: If the reply was posted by an agent, this attribute records the name of the LLM that made the reply.
 
+### XML escaping and serialization
+
+Code, plan, and mockup handoffs keep instruction examples in CDATA text rather than creating XML elements. Free-text attributes escape quotes, markup, and tab/LF/CR whitespace. Literal CDATA terminators (`]]>`) are split safely; carriage returns use character references outside CDATA so parsers preserve them. XML-invalid controls and unpaired UTF-16 surrogates become `U+FFFD`; valid Unicode remains intact. The Rust TUI uses the same escaping rules for code handoffs.
+
+These are serialization guarantees, not protection against an LLM following malicious review text. Treat review content as untrusted data.
+
 ### Comprehensive XML Structure Example
 
 ```xml
 <code-review-comments>
-  <instructions>
+  <instructions><![CDATA[
     You are an AI coding assistant. You are receiving a structured list of code review comments to address in the repository.
     ...
-  </instructions>
+  ]]></instructions>
   <general-comment>
     <![CDATA[Overall, excellent improvements. Please ensure to fix the multi-line parsing edge cases mentioned in the parser file.]]>
   </general-comment>
@@ -1892,19 +1886,20 @@ Releases all waiting agent processes (blocked in `/api/review/await`) by increme
 A long-poll endpoint used by CLI subcommands and MCP tools to block until a review is released.
 
 - **Query Parameters**:
-  - `sinceRound` (number, required): The last round processed by the client.
+  - `sinceRound` (number, optional): The last round processed by the client. A lower round replays the latest cached handoff; omission waits for a future send.
   - `timeoutMs` (number, default: `25000`): Maximum server hold time. Server caps this to `50000`ms to prevent intermediate proxy dropouts.
 - **Response Schema (on release)**:
 
   ```json
   {
     "status": "released",
-    "round": 4,
     "payload": {
+      "round": 4,
       "sentAt": 1782782782782,
       "commentXml": "<code-review-comments>...</code-review-comments>",
-      "openCount": 2,
-      "comments": [...]
+      "openCount": 0,
+      "comments": [],
+      "mode": "standard"
     }
   }
   ```
@@ -1919,9 +1914,13 @@ Queries a snapshot of the current review session state.
   {
     "round": 4,
     "waiters": 0,
-    "lastPayload": { ... }
+    "lastSentAt": 1782782782782,
+    "lastOpenCount": 2,
+    "hasSinceLastBaseline": false
   }
   ```
+
+Review rounds and `GET /api/review/history` are in-memory: history and replay state reset when the server restarts.
 
 ---
 
@@ -1935,7 +1934,11 @@ Fetches a list of all current code review comment threads.
 
 #### `POST /api/comments`
 
-Opens a new inline comment thread on a line of code (or multi-line range).
+Opens an inline, inclusive-range, or file-level comment thread.
+
+Required fields: nonempty string `filePath` (at most 4096 UTF-16 code units, no NUL), `side` (`additions` or `deletions`), nonnegative integer `lineNumber`, and nonblank string `body`. `lineNumber: 0` denotes a file-level comment. Optional `startLineNumber` must be positive, no greater than `lineNumber`, and absent for file-level comments. Missing `lineContent` defaults to `""`; supplied context must be a string. Optional `severity` must be `blocking`, `nit`, `question`, `praise`, or `none`.
+
+Body limit: 65,536 UTF-16 code units; context limit: 262,144. Requests under `/api/comments` and its child routes are capped at 1,048,576 bytes. Invalid fields or malformed JSON return `400`; oversized requests return `413`. Rejected requests do not mutate the comment store.
 
 - **Payload Schema**:
 
@@ -1955,7 +1958,7 @@ Opens a new inline comment thread on a line of code (or multi-line range).
 
 #### `PUT /api/comments/:id`
 
-Updates an existing comment thread body or toggles its status.
+Updates an existing comment thread body or toggles its status. At least one of `body` (nonblank string within the body limit) or `status` (`open` or `resolved`) is required; invalid updates return `400` without changing the thread.
 
 - **Payload Schema**:
 
@@ -1976,7 +1979,7 @@ Marks every open comment as `resolved` in one request. Used by the web **Resolve
 
 #### `POST /api/comments/:id/replies`
 
-Appends a conversation reply to an existing comment thread.
+Appends a conversation reply to an existing comment thread. `body` must be a nonblank string within the body limit. Optional `role` is `user` or `agent`; optional `model` is a nonempty string of at most 256 UTF-16 code units. If role is omitted, a supplied model implies `agent`; otherwise role is `user`. Invalid replies return `400` without adding a reply.
 
 - **Payload Schema**:
 
@@ -1984,13 +1987,13 @@ Appends a conversation reply to an existing comment thread.
   {
     "body": "Reply message body",
     "role": "user | agent",
-    "model": "claude-3-5-sonnet"       // Required if role is agent
+    "model": "claude-3-5-sonnet"       // Optional provenance
   }
   ```
 
 #### `PUT /api/comments/:id/replies/:replyId`
 
-Updates the body text of a comment reply.
+Updates the body text of a comment reply. `body` must be a nonblank string within the body limit; invalid edits return `400` and preserve the original reply.
 
 #### `DELETE /api/comments/:id/replies/:replyId`
 
@@ -2131,7 +2134,7 @@ Persisted under `~/.diffing/<repo>-<hash>/ai-conversations.json` (capped count
 and age). Surfaces: `diff` | `pr-diff` | `plan`.
 
 | Method | Path | Role |
-|--------|------|------|
+| -------- | ------ | ------ |
 | `GET` | `/api/ai/conversations?surface&scopeKey` | List summaries |
 | `POST` | `/api/ai/conversations` | Create (`surface`, `scopeKey`, optional `title` / `modelId`) |
 | `GET` | `/api/ai/conversations/:id` | Full conversation |

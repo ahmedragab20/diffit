@@ -19,6 +19,7 @@ import type {
 import { useDiffReviewKeymaps } from "./hooks/useDiffReviewKeymaps";
 import { useSearchSession } from "./hooks/useSearchSession";
 import { buildChangedLineKeys, buildDiffFileSet } from "./lib/diffIndex";
+import { countDiffChanges } from "./lib/diffStats";
 import { SHIKI_THEME_MAP } from "./utils";
 import type { ReviewComment } from "../lib/types";
 import { useDiff } from "./hooks/useDiff";
@@ -710,15 +711,7 @@ export function App() {
 		[filteredFiles, diffSearchEntries, customMode, settings.staged],
 	);
 
-	const diffStats = useMemo(() => {
-		let additions = 0;
-		let deletions = 0;
-		for (const file of filteredFiles) {
-			additions += file.additionLines.length;
-			deletions += file.deletionLines.length;
-		}
-		return { additions, deletions };
-	}, [filteredFiles]);
+	const diffStats = useMemo(() => countDiffChanges(filteredFiles), [filteredFiles]);
 
 	const binaryFileMap = useMemo(() => {
 		const map = new Map<string, (typeof binaryFiles)[number]>();

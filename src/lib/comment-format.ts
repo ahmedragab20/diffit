@@ -1,4 +1,5 @@
 import type { ReviewComment, ReviewDecision, ReviewMode } from './types.js'
+import { escapeXmlAttribute as escapeAttr, escapeCdataText, joinReviewXml } from './xml.js'
 
 /** Plain-language guidance the agent should act on, derived from the verdict. */
 export function reviewDecisionSummary(decision: ReviewDecision): string {
@@ -43,9 +44,9 @@ export function formatComments(
   // Alphabetical file order so handoff XML is stable across clients/reloads.
   const sortedFilePaths = [...grouped.keys()].sort((a, b) => a.localeCompare(b))
 
-  const modeAttr = mode && mode !== 'standard' ? ` mode="${mode}"` : ''
+  const modeAttr = mode && mode !== 'standard' ? ` mode="${escapeAttr(mode)}"` : ''
   const lines: string[] = []
-  lines.push(decision ? `<code-review-comments decision="${decision}"${modeAttr}>` : `<code-review-comments${modeAttr}>`)
+  lines.push(decision ? `<code-review-comments decision="${escapeAttr(decision)}"${modeAttr}>` : `<code-review-comments${modeAttr}>`)
   lines.push('  <instructions>')
   lines.push('    You are an AI coding assistant. You are receiving a structured list of code review comments to address in the repository.')
   if (mode === 'comment-only') {
@@ -99,13 +100,13 @@ export function formatComments(
 
   if (trimmedGeneral) {
     lines.push('  <general-comment>')
-    lines.push(`    <![CDATA[${trimmedGeneral}]]>`)
+    lines.push(`    <![CDATA[${escapeCdataText(trimmedGeneral)}]]>`)
     lines.push('  </general-comment>')
   }
 
   for (const filePath of sortedFilePaths) {
     const fileComments = grouped.get(filePath)!
-    lines.push(`  <file path="${filePath}">`)
+    lines.push(`  <file path="${escapeAttr(filePath)}">`)
     for (const comment of fileComments) {
       const lineAttr = comment.lineNumber === 0
         ? 'file'
@@ -116,10 +117,10 @@ export function formatComments(
       const isoDate = new Date(comment.createdAt).toISOString()
       const severityAttr =
         comment.severity && comment.severity !== 'none'
-          ? ` severity="${comment.severity}"`
+          ? ` severity="${escapeAttr(comment.severity)}"`
           : ''
       lines.push(
-        `    <comment id="${comment.id}" line="${lineAttr}" side="${comment.side}" status="${comment.status}"${severityAttr} created-at="${isoDate}">`,
+        `    <comment id="${escapeAttr(comment.id)}" line="${escapeAttr(lineAttr)}" side="${escapeAttr(comment.side)}" status="${escapeAttr(comment.status)}"${severityAttr} created-at="${isoDate}">`,
       )
 
       if (comment.lineNumber !== 0) {
@@ -136,18 +137,18 @@ export function formatComments(
           codeVal = `${prefix} ${comment.lineContent}`
         }
 
-        lines.push(`      <code><![CDATA[${codeVal}]]></code>`)
+        lines.push(`      <code><![CDATA[${escapeCdataText(codeVal)}]]></code>`)
       }
-      lines.push(`      <body><![CDATA[${comment.body}]]></body>`)
+      lines.push(`      <body><![CDATA[${escapeCdataText(comment.body)}]]></body>`)
 
       if (comment.replies && comment.replies.length > 0) {
         lines.push('      <replies>')
         for (const reply of comment.replies) {
           const replyIsoDate = new Date(reply.createdAt).toISOString()
-          const roleAttr = reply.role ? ` role="${reply.role}"` : ' role="agent"'
-          const modelAttr = reply.model ? ` model="${reply.model}"` : ''
-          lines.push(`        <reply id="${reply.id}" created-at="${replyIsoDate}"${roleAttr}${modelAttr}>`)
-          lines.push(`          <![CDATA[${reply.body}]]>`)
+          const roleAttr = reply.role ? ` role="${escapeAttr(reply.role)}"` : ' role="agent"'
+          const modelAttr = reply.model ? ` model="${escapeAttr(reply.model)}"` : ''
+          lines.push(`        <reply id="${escapeAttr(reply.id)}" created-at="${replyIsoDate}"${roleAttr}${modelAttr}>`)
+          lines.push(`          <![CDATA[${escapeCdataText(reply.body)}]]>`)
           lines.push('        </reply>')
         }
         lines.push('      </replies>')
@@ -159,5 +160,5 @@ export function formatComments(
   }
   lines.push('</code-review-comments>')
 
-  return lines.join('\n')
+  return joinReviewXml(lines)
 }

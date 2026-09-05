@@ -38,10 +38,11 @@ function firstTag(doc: Document, name: string): Element {
   return els[0]
 }
 
-/** CDATA body text must survive byte-for-byte (after deliberate trim only). */
-function expectText(doc: Document, name: string, original: string, { trim = false, prefix = '' } = {}) {
+/** Replies include formatter indentation outside CDATA; other fields are exact. */
+function expectText(doc: Document, name: string, original: string, { trim = name === 'reply', prefix = '' } = {}) {
   const el = firstTag(doc, name)
   const actual = el.textContent ?? ''
+  if (prefix) expect(actual.startsWith(prefix)).toBe(true)
   const rest = trim ? actual.trim() : actual.slice(prefix.length)
   expect(rest).toBe(trim ? original.trim() : original)
 }

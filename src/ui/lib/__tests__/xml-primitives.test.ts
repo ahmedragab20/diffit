@@ -1,15 +1,4 @@
-//
-// Parser-based regression tests for the lead-owned XML primitive helpers in
-// src/ui/lib/xml (escapeXmlAttribute / escapeCdataText / joinReviewXml).
-//
-// Contract under test:
-// - escapeXmlAttribute must make hostile attribute text round-trip through a
-//   real XML parse, and must neutralize NUL / unpaired surrogates (U+FFFD).
-// - escapeCdataText must make CDATA text containing `]]>` and CRLF round-trip.
-// - joinReviewXml must prevent instruction *examples* like <reply to="<id>">
-//   and a literal `]]>` from being interpreted as markup.
-//
-// Default jsdom environment: DOMParser comes from jsdom, no extra deps.
+// Parse real XML to verify the shared escaping helpers and text round trips.
 import { describe, it, expect } from 'vitest'
 import {
   escapeXmlAttribute,

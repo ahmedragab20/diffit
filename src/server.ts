@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
+import { bodyLimit } from "hono/body-limit";
 import { serve } from "@hono/node-server";
 import {
 	getFileContent,
@@ -35,6 +36,14 @@ import {
 import { loadSettings, saveSettings } from "./lib/settings.js";
 import { FileCommentStore } from "./lib/comments.js";
 import type { CommentStore } from "./lib/comments.js";
+import {
+	createReviewCommentSchema,
+	updateReviewCommentSchema,
+	createCommentReplySchema,
+	editCommentReplySchema,
+	commentValidationError,
+	MAX_COMMENT_REQUEST_BYTES,
+} from "./lib/comment-schema.js";
 import { isReviewCommentSide } from "./lib/types.js";
 import type { ReviewComment, ReviewDecision, ReviewMode } from "./lib/types.js";
 import { FilePlanStore } from "./lib/plans.js";
@@ -292,6 +301,17 @@ function serializeMockupCommentSummary(
 	return out;
 }
 
+async function readCommentJson(c: Context): Promise<unknown> {
+	try {
+		return await c.req.json();
+	} catch (error) {
+		if (error instanceof SyntaxError) return null;
+		// Stream/body-limit failures must reach their middleware, not become
+		// ordinary malformed-payload responses.
+		throw error;
+	}
+}
+
 export function createApp(
 	clientDir: string,
 	diffOptsInput: DiffOptions = DEFAULTS,
@@ -311,6 +331,16 @@ export function createApp(
 ) {
 	const app = new Hono();
 	app.use("*", createServerAuthMiddleware(security));
+	const limitCommentBody = bodyLimit({
+		maxSize: MAX_COMMENT_REQUEST_BYTES,
+		onError: (c) => c.json({ error: "Comment request is too large" }, 413),
+	});
+	app.use("*", (c, next) => {
+		if (c.req.path === "/api/comments" || c.req.path.startsWith("/api/comments/")) {
+			return limitCommentBody(c, next);
+		}
+		return next();
+	});
 	// Mutable so the UI can live-toggle whitespace (and future) options without
 	// restarting the server. Seeded from startup CLI flags / defaults.
 	let diffOpts: DiffOptions = { ...diffOptsInput };
@@ -1750,19 +1780,10 @@ export function createApp(
 	});
 
 	app.post("/api/comments", async (c) => {
-		const body = await c.req.json();
-		if (!isReviewCommentSide(body.side)) {
-			return c.json({ error: "side must be additions or deletions" }, 400);
-		}
-		const severityRaw = body.severity;
-		const severity =
-			severityRaw === "blocking" ||
-			severityRaw === "nit" ||
-			severityRaw === "question" ||
-			severityRaw === "praise" ||
-			severityRaw === "none"
-				? severityRaw
-				: undefined;
+		const parsed = createReviewCommentSchema.safeParse(await readCommentJson(c));
+		if (!parsed.success) return c.json(commentValidationError(parsed.error), 400);
+		const body = parsed.data;
+		const severity = body.severity === "none" ? undefined : body.severity;
 		const comment = {
 			id: crypto.randomUUID(),
 			filePath: body.filePath,
@@ -1782,15 +1803,18 @@ export function createApp(
 
 	app.put("/api/comments/:id", async (c) => {
 		const id = c.req.param("id");
-		const { body, status } = await c.req.json();
-		const updated = await store.update(id, { body, status });
+		const parsed = updateReviewCommentSchema.safeParse(await readCommentJson(c));
+		if (!parsed.success) return c.json(commentValidationError(parsed.error), 400);
+		const updated = await store.update(id, parsed.data);
 		if (!updated) return c.json({ error: "Comment not found" }, 404);
 		return c.json(updated);
 	});
 
 	app.post("/api/comments/:id/replies", async (c) => {
 		const commentId = c.req.param("id");
-		const { body, role, model } = await c.req.json();
+		const parsed = createCommentReplySchema.safeParse(await readCommentJson(c));
+		if (!parsed.success) return c.json(commentValidationError(parsed.error), 400);
+		const { body, role, model } = parsed.data;
 		const reply = {
 			id: crypto.randomUUID(),
 			body,
@@ -1818,9 +1842,9 @@ export function createApp(
 	app.put("/api/comments/:id/replies/:replyId", async (c) => {
 		const commentId = c.req.param("id");
 		const replyId = c.req.param("replyId");
-		const { body } = await c.req.json();
-		if (!body) return c.json({ error: "Body is required" }, 400);
-		const updated = await store.updateReply(commentId, replyId, body);
+		const parsed = editCommentReplySchema.safeParse(await readCommentJson(c));
+		if (!parsed.success) return c.json(commentValidationError(parsed.error), 400);
+		const updated = await store.updateReply(commentId, replyId, parsed.data.body);
 		if (!updated) return c.json({ error: "Comment or reply not found" }, 404);
 		return c.json(updated);
 	});

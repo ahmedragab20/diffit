@@ -88,11 +88,11 @@ fn normal_code_comment_body_remains_present_verbatim() {
 #[test]
 fn file_path_attribute_escapes_quotes_ampersand_angle_brackets_and_whitespace() {
     let mut c = comment("c1", "src/a.rs", "body");
-    c.file_path = "we\"rd<&>p\ta\th\r\nb.rs".to_string();
+    c.file_path = "we'\"rd<&>p\ta\th\r\nb.rs".to_string();
     let out = format_comments(&[c], None, None);
     assert!(
         out.contains(
-            "  <file path=\"we&quot;rd&lt;&amp;&gt;p&#9;a&#9;&#13;&#10;b.rs\">"
+            "  <file path=\"we&apos;&quot;rd&lt;&amp;&gt;p&#9;a&#9;h&#13;&#10;b.rs\">"
         ),
         "filePath must attribute-escape quote/&/</> and tab/LF/CR; got:\n{out}"
     );
@@ -119,7 +119,7 @@ fn body_with_repeated_terminators_and_crlf_uses_splitting_and_cr_refs() {
     c.body = "alpha\r\nbeta]]>gamma]]>delta".to_string();
     let out = format_comments(&[c], None, None);
     assert!(
-        out.contains("      <body><![CDATA[alpha&#13;\nbeta]]]]><![CDATA[>gamma]]]]><![CDATA[>delta]]></body>"),
+        out.contains("      <body><![CDATA[alpha]]>\x26#13;<![CDATA[\nbeta]]]]><![CDATA[>gamma]]]]><![CDATA[>delta]]></body>"),
         "body must split each `]]>` and emit CR as `&#13;`; got:\n{out}"
     );
 }
@@ -132,7 +132,7 @@ fn code_content_with_repeated_terminators_and_crlf_is_split_safely() {
     c.line_content = "x\r\ny]]>z".to_string();
     let out = format_comments(&[c], None, None);
     assert!(
-        out.contains("      <code><![CDATA[+ x&#13;\n+ y]]]]><![CDATA[>z]]></code>"),
+        out.contains("      <code><![CDATA[\n+ x]]>\x26#13;<![CDATA[\n+ y]]]]><![CDATA[>z\n]]></code>"),
         "code content must split `]]>` and emit CR as `&#13;`; got:\n{out}"
     );
 }
@@ -143,7 +143,7 @@ fn reply_body_with_repeated_terminators_and_crlf_is_split_safely() {
     c.replies.push(reply("r1", "p\r\nq]]>r]]>s", "m1"));
     let out = format_comments(&[c], None, None);
     assert!(
-        out.contains("          <![CDATA[p&#13;\nq]]]]><![CDATA[>r]]]]><![CDATA[>s]]>"),
+        out.contains("          <![CDATA[p]]>\x26#13;<![CDATA[\nq]]]]><![CDATA[>r]]]]><![CDATA[>s]]>"),
         "reply body must split `]]>` and emit CR as `&#13;`; got:\n{out}"
     );
 }
@@ -156,7 +156,7 @@ fn general_comment_with_repeated_terminators_and_crlf_is_split_safely() {
         None,
     );
     assert!(
-        out.contains("    <![CDATA[g&#13;\nh]]]]><![CDATA[>i]]]]><![CDATA[>j]]>"),
+        out.contains("    <![CDATA[g]]>\x26#13;<![CDATA[\nh]]]]><![CDATA[>i]]]]><![CDATA[>j]]>"),
         "general comment must split `]]>` and emit CR as `&#13;`; got:\n{out}"
     );
 }

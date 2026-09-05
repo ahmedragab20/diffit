@@ -66,13 +66,14 @@ describe('buildMinimapSegments', () => {
   })
 
   describe('with real parsed patches', () => {
-    async function parsed(patch: string): Promise<FileDiffMetadata> {
-      const parsed_ = await parsePatchFiles(patch)
-      return parsed_.flatMap((p) => p.files)[0]
+    function parsed(patch: string): FileDiffMetadata {
+      const files = parsePatchFiles(patch).flatMap((p) => p.files)
+      expect(files).toHaveLength(1)
+      return files[0]
     }
 
-    it('counts additions excluding context for a pure-add hunk', async () => {
-      const fileDiff = await parsed(`diff --git a/x.ts b/x.ts
+    it('counts additions excluding context for a pure-add hunk', () => {
+      const fileDiff = parsed(`diff --git a/x.ts b/x.ts
 index 1111111..2222222 100644
 --- a/x.ts
 +++ b/x.ts
@@ -89,8 +90,8 @@ index 1111111..2222222 100644
       expect(segs[0].rangeLabel).toBe('L1–3')
     })
 
-    it('counts deletions excluding context for a pure-delete hunk', async () => {
-      const fileDiff = await parsed(`diff --git a/y.ts b/y.ts
+    it('counts deletions excluding context for a pure-delete hunk', () => {
+      const fileDiff = parsed(`diff --git a/y.ts b/y.ts
 index 3333333..4444444 100644
 --- a/y.ts
 +++ b/y.ts
@@ -107,8 +108,8 @@ index 3333333..4444444 100644
       expect(segs[0].rangeLabel).toBe('L1–2')
     })
 
-    it('counts both sides excluding context for a replacement hunk', async () => {
-      const fileDiff = await parsed(`diff --git a/z.ts b/z.ts
+    it('counts both sides excluding context for a replacement hunk', () => {
+      const fileDiff = parsed(`diff --git a/z.ts b/z.ts
 index 5555555..6666666 100644
 --- a/z.ts
 +++ b/z.ts

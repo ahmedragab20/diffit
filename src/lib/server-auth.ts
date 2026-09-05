@@ -105,25 +105,48 @@ export function injectSessionTokenIntoHtml(html: string, authToken: string | nul
   return `${script}${html}`
 }
 
+function setSecurityHeaders(c: Context): void {
+  c.header('Cache-Control', 'no-store')
+  c.header('X-Content-Type-Options', 'nosniff')
+  c.header('Referrer-Policy', 'no-referrer')
+}
+
 export function createServerAuthMiddleware(config: ServerAuthConfig) {
   return async (c: Context, next: Next) => {
-    if (!c.req.path.startsWith('/api/')) {
-      await next()
-      return
-    }
+    setSecurityHeaders(c)
 
+    // Bootstrap HTML carries API authority too: rebinding/origin checks must
+    // happen before serving it, not just before handling API requests.
     if (!isAllowedRequestHost(c.req.header('host'), config.bindHost)) {
       return c.json({ error: 'request Host header is not allowed for this bind address' }, 403)
     }
+    const origin = c.req.header('origin')
+    if (origin !== undefined) {
+      let requestOrigin: string
+      try {
+        requestOrigin = new URL(c.req.url).origin
+      } catch {
+        return c.json({ error: 'invalid request URL' }, 400)
+      }
+      if (origin !== requestOrigin) {
+        return c.json({ error: 'request Origin is not allowed' }, 403)
+      }
+    }
 
-    if (!config.insecureNoAuth && config.authToken) {
+    // Only loopback browsers may bootstrap without a credential. An exposed
+    // server must authenticate HTML/deep links as well as its API, otherwise
+    // anyone can retrieve the credential injected into the page.
+    const requiresToken = c.req.path.startsWith('/api/') || !isLoopbackHost(config.bindHost)
+    if (requiresToken && !config.insecureNoAuth) {
       const allowQuery = c.req.path === '/api/live'
       const provided = readSessionToken(c, { allowQuery })
-      if (!tokenMatches(provided, config.authToken)) {
+      if (!config.authToken || !tokenMatches(provided, config.authToken)) {
         return c.json({ error: 'invalid or missing review session token' }, 401)
       }
     }
 
     await next()
+    // Raw Response objects (HTML, attachments) bypass prepared Hono headers.
+    setSecurityHeaders(c)
   }
 }

@@ -56,7 +56,7 @@ async function makeApp(): Promise<{ app: Hono; store: InMemoryCommentStore }> {
 
 const BASE = 'http://localhost'
 
-function postJson(app: Hono, url: string, payload: unknown): Promise<Response> {
+async function postJson(app: Hono, url: string, payload: unknown): Promise<Response> {
   return app.fetch(
     new Request(`${BASE}${url}`, {
       method: 'POST',
@@ -69,7 +69,7 @@ function postJson(app: Hono, url: string, payload: unknown): Promise<Response> {
   )
 }
 
-function putJson(app: Hono, url: string, payload: unknown): Promise<Response> {
+async function putJson(app: Hono, url: string, payload: unknown): Promise<Response> {
   return app.fetch(
     new Request(`${BASE}${url}`, {
       method: 'PUT',
@@ -187,8 +187,8 @@ describe('POST /api/comments validation', () => {
     {
       name: 'missing body',
       payload: {
-        side: 'additions',
         filePath: 'src/file.ts',
+        side: 'additions',
         lineNumber: 2,
         lineContent: 'const value = 1',
       },

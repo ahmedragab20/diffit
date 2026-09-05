@@ -6,7 +6,15 @@ order: 3
 section: reference
 ---
 
-All endpoints are on the session base URL from `diffing url` (loopback). Authenticate with session cookie (browser) or `x-diffing-token` (CLI/MCP) on loopback binds.
+Use the session base URL from `diffing url`. CLI and MCP clients target loopback sessions. Authenticate with the session cookie (browser) or `x-diffing-token` header.
+
+## Authentication and browser boundaries
+
+Loopback binds reject non-loopback `Host` headers on HTML and API routes. Any supplied `Origin` must match the request origin; mismatches return `403`. Responses set `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`.
+
+Loopback browsers can still bootstrap from the review page. When authentication is enabled on a non-loopback bind, HTML and deep links also require the session header or cookie; unauthenticated requests return `401` without disclosing the credential in their body or cookies. The browser fetch wrapper attaches its token only to same-origin `/api/` requests and preserves existing request headers.
+
+`--insecure-no-auth` explicitly disables authentication, including on loopback. The CLI requires it for wildcard binds (`0.0.0.0`/`::`). It does not disable Host/Origin checks. Prefer loopback; there is no automatic authenticated LAN login flow.
 
 ## Handoff
 
@@ -15,7 +23,7 @@ All endpoints are on the session base URL from `diffing url` (loopback). Authent
 | `POST` | `/api/review/send` | Human releases waiters; increments round |
 | `GET` | `/api/review/await` | Long-poll (`sinceRound`, `timeoutMs` ≤ 50000) |
 | `GET` | `/api/review/status` | Round / waiters snapshot |
-| `GET` | `/api/review/history` | Multi-round history |
+| `GET` | `/api/review/history` | In-memory round history; resets on server restart |
 
 ### send body
 
@@ -28,11 +36,13 @@ All endpoints are on the session base URL from `diffing url` (loopback). Authent
 ```json
 {
   "status": "released",
-  "round": 4,
   "payload": {
+    "round": 4,
+    "sentAt": 1782782782782,
     "commentXml": "<code-review-comments>…</code-review-comments>",
-    "openCount": 2,
-    "comments": []
+    "openCount": 0,
+    "comments": [],
+    "mode": "standard"
   }
 }
 ```
@@ -60,6 +70,14 @@ All endpoints are on the session base URL from `diffing url` (loopback). Authent
 | `PUT` | `/api/comments/:id/replies/:replyId` | Edit reply |
 | `DELETE` | `/api/comments/:id/replies/:replyId` | Delete reply |
 | `POST` | `/api/comments/:id/apply-suggestion` | Apply suggestion fence |
+
+### Comment validation
+
+Creates require a nonempty string `filePath` (at most 4096 UTF-16 code units, no NUL), `side: "additions" | "deletions"`, nonnegative integer `lineNumber`, and nonblank string `body`. `lineNumber: 0` is file-level. Optional `startLineNumber` must be positive, no greater than `lineNumber`, and absent for file-level comments. Missing `lineContent` defaults to `""`; supplied context must be a string. Optional severity is `blocking`, `nit`, `question`, `praise`, or `none`.
+
+Body limit: 65,536 UTF-16 code units. Context limit: 262,144. Requests under `/api/comments` and its child routes are limited to 1,048,576 bytes. Invalid fields or malformed JSON return `400`; oversized requests return `413`. Rejected requests leave the comment store unchanged.
+
+Comment updates require a valid `body` or `status: "open" | "resolved"`. Reply creation and editing require a nonblank body within the same limit. Replies accept optional `role: "user" | "agent"` and a nonempty string `model` of at most 256 UTF-16 code units. Without an explicit role, a model implies `agent`; otherwise the role is `user`.
 
 ## Agent progress
 
