@@ -1,19 +1,18 @@
-import {
-	readFile,
-	writeFile,
-	mkdir,
-	readdir,
-	stat,
-	rm,
-	rename,
-} from "node:fs/promises";
-import { join, extname, resolve, dirname } from "node:path";
+import { readFile, mkdir, readdir, stat, rm } from "node:fs/promises";
+import { join, extname, resolve } from "node:path";
 import { watch, existsSync, mkdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { Hono, type Context } from "hono";
 import { streamSSE } from "hono/streaming";
 import { bodyLimit } from "hono/body-limit";
+import { HTTPException } from "hono/http-exception";
+import { NativeFsError, getNativeRepositoryFs } from "./lib/native-fs.js";
+import {
+	saveFileSchema,
+	editSaveSchema,
+	MAX_FILE_REQUEST_BYTES,
+} from "./lib/file-schema.js";
 import { serve } from "@hono/node-server";
 import {
 	getFileContent,
@@ -94,7 +93,11 @@ import {
 	type MockupTheme,
 } from "./lib/mockup-types.js";
 import { FileUiStateStore } from "./lib/state.js";
-import { isSafePath, toSafeRelativePath } from "./lib/path.js";
+import {
+	isSafePath,
+	toSafeRelativePath,
+	toSafeLiteralRelativePath,
+} from "./lib/path.js";
 import {
 	resolveEditorCommand,
 	type EditorChoice,
@@ -330,17 +333,50 @@ export function createApp(
 	aiConversationStore?: AiConversationStore,
 ) {
 	const app = new Hono();
+	app.onError((error, c) => {
+		if (error instanceof NativeFsError) {
+			return c.json(
+				{
+					error: error.message,
+					code: error.code,
+					outcomeUnknown: error.outcomeUnknown,
+					...(error.code === "conflict" ? { conflict: true } : {}),
+				},
+				error.status,
+			);
+		}
+		if (error instanceof HTTPException) return error.getResponse();
+		// Error messages from parsers/subprocesses can contain input data.
+		console.error("diffing request failed");
+		return c.text("Internal Server Error", 500);
+	});
 	app.use("*", createServerAuthMiddleware(security));
 	const limitCommentBody = bodyLimit({
 		maxSize: MAX_COMMENT_REQUEST_BYTES,
 		onError: (c) => c.json({ error: "Comment request is too large" }, 413),
 	});
 	app.use("*", (c, next) => {
-		if (c.req.path === "/api/comments" || c.req.path.startsWith("/api/comments/")) {
+		if (
+			c.req.path === "/api/comments" ||
+			c.req.path.startsWith("/api/comments/")
+		) {
 			return limitCommentBody(c, next);
 		}
 		return next();
 	});
+	const limitFileBody = bodyLimit({
+		maxSize: MAX_FILE_REQUEST_BYTES,
+		onError: (c) => c.json({ error: "File request is too large" }, 413),
+	});
+	app.use("/api/save-file", limitFileBody);
+	app.use("/api/edit-save", limitFileBody);
+	app.use(
+		"/api/attachments",
+		bodyLimit({
+			maxSize: MAX_AI_IMAGE_BYTES + 1024 * 1024,
+			onError: (c) => c.json({ error: "Image upload request is too large" }, 413),
+		}),
+	);
 	// Mutable so the UI can live-toggle whitespace (and future) options without
 	// restarting the server. Seeded from startup CLI flags / defaults.
 	let diffOpts: DiffOptions = { ...diffOptsInput };
@@ -829,33 +865,53 @@ export function createApp(
 	});
 
 	const resolveFileVersion = async (path: string, version: "old" | "new") => {
-		if (!prMode) return getFileContent(path, version);
+		if (version !== "old" && version !== "new")
+			throw new NativeFsError("invalid-request");
+		const safePath = toSafeLiteralRelativePath(path, repoRoot);
+		if (!safePath) throw new NativeFsError("invalid-path");
+		if (!prMode) return getFileContent(safePath, version);
 		const session = await prStore.get();
 		if (!session) return null;
 		const sha = version === "old" ? session.baseSha : session.headSha;
-		return fetchPrFileContentViaGh(resolvedFromSession(session), path, sha);
+		return fetchPrFileContentViaGh(resolvedFromSession(session), safePath, sha);
 	};
 	const aiAttachmentCache = new ByteLruCache<Buffer>(4 * 1024 * 1024, 64);
 	const resolveAiAttachment = async (path: string): Promise<Buffer | null> => {
-		let cacheKey = `repo:${repoRoot}:new:${path}`;
-		if (prMode) {
-			const session = await prStore.get();
-			cacheKey = `pr:${session?.headSha ?? "unknown"}:${path}`;
-		} else {
-			const safePath = toSafeRelativePath(path, repoRoot);
-			if (!safePath) return null;
-			try {
-				const file = await stat(join(repoRoot, safePath));
-				cacheKey += `:${file.mtimeMs}:${file.size}`;
-			} catch {
-				return null;
-			}
-		}
+		// Working-tree files must be capability-read on every request. An mtime
+		// cache would bypass access checks after a file is replaced by a symlink.
+		if (!prMode) return resolveFileVersion(path, "new");
+		const session = await prStore.get();
+		const cacheKey = `pr:${session?.headSha ?? "unknown"}:${path}`;
 		const cached = aiAttachmentCache.get(cacheKey);
 		if (cached) return cached;
 		const buffer = await resolveFileVersion(path, "new");
 		if (buffer) aiAttachmentCache.set(cacheKey, buffer);
 		return buffer;
+	};
+	const readStoredImage = async (filename: string) => {
+		if (
+			filename.length > 256 ||
+			!/^[^/\\\0]+\.(?:png|jpe?g|webp|gif)$/i.test(filename)
+		)
+			return null;
+		const mimeType = MIME_TYPES[extname(filename).toLowerCase()];
+		if (!mimeType || !AI_IMAGE_MIME_TO_EXTENSION.has(mimeType)) return null;
+		try {
+			const { bytes } = await getNativeRepositoryFs(getProjectStorageDir()).read(
+				`attachments/${filename}`,
+			);
+			if (
+				bytes.length === 0 ||
+				bytes.length > MAX_AI_IMAGE_BYTES ||
+				!hasImageSignature(bytes, mimeType)
+			)
+				return null;
+			return { bytes, mimeType };
+		} catch (error) {
+			if (error instanceof NativeFsError && error.code === "not-found")
+				return null;
+			throw error;
+		}
 	};
 	const resolveAiImageAttachment = async (
 		reference: AiImageAttachmentReference,
@@ -865,28 +921,16 @@ export function createApp(
 		const filename = reference.url.slice(prefix.length);
 		if (!/^pasted_image_[0-9a-f-]+\.(?:png|jpe?g|webp|gif)$/i.test(filename))
 			return null;
-		const attachmentsDir = resolve(getProjectStorageDir(), "attachments");
-		const absolutePath = resolve(attachmentsDir, filename);
-		if (dirname(absolutePath) !== attachmentsDir) return null;
-		try {
-			const file = await stat(absolutePath);
-			if (!file.isFile() || file.size <= 0 || file.size > MAX_AI_IMAGE_BYTES)
-				return null;
-			const mimeType = MIME_TYPES[extname(filename).toLowerCase()];
-			if (!mimeType || !AI_IMAGE_MIME_TO_EXTENSION.has(mimeType)) return null;
-			const content = await readFile(absolutePath);
-			if (!hasImageSignature(content, mimeType)) return null;
-			return {
-				url: `${prefix}${filename}`,
-				name: reference.name?.slice(0, 160) || filename,
-				mimeType,
-				size: file.size,
-				absolutePath,
-				dataUrl: `data:${mimeType};base64,${content.toString("base64")}`,
-			};
-		} catch {
-			return null;
-		}
+		const image = await readStoredImage(filename);
+		if (!image) return null;
+		return {
+			url: `${prefix}${filename}`,
+			name: reference.name?.slice(0, 160) || filename,
+			mimeType: image.mimeType,
+			size: image.bytes.length,
+			absolutePath: join(getProjectStorageDir(), "attachments", filename),
+			dataUrl: `data:${image.mimeType};base64,${image.bytes.toString("base64")}`,
+		};
 	};
 
 	app.get("/api/file-content", async (c) => {
@@ -902,7 +946,11 @@ export function createApp(
 		const ext = extname(path);
 		const contentType = MIME_TYPES[ext] || "application/octet-stream";
 		return new Response(new Uint8Array(content), {
-			headers: { "Content-Type": contentType },
+			headers: {
+				"Content-Type": contentType,
+				"Content-Security-Policy":
+					"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:",
+			},
 		});
 	});
 
@@ -1161,68 +1209,49 @@ export function createApp(
 	});
 
 	app.post("/api/save-file", async (c) => {
-		const { filePath, content, gitAdd } = await c.req.json<{
-			filePath: string;
-			content: string;
-			gitAdd?: boolean;
-		}>();
-		if (!filePath || typeof content !== "string") {
-			return c.json({ error: "Missing filePath or content" }, 400);
+		const parsed = saveFileSchema.safeParse(await readCommentJson(c));
+		if (!parsed.success)
+			return c.json({ error: "Invalid file-save request" }, 400);
+		if (prMode || customMode) {
+			return c.json(
+				{ error: "Editing is not available in this review scope" },
+				403,
+			);
 		}
-		try {
-			const root = getRepoRoot();
-			const relPath = toSafeRelativePath(filePath, root);
-			if (!relPath) {
-				return c.json({ error: "Forbidden file path" }, 403);
+		const { filePath, content, gitAdd } = parsed.data;
+		const relPath = toSafeLiteralRelativePath(filePath, repoRoot);
+		if (!relPath) throw new NativeFsError("invalid-path");
+		await getNativeRepositoryFs(repoRoot).write(
+			relPath,
+			Buffer.from(content, "utf8"),
+		);
+		if (gitAdd) {
+			try {
+				gitAddFile(relPath);
+			} catch {
+				return c.json({ ok: true, gitAddError: "File saved, but staging failed" });
 			}
-			const absolutePath = resolve(root, relPath);
-			await writeFile(absolutePath, content, "utf-8");
-			if (gitAdd) {
-				try {
-					gitAddFile(relPath);
-				} catch (err: any) {
-					return c.json({ ok: true, gitAddError: err.message });
-				}
-			}
-			return c.json({ ok: true });
-		} catch (err: any) {
-			return c.json({ error: `Failed to save file: ${err.message}` }, 500);
 		}
+		return c.json({ ok: true });
 	});
 
 	/**
 	 * Save an in-place edit session's document.
 	 *
 	 * - Whole-file atomic write (temp file + rename) — never a partial patch.
-	 * - Optional `baseHash` conflict check: the sha256 of the file as it was
-	 *   when the edit session started. A changed on-disk file returns 409 so
-	 *   external edits are never silently clobbered.
-	 * - Optional `anchorUpdates` persist remapped comment coordinates with the
-	 *   write, so threads follow the edited code in the refreshed diff instead
-	 *   of being marked outdated.
+	 * - Optional `baseHash` is checked before writing; a mismatch returns 409.
+	 *   This optimistic check is not a cross-process compare-and-swap.
+	 * - Optional `anchorUpdates` persist remapped coordinates after the write.
+	 *   File bytes and comment metadata are not one atomic transaction.
 	 *
 	 * The file watcher broadcasts the `change` SSE event automatically, which
 	 * refreshes the diff in every connected review surface.
 	 */
 	app.post("/api/edit-save", async (c) => {
-		const body = (await c.req.json().catch(() => null)) as {
-			filePath?: string;
-			content?: string;
-			baseHash?: string;
-			anchorUpdates?: {
-				id: string;
-				side?: "deletions" | "additions";
-				lineNumber: number;
-				startLineNumber?: number;
-			}[];
-		} | null;
-		if (
-			!body ||
-			typeof body.filePath !== "string" ||
-			typeof body.content !== "string"
-		) {
-			return c.json({ error: "Missing filePath or content" }, 400);
-		}
+		const parsed = editSaveSchema.safeParse(await readCommentJson(c));
+		if (!parsed.success)
+			return c.json({ error: "Invalid edit-save request" }, 400);
+		const body = parsed.data;
 		// In-place editing mutates the working tree; PR sessions and revision
 		// comparisons have no writable working-tree diff backing their view.
 		if (prMode || customMode) {
@@ -1231,65 +1260,31 @@ export function createApp(
 				403,
 			);
 		}
+		const saved = await getNativeRepositoryFs(repoRoot).write(
+			body.filePath,
+			Buffer.from(body.content, "utf8"),
+			{ expectedSha256: body.baseHash },
+		);
 		try {
-			const root = getRepoRoot();
-			const relPath = toSafeRelativePath(body.filePath, root);
-			if (!relPath) {
-				return c.json({ error: "Forbidden file path" }, 403);
+			for (const anchor of body.anchorUpdates ?? []) {
+				const updated = await store.update(anchor.id, {
+					side: anchor.side ?? "additions",
+					lineNumber: anchor.lineNumber,
+					startLineNumber: anchor.startLineNumber,
+				});
+				if (!updated) throw new Error("Comment no longer exists");
 			}
-			const absolutePath = resolve(root, relPath);
-
-			if (typeof body.baseHash === "string" && body.baseHash.length > 0) {
-				const current = existsSync(absolutePath)
-					? await readFile(absolutePath)
-					: null;
-				const currentHash = current
-					? createHash("sha256").update(current).digest("hex")
-					: null;
-				if (currentHash !== body.baseHash) {
-					return c.json(
-						{
-							error:
-								"The file changed on disk since this edit session started. Reload and retry, or discard.",
-							conflict: true,
-						},
-						409,
-					);
-				}
-			}
-
-			const tmpPath = join(
-				dirname(absolutePath),
-				`.diffing-edit-${process.pid}-${Date.now()}.tmp`,
+		} catch {
+			return c.json(
+				{
+					error: "File saved, but comment anchors could not all be updated",
+					fileSaved: true,
+					hash: saved.sha256,
+				},
+				500,
 			);
-			await writeFile(tmpPath, body.content, "utf-8");
-			await rename(tmpPath, absolutePath);
-
-			if (Array.isArray(body.anchorUpdates) && body.anchorUpdates.length > 0) {
-				for (const anchor of body.anchorUpdates) {
-					if (
-						!anchor ||
-						typeof anchor.id !== "string" ||
-						typeof anchor.lineNumber !== "number"
-					) {
-						continue;
-					}
-					await store.update(anchor.id, {
-						side: anchor.side === "deletions" ? "deletions" : "additions",
-						lineNumber: anchor.lineNumber,
-						startLineNumber:
-							typeof anchor.startLineNumber === "number"
-								? anchor.startLineNumber
-								: undefined,
-					});
-				}
-			}
-
-			const savedHash = createHash("sha256").update(body.content).digest("hex");
-			return c.json({ ok: true, hash: savedHash });
-		} catch (err: any) {
-			return c.json({ error: `Failed to save file: ${err.message}` }, 500);
 		}
+		return c.json({ ok: true, hash: saved.sha256 });
 	});
 
 	app.get("/api/settings", (c) => {
@@ -1850,39 +1845,47 @@ export function createApp(
 	});
 
 	app.post("/api/comments/:id/apply-suggestion", async (c) => {
+		if (prMode || customMode) {
+			return c.json(
+				{ error: "Editing is not available in this review scope" },
+				403,
+			);
+		}
 		const id = c.req.param("id");
 		const comment = (await store.getAll()).find((c) => c.id === id);
 		if (!comment) {
 			return c.json({ error: "Comment not found" }, 404);
 		}
 
+		const files = getNativeRepositoryFs(repoRoot);
+		const current = await files.read(comment.filePath);
+		const { applySuggestionToContent } = await import(
+			"./lib/apply-suggestion.js"
+		);
+		const result = applySuggestionToContent({
+			content: current.bytes.toString("utf8"),
+			lineNumber: comment.lineNumber,
+			startLineNumber: comment.startLineNumber,
+			body: comment.body,
+			side: comment.side,
+		});
+		if (!result.ok) return c.json({ error: result.error }, 400);
+		await files.write(comment.filePath, Buffer.from(result.content, "utf8"), {
+			expectedSha256: current.sha256,
+		});
 		try {
-			const root = getRepoRoot();
-			const relPath = toSafeRelativePath(comment.filePath, root);
-			if (!relPath) {
-				return c.json({ error: "Forbidden file path" }, 403);
-			}
-			const absolutePath = resolve(root, relPath);
-			const content = await readFile(absolutePath, "utf-8");
-			const { applySuggestionToContent } = await import(
-				"./lib/apply-suggestion.js"
+			const updated = await store.update(id, { status: "resolved" });
+			if (!updated) throw new Error("Comment no longer exists");
+		} catch {
+			return c.json(
+				{
+					error: "File saved, but the comment could not be resolved",
+					fileSaved: true,
+				},
+				500,
 			);
-			const result = applySuggestionToContent({
-				content,
-				lineNumber: comment.lineNumber,
-				startLineNumber: comment.startLineNumber,
-				body: comment.body,
-				side: comment.side,
-			});
-			if (!result.ok) {
-				return c.json({ error: result.error }, 400);
-			}
-			await writeFile(absolutePath, result.content, "utf-8");
-			await store.update(id, { status: "resolved" });
-			return c.json({ ok: true, replacedLines: result.replacedLines });
-		} catch (err: any) {
-			return c.json({ error: `Failed to apply suggestion: ${err.message}` }, 500);
 		}
+		return c.json({ ok: true, replacedLines: result.replacedLines });
 	});
 
 	app.delete("/api/comments/:id", async (c) => {
@@ -4094,23 +4097,21 @@ export function createApp(
 					415,
 				);
 			const storageDir = getProjectStorageDir();
-			const attachmentsDir = join(storageDir, "attachments");
-			await mkdir(attachmentsDir, { recursive: true });
-
-			const repoRoot = getRepoRoot();
-			await writeFile(join(storageDir, "repo_path.txt"), repoRoot, "utf-8");
-
 			const filename = `pasted_image_${crypto.randomUUID()}${ext}`;
-			const absolutePath = join(attachmentsDir, filename);
-
-			const arrayBuffer = await file.arrayBuffer();
-			const content = new Uint8Array(arrayBuffer);
+			const content = Buffer.from(await file.arrayBuffer());
 			if (!hasImageSignature(content, mimeType))
 				return c.json(
 					{ error: "The uploaded file does not match its image type." },
 					415,
 				);
-			await writeFile(absolutePath, content);
+			// Only the trusted storage root is created with ambient authority.
+			// All child creation and file replacement use its pinned capability.
+			await mkdir(storageDir, { recursive: true });
+			const files = getNativeRepositoryFs(storageDir);
+			await files.write("repo_path.txt", Buffer.from(repoRoot, "utf8"));
+			await files.write(`attachments/${filename}`, content, {
+				createParents: true,
+			});
 
 			return c.json({
 				url: `/api/attachments/${filename}`,
@@ -4118,31 +4119,21 @@ export function createApp(
 				mimeType,
 				size: file.size,
 			});
-		} catch (err: any) {
-			return c.json({ error: `Failed to save attachment: ${err.message}` }, 500);
+		} catch (error) {
+			if (error instanceof NativeFsError) throw error;
+			return c.json({ error: "Failed to save attachment" }, 500);
 		}
 	});
 
 	app.get("/api/attachments/:filename", async (c) => {
 		const filename = c.req.param("filename");
-		const storageDir = getProjectStorageDir();
-		const attachmentsDir = join(storageDir, "attachments");
-		const absolutePath = resolve(attachmentsDir, filename);
-
-		if (!absolutePath.startsWith(attachmentsDir)) {
+		if (filename === ".." || /[/\\\0]/.test(filename))
 			return c.text("Forbidden", 403);
-		}
-
-		try {
-			const content = await readFile(absolutePath);
-			const ext = extname(absolutePath);
-			const contentType = MIME_TYPES[ext] || "application/octet-stream";
-			return new Response(content, {
-				headers: { "Content-Type": contentType },
-			});
-		} catch {
-			return c.text("Attachment not found", 404);
-		}
+		const image = await readStoredImage(filename);
+		if (!image) return c.text("Attachment not found", 404);
+		return new Response(new Uint8Array(image.bytes), {
+			headers: { "Content-Type": image.mimeType },
+		});
 	});
 
 	app.get("/*", async (c) => {

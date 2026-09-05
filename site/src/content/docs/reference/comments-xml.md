@@ -11,7 +11,7 @@ Exported via `diffing comments`, `await-review`, MCP list/await tools, and UI cl
 ## Elements
 
 | Element | Role |
-|---------|------|
+| --------- | ------ |
 | `<code-review-comments>` | Root |
 | `<instructions>` | Agent guidance and examples stored as CDATA text |
 | `<general-comment>` | Optional round-level markdown (CDATA) |
@@ -24,7 +24,7 @@ Exported via `diffing comments`, `await-review`, MCP list/await tools, and UI cl
 ### comment attributes
 
 | Attr | Values |
-|------|--------|
+| ------ | -------- |
 | `id` | UUID |
 | `line` | `"15"` · `"10-15"` (inclusive) · `"file"` |
 | `side` | `additions` \| `deletions` |
@@ -35,7 +35,7 @@ Exported via `diffing comments`, `await-review`, MCP list/await tools, and UI cl
 ### reply attributes
 
 | Attr | Values |
-|------|--------|
+| ------ | -------- |
 | `id` | UUID |
 | `role` | `user` \| `agent` |
 | `model` | optional provenance |
@@ -72,7 +72,7 @@ This guarantees serialization, not that an LLM will ignore malicious instruction
 ## Severity policy for agents
 
 | Severity | Action |
-|----------|--------|
+| ---------- | -------- |
 | `blocking` | Must address before resolve |
 | `nit` | Optional |
 | `question` | Answer; usually leave open |

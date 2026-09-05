@@ -14,7 +14,9 @@ Open your changes in a GitHub-like web UI (or an experimental native TUI), leave
 
 ## Quick start
 
-**Requirements:** Node.js 20+, `git` on your PATH.
+**Requirements:** Node.js 20+, `git` on your PATH. Local working-tree previews, edits and uploaded-image operations also require the compiled native file helper, bundled on supported platforms; no Rust toolchain is needed for a packaged install. Missing/incompatible helpers deny those operations rather than falling back to Node file access. Basic Git diffs and comments remain available.
+
+This is **not a complete repository sandbox**. See the [implemented guarantees, known limits and deferred-work handoff](./docs/hardening-status.md).
 
 ```bash
 npm install -g diffing
@@ -71,6 +73,19 @@ diffing mcp
 Full agent protocol, exit codes, and MCP catalog: **[Documentation](https://ahmedragab20.github.io/diffing/docs/)** · in-repo [AGENTS.md](./AGENTS.md).
 
 ---
+
+## Development checks
+
+Source contributors need Rust for the file helper. Build it before running the TypeScript suite, which includes real-helper integration tests:
+
+```bash
+pnpm build:tui:debug
+pnpm test:ts
+cargo test --workspace
+pnpm build
+```
+
+`pnpm exec tsc --noEmit` is a separate check; its remaining known failures are tracked in [the handoff](./docs/hardening-status.md). No passing-test claim implies a clean typecheck.
 
 ## Documentation
 

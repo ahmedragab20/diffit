@@ -1,15 +1,4 @@
-//! Tests for the lead-owned native filesystem core (`diffing_core::repo_fs`).
-//!
-//! Contract under test (owned by the lead; absent from this worktree):
-//! - `RepoFs::open(&Path) -> Result<RepoFs, RepoFsError>`
-//! - `RepoFs::read(&Path) -> Result<RepoFile { bytes: Vec<u8>, sha256: String }, RepoFsError>`
-//! - `RepoFs::write(&Path, &[u8], WriteOptions) -> Result<RepoFileInfo { sha256: String, size: u64 }, RepoFsError>`
-//! - `WriteOptions { create_parents: bool, expected_sha256: Option<String> }` + `Default`
-//! - `RepoFsError::code() -> &str` (named codes: `not-found`, `too-large`)
-//! - `repo_fs::MAX_FILE_BYTES: u64`
-//!
-//! All filesystem activity happens inside an owned `tempfile::TempDir`;
-//! no real user files are touched and no uncontrolled threads are spawned.
+//! Capability-confined file operations, using only owned temporary fixtures.
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -95,22 +84,38 @@ fn empty_relative_and_dotdot_paths_are_rejected() {
     let repo = sb.opened();
 
     assert!(repo.read(Path::new("")).is_err(), "empty read path");
-    assert!(repo.write(Path::new(""), b"x", WriteOptions::default()).is_err(), "empty write path");
-    assert!(repo.read(Path::new("/etc/hostname")).is_err(), "absolute read path");
     assert!(
-        repo.write(Path::new("/etc/hostname"), b"x", WriteOptions::default())
+        repo.write(Path::new(""), b"x", WriteOptions::default())
+            .is_err(),
+        "empty write path"
+    );
+    let absolute = sb.outside.join("sentinel");
+    assert!(repo.read(&absolute).is_err(), "absolute read path");
+    assert!(
+        repo.write(&absolute, b"x", WriteOptions::default())
             .is_err(),
         "absolute write path"
     );
-    assert!(repo.read(Path::new("../outside/sentinel")).is_err(), ".. read");
     assert!(
-        repo.write(Path::new("../outside/escape.txt"), b"x", WriteOptions::default())
-            .is_err(),
+        repo.read(Path::new("../outside/sentinel")).is_err(),
+        ".. read"
+    );
+    assert!(
+        repo.write(
+            Path::new("../outside/escape.txt"),
+            b"x",
+            WriteOptions::default()
+        )
+        .is_err(),
         ".. write"
     );
     assert!(
-        repo.write(Path::new("sub/../../escape.txt"), b"x", WriteOptions::default())
-            .is_err(),
+        repo.write(
+            Path::new("sub/../../escape.txt"),
+            b"x",
+            WriteOptions::default()
+        )
+        .is_err(),
         "nested .. write"
     );
     // Outside sentinel untouched by every rejected attempt.
@@ -135,7 +140,10 @@ fn git_metadata_names_are_rejected() {
             .is_err(),
         ".git/HEAD write"
     );
-    assert!(repo.read(Path::new("sub/.git/config")).is_err(), "nested .git read");
+    assert!(
+        repo.read(Path::new("sub/.git/config")).is_err(),
+        "nested .git read"
+    );
     assert!(
         repo.write(Path::new("sub/.git/config"), b"x", WriteOptions::default())
             .is_err(),
@@ -163,7 +171,7 @@ fn write_creates_then_overwrites() {
         .expect("overwrite");
     assert_eq!(info.size, 7);
     assert_eq!(fs::read(sb.repo.join("file.txt")).unwrap(), b"second!");
-    // sha256("second!") — hardcoded because sha2 is not an integration-test dep.
+    // Independently checked SHA-256 of "second!".
     assert_eq!(
         info.sha256,
         "d8470465f9e7614921a043dd05deb31e1f8926c516afc00432359aa2ebb07d30"
@@ -177,8 +185,12 @@ fn nested_dirs_require_create_parents_flag() {
 
     // Without create_parents: rejected, nothing created.
     assert!(
-        repo.write(Path::new("deep/dir/file.txt"), b"x", WriteOptions::default())
-            .is_err(),
+        repo.write(
+            Path::new("deep/dir/file.txt"),
+            b"x",
+            WriteOptions::default()
+        )
+        .is_err(),
         "write into missing parents must fail"
     );
     assert!(!sb.repo.join("deep").exists(), "no dirs created on failure");
@@ -190,7 +202,10 @@ fn nested_dirs_require_create_parents_flag() {
     };
     repo.write(Path::new("deep/dir/file.txt"), b"nested", opts)
         .expect("nested creation");
-    assert_eq!(fs::read(sb.repo.join("deep/dir/file.txt")).unwrap(), b"nested");
+    assert_eq!(
+        fs::read(sb.repo.join("deep/dir/file.txt")).unwrap(),
+        b"nested"
+    );
 }
 
 #[test]
@@ -207,7 +222,10 @@ fn stale_expected_sha256_conflicts_and_preserves_bytes() {
         ),
     };
     let result = repo.write(Path::new("guarded.txt"), b"new bytes", opts);
-    assert!(result.is_err(), "stale expected_sha256 must conflict");
+    assert_eq!(
+        result.expect_err("stale expected_sha256").code(),
+        "conflict"
+    );
     // Original bytes preserved.
     assert_eq!(
         fs::read(sb.repo.join("guarded.txt")).unwrap(),
@@ -243,7 +261,9 @@ fn oversized_sparse_file_read_gives_too_large() {
     drop(f);
 
     let repo = sb.opened();
-    let err = repo.read(Path::new("huge.bin")).expect_err("must be rejected");
+    let err = repo
+        .read(Path::new("huge.bin"))
+        .expect_err("must be rejected");
     assert_eq!(err.code(), "too-large");
 }
 
@@ -266,13 +286,19 @@ mod unix {
             .expect("inside leaf symlink");
 
         let repo = sb.opened();
-        assert!(repo.read(Path::new("out-link")).is_err(), "outside leaf symlink read");
+        assert!(
+            repo.read(Path::new("out-link")).is_err(),
+            "outside leaf symlink read"
+        );
         assert!(
             repo.write(Path::new("out-link"), b"x", WriteOptions::default())
                 .is_err(),
             "outside leaf symlink write"
         );
-        assert!(repo.read(Path::new("in-link")).is_err(), "inside leaf symlink read");
+        assert!(
+            repo.read(Path::new("in-link")).is_err(),
+            "inside leaf symlink read"
+        );
         assert!(
             repo.write(Path::new("in-link"), b"x", WriteOptions::default())
                 .is_err(),
@@ -292,10 +318,17 @@ mod unix {
             .expect("parent dir symlink");
 
         let repo = sb.opened();
-        assert!(repo.read(Path::new("linkdir/sentinel")).is_err(), "symlink parent read");
         assert!(
-            repo.write(Path::new("linkdir/escape.txt"), b"x", WriteOptions::default())
-                .is_err(),
+            repo.read(Path::new("linkdir/sentinel")).is_err(),
+            "symlink parent read"
+        );
+        assert!(
+            repo.write(
+                Path::new("linkdir/escape.txt"),
+                b"x",
+                WriteOptions::default()
+            )
+            .is_err(),
             "symlink parent write"
         );
         let opts = WriteOptions {
@@ -303,7 +336,8 @@ mod unix {
             ..WriteOptions::default()
         };
         assert!(
-            repo.write(Path::new("linkdir/new/file.txt"), b"x", opts).is_err(),
+            repo.write(Path::new("linkdir/new/file.txt"), b"x", opts)
+                .is_err(),
             "nested creation through symlink parent"
         );
         // Outside sentinel unchanged, no escape file created there.
@@ -316,12 +350,19 @@ mod unix {
     fn atomic_write_to_in_repo_hardlink_leaves_outside_alias_unchanged() {
         let sb = Sandbox::new();
         sb.seed("hard-target.txt", b"before");
-        fs::hard_link(sb.repo.join("hard-target.txt"), sb.outside.join("alias.txt"))
-            .expect("hardlink");
+        fs::hard_link(
+            sb.repo.join("hard-target.txt"),
+            sb.outside.join("alias.txt"),
+        )
+        .expect("hardlink");
 
         let repo = sb.opened();
-        repo.write(Path::new("hard-target.txt"), b"after", WriteOptions::default())
-            .expect("atomic overwrite");
+        repo.write(
+            Path::new("hard-target.txt"),
+            b"after",
+            WriteOptions::default(),
+        )
+        .expect("atomic overwrite");
 
         assert_eq!(
             fs::read(sb.repo.join("hard-target.txt")).unwrap(),
@@ -343,8 +384,12 @@ mod unix {
         fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod 755");
 
         let repo = sb.opened();
-        repo.write(Path::new("script.sh"), b"#!/bin/sh\necho v2\n", WriteOptions::default())
-            .expect("overwrite");
+        repo.write(
+            Path::new("script.sh"),
+            b"#!/bin/sh\necho v2\n",
+            WriteOptions::default(),
+        )
+        .expect("overwrite");
 
         let mode = fs::metadata(&p).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o755, "executable bit must survive overwrite");
@@ -356,6 +401,7 @@ mod unix {
 //    must keep using the original directory.
 // ---------------------------------------------------------------------------
 
+#[cfg(unix)]
 #[test]
 fn existing_handle_survives_root_rename_and_old_path_symlink() {
     let sb = Sandbox::new();
@@ -371,13 +417,15 @@ fn existing_handle_survives_root_rename_and_old_path_symlink() {
     fs::rename(&sb.repo, &moved).expect("rename repo dir");
 
     // Put an outside-dir symlink at the old root pathname.
-    #[cfg(unix)]
     std::os::unix::fs::symlink(&sb.outside, &sb.repo).expect("symlink at old root path");
 
     // Reads and writes through the existing handle must hit the original
     // directory (now at `moved`), never the symlink target.
     let file = repo.read(Path::new("keep.txt")).expect("read via handle");
-    assert_eq!(file.bytes, b"keep", "handle must read the original directory");
+    assert_eq!(
+        file.bytes, b"keep",
+        "handle must read the original directory"
+    );
 
     repo.write(Path::new("after.txt"), b"after", WriteOptions::default())
         .expect("write via handle");
@@ -388,10 +436,8 @@ fn existing_handle_survives_root_rename_and_old_path_symlink() {
         "write must land in the original (moved) directory"
     );
     assert_eq!(sb.sentinel(), b"outside", "outside sentinel untouched");
-    #[cfg(unix)]
     assert!(
         !sb.outside.join("after.txt").exists() && !sb.outside.join("keep.txt").exists(),
         "nothing may be written through the old-path symlink"
     );
 }
-

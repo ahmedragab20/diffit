@@ -100,7 +100,7 @@ async function makeApp(
 
 const BASE = 'http://localhost'
 
-function postJson(
+async function postJson(
   app: Hono,
   url: string,
   payload: unknown,
@@ -115,7 +115,7 @@ function postJson(
   )
 }
 
-function get(app: Hono, url: string): Promise<Response> {
+async function get(app: Hono, url: string): Promise<Response> {
   return app.fetch(new Request(`${BASE}${url}`))
 }
 
@@ -143,6 +143,7 @@ async function seedSuggestionComment(store: InMemoryCommentStore): Promise<void>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  spies.getFileContent.mockReset()
   // Default native behaviour: reading an existing file succeeds; writes echo
   // the hash/size of exactly the bytes the caller handed over.
   spies.read.mockResolvedValue(READ_RESULT)

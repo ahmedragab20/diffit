@@ -2003,6 +2003,8 @@ Deletes a comment reply.
 
 Parses a Markdown ```suggestion code block inside the comment body, applies the proposed lines of code to the physical working tree file (including multi-line suggestions), and marks the comment thread as `resolved`.
 
+The route reads through the native file helper and passes that read's SHA-256 into the write as an optimistic precondition. This is not cross-process CAS. PR/custom comparison scopes reject the operation with `403`. If the write succeeds but the comment store reports a resolution failure, the response is `500` with `fileSaved: true`; reconcile the comment separately rather than reapply the file change.
+
 #### `POST /api/agent/progress`
 
 Agent → human live status for the progress toast.
@@ -2045,7 +2047,7 @@ Uploads a pasted image file from the clipboard or file picker.
   }
   ```
 
-  Only PNG, JPEG, WebP, and GIF are accepted (≤ 10 MB). Non-image uploads and
+  Only PNG, JPEG, WebP, and GIF are accepted (≤ 10 MiB). Non-image uploads and
   mismatched magic bytes are rejected. Draft comments and Ask AI keep this
   **loopback** URL so the local UI can preview the image. On GitHub publish
   (review submit, reply, or edit), diffing rewrites these to repo-scoped raw
@@ -2053,7 +2055,9 @@ Uploads a pasted image file from the clipboard or file picker.
 
 #### `GET /api/attachments/:filename`
 
-Serves an uploaded attachment file. Uploads are strictly isolated and stored inside `~/.diffing/<repo-name>-<hash>/attachments/`.
+Serves uploaded PNG/JPEG/WebP/GIF images from `~/.diffing/<repo-name>-<hash>/attachments/` through the storage-root native capability. Images are limited to 10 MiB; multipart upload requests to 11 MiB. Upload type/signature mismatch returns `415`. GET serves only regular files with an allowed image signature: traversal returns `403`, missing/invalid images `404`, and native denial/unavailability `403`/`503` rather than a false missing result. Only creation of the trusted storage root uses ambient filesystem access.
+
+For AI requests, Codex receives the validated captured image as a data URL, not a local-image pathname to reopen.
 
 #### GitHub publish rewrite (private / GHE safe)
 
@@ -2166,7 +2170,7 @@ Required body fields:
   `improve-comment`, `review-map`, `explain-hunk`, `draft-review-summary`,
   `critique-plan`, `find-plan-gaps`, and related comment/plan helpers.
 - Context limits: ≤ 8 `@` attachment paths / 64 KB total text; ≤ 8 explicit
-  line ranges / 64 KB; ≤ 4 images (PNG/JPEG/WebP/GIF, ≤ 10 MB each) resolved
+  line ranges / 64 KB; ≤ 4 images (PNG/JPEG/WebP/GIF, ≤ 10 MiB each) resolved
   from `/api/attachments/…`.
 - SSE event types: `start`, `text-delta`, `warning`, `error`, `complete`
   (payload JSON matches each event).
@@ -2214,19 +2218,54 @@ Gathers context regarding deleted lines. Retrieves `git blame` annotations for t
   - `deletionStart` (number, required): Line number index where the deleted block started.
   - `deletionCount` (number, required): Total count of deleted lines.
 
+#### Native file access contract
+
+Selected local working-tree previews, saves, edits, suggestions and uploaded-image operations use a pinned native directory capability. Descendant symlinks and `.git` components are denied. Already-decoded API paths are not URL-decoded again. Native files are limited to 50 MiB; save/edit JSON bodies to 70 MiB.
+
+The internal `--fs-rpc` helper is discovered only in verified installation/source locations, never on PATH. It receives no application environment variables except Windows `SystemRoot` where required. Source contributors must run `pnpm build:tui:debug` before the native integration tests. Missing/incompatible helpers deny affected operations with `503`; no Node file-access fallback is used. Transport failures stay failed until explicit reset/restart. Basic Git diffs and comments remain available.
+
+Native filesystem errors use `{ "error": "...", "code": "...", "outcomeUnknown": false }`: invalid-path/invalid-request/not-file `400`, denied `403`, not-found `404`, conflict `409`, too-large `413`, protocol `502`, unavailable/busy `503`, timeout `504`, io `500`. Validation and other endpoints can return simpler error bodies. `outcomeUnknown: true` means inspect current file state before retrying; never blindly replay the write.
+
+This is **not full repository containment**. Untracked/EditorConfig reads and trusted external Git/editor/LSP/search tools remain outside this guarantee. See [hardening-status.md](./hardening-status.md) for deferred work and verification limits.
+
+#### `GET /api/file-content`
+
+Requires `path` and `version=old|new`; malformed/missing query values return `400`. Returns bytes with an extension-derived Content-Type and `Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:`. Missing content returns `404`.
+
+Local `new` reads the current working tree through the helper; local `old` reads `HEAD` through Git. Exact staged/revision/commit-series preview sides are not yet implemented. PR previews use the session base/head SHAs. Some legacy Git failures still appear as missing content; this limitation is tracked in A03/A07.
+
+#### `POST /api/edit-save`
+
+Replaces the whole file through a same-parent native temporary file and rename:
+
+```json
+{
+  "filePath": "src/file.ts",
+  "content": "Full updated contents...",
+  "baseHash": "<sha256 from file-text>",
+  "anchorUpdates": [{ "id": "<comment-id>", "side": "additions", "lineNumber": 12, "startLineNumber": 10 }]
+}
+```
+
+`baseHash` and `anchorUpdates` are optional. A supplied hash must be 64 lowercase hex characters; mismatch returns `409` with `conflict: true`. This is an optimistic pre-write check, **not cross-process compare-and-swap**. Up to 1024 anchors are accepted, with nonempty IDs, nonnegative integer end lines and optional positive starts no greater than the end; file-level line zero cannot have a range start. Invalid payloads return `400` before writing.
+
+Success returns `{ "ok": true, "hash": "<saved sha256>" }`. File bytes and comment metadata are not one transaction. If the file is saved but the store reports an anchor-update failure, return `500` with `{ "error": "...", "fileSaved": true, "hash": "<saved sha256>" }`; reconcile metadata rather than replay the write.
+
+PR/custom comparisons (revisions, pathspecs or show mode) reject this route and save-file/apply-suggestion with `403`.
+
 #### `POST /api/save-file`
 
-Writes updated code to disk and optionally stages it in git.
+Writes UTF-8 text through the native helper and optionally stages it in Git. `filePath` is a nonempty string of at most 4096 UTF-16 code units without NUL, normalized within the repo. Prefer repo-relative paths.
 
-- **Payload Schema**:
+```json
+{
+  "filePath": "src/lib/git.ts",
+  "content": "Full source file contents...",
+  "gitAdd": true
+}
+```
 
-  ```json
-  {
-    "filePath": "src/lib/git.ts",
-    "content": "Full source file contents...",
-    "gitAdd": true                     // Automatically runs git add on the file
-  }
-  ```
+This route has **no hash precondition**. If optional staging fails after the native write succeeds, the response remains `200` with `{ "ok": true, "gitAddError": "File saved, but staging failed" }`.
 
 #### `GET /api/merge-status`
 
@@ -2247,7 +2286,7 @@ Returns a sorted list of all active files under the repository working tree (tra
 
 #### `GET /api/file-text`
 
-Retrieves a file version as text. Includes a `missing` indicator in the JSON output if the requested revision version is missing (such as deleted files or new files).
+Returns `{ content, missing, hash }`, where the SHA-256 hash covers the exact returned bytes (not necessarily working-tree bytes). Native working-tree not-found returns `{ content: "", missing: true }`; other native errors propagate. A NUL byte within the first 8192 bytes returns `415` (`Binary file`). The local/PR side-selection and legacy Git-error limitations described under file-content also apply here.
 
 - **Query Parameters**:
   - `path` (string, required)

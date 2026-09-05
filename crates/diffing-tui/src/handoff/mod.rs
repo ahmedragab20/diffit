@@ -11,7 +11,7 @@
 pub mod format;
 pub mod review;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
@@ -151,6 +151,7 @@ impl CommentsWatcher {
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::PathBuf;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 

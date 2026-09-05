@@ -487,10 +487,7 @@ export function App() {
 
 	useEffect(() => {
 		try {
-			setUiStateItem(
-				"diffing-comment-panel-height",
-				String(commentPanelHeight),
-			);
+			setUiStateItem("diffing-comment-panel-height", String(commentPanelHeight));
 		} catch {
 			/* ignore persist / parse errors */
 		}
@@ -511,27 +508,32 @@ export function App() {
 	const prevFilesRef = useRef<FileDiffMetadata[]>([]);
 
 	const activePatch = useMemo(() => {
-		if (
-			showMode &&
-			commitWalkIndex != null &&
-			commits[commitWalkIndex]?.patch
-		) {
+		if (showMode && commitWalkIndex != null && commits[commitWalkIndex]?.patch) {
 			return commits[commitWalkIndex].patch;
 		}
 		return patch;
 	}, [showMode, commitWalkIndex, commits, patch]);
 	const aiReviewContext = useMemo(
-		() => ({ ...diffReviewContextForAi(activePatch, {
-			repoName,
-			branch,
-			focusedFilePath: activeFile,
-		}), selections: aiSelections }),
+		() => ({
+			...diffReviewContextForAi(activePatch, {
+				repoName,
+				branch,
+				focusedFilePath: activeFile,
+			}),
+			selections: aiSelections,
+		}),
 		[activePatch, activeFile, aiSelections, branch, repoName],
 	);
 	const addSelectionToAsk = useCallback((selection: AiDiffSelection) => {
 		setAiSelections((current) => {
 			const key = `${selection.filePath}:${selection.side}:${selection.startLine}:${selection.endLine}`;
-			if (current.some((item) => `${item.filePath}:${item.side}:${item.startLine}:${item.endLine}` === key)) return current;
+			if (
+				current.some(
+					(item) =>
+						`${item.filePath}:${item.side}:${item.startLine}:${item.endLine}` === key,
+				)
+			)
+				return current;
 			return [...current, selection].slice(-8);
 		});
 		setAiRailOpen(true);
@@ -579,9 +581,7 @@ export function App() {
 
 			// Optimize rendering by keeping exact object references for unchanged files
 			const cachedFiles = dedupedParsedFiles.map((newFile) => {
-				const prevFile = prevFilesRef.current.find(
-					(f) => f.name === newFile.name,
-				);
+				const prevFile = prevFilesRef.current.find((f) => f.name === newFile.name);
 				if (
 					prevFile &&
 					prevFile.type === newFile.type &&
@@ -620,9 +620,7 @@ export function App() {
 	const filteredFiles = useMemo(() => {
 		let list = files;
 		if (appliedExtensions.length > 0) {
-			list = list.filter((f) =>
-				matchesExtensionFilter(f.name, appliedExtensions),
-			);
+			list = list.filter((f) => matchesExtensionFilter(f.name, appliedExtensions));
 		}
 		if (chipFilter === "unviewed") {
 			list = list.filter((f) => !viewedFiles.has(f.name));
@@ -711,7 +709,10 @@ export function App() {
 		[filteredFiles, diffSearchEntries, customMode, settings.staged],
 	);
 
-	const diffStats = useMemo(() => countDiffChanges(filteredFiles), [filteredFiles]);
+	const diffStats = useMemo(
+		() => countDiffChanges(filteredFiles),
+		[filteredFiles],
+	);
 
 	const binaryFileMap = useMemo(() => {
 		const map = new Map<string, (typeof binaryFiles)[number]>();
@@ -1050,9 +1051,7 @@ export function App() {
 	const navigateCommit = useCallback(
 		(direction: "next" | "prev") => {
 			if (!showMode || commits.length < 2) return;
-			setCommitWalkIndex((cur) =>
-				stepCommitWalk(cur, commits.length, direction),
-			);
+			setCommitWalkIndex((cur) => stepCommitWalk(cur, commits.length, direction));
 		},
 		[showMode, commits.length],
 	);
@@ -1121,9 +1120,7 @@ export function App() {
 			onCycleLineDiffType: cycleLineDiffType,
 			onOpenPalette: openPalette,
 			onTogglePalette: togglePalette,
-			onOpenFileSearch: activeFile
-				? () => openFileSearch(activeFile)
-				: undefined,
+			onOpenFileSearch: activeFile ? () => openFileSearch(activeFile) : undefined,
 			// Escape while a find-in-file bar is open closes ONLY the search —
 			// even when the bar's input is not focused — never also exits zen.
 			onCloseFileSearch:
@@ -1144,7 +1141,7 @@ export function App() {
 			// ⌘Enter opens the Send-review surface: the toolbar popover outside
 			// zen, the centered dialog in zen. Suppressed while an overlay is
 			// open so its own ⌘Enter handling (e.g. palette peek) keeps working.
-			onOpenSendReview: !overlayOpen ? () => setSendOpen(true) : undefined,
+			onOpenSendReview: overlayOpen ? undefined : () => setSendOpen(true),
 		}),
 		[
 			navigateFile,
@@ -1220,12 +1217,9 @@ export function App() {
 		poolManager
 			.setRenderOptions({
 				theme: {
-					dark:
-						shikiConfig.type === "dark" ? shikiConfig.themeName : "rose-pine",
+					dark: shikiConfig.type === "dark" ? shikiConfig.themeName : "rose-pine",
 					light:
-						shikiConfig.type === "light"
-							? shikiConfig.themeName
-							: "github-light",
+						shikiConfig.type === "light" ? shikiConfig.themeName : "github-light",
 				},
 			})
 			.catch((err) => {
@@ -1306,10 +1300,7 @@ export function App() {
 						</aside>
 					)}
 					{!zenMode && !sidebarCollapsed && (
-						<div
-							className="sidebar-resize-handle"
-							style={{ cursor: "default" }}
-						/>
+						<div className="sidebar-resize-handle" style={{ cursor: "default" }} />
 					)}
 					<main className="main skeleton-main">
 						<div className="diff-viewer">
@@ -1481,9 +1472,7 @@ export function App() {
 							onShowStatusBarChange={handleShowStatusBarChange}
 							onIgnoreSpaceChange={handleIgnoreSpaceChange}
 							onIgnoreAllSpaceChange={handleIgnoreAllSpaceChange}
-							onEditDiagnosticsChange={(v) =>
-								updateSettings({ editDiagnostics: v })
-							}
+							onEditDiagnosticsChange={(v) => updateSettings({ editDiagnostics: v })}
 							onResolveAllOpen={handleResolveAllOpen}
 							onOpenUiFontModal={() => setUiFontModalOpen(true)}
 							onOpenMonoFontModal={() => setMonoFontModalOpen(true)}
@@ -1572,12 +1561,7 @@ export function App() {
 								tabIndex={0}
 							/>
 						)}
-						<main
-							className="main"
-							ref={diffViewerRef}
-							id="diff-main"
-							tabIndex={-1}
-						>
+						<main className="main" ref={diffViewerRef} id="diff-main" tabIndex={-1}>
 							{overview && (
 								<DiffOverviewBanner
 									overview={overview}
@@ -1596,9 +1580,8 @@ export function App() {
 									<strong>Merge in progress</strong>
 									<span>
 										{mergeStatus.conflicts.length} unresolved file
-										{mergeStatus.conflicts.length === 1 ? "" : "s"} below. Use
-										the inline buttons to accept current/incoming/both, then
-										"Save &amp; stage".
+										{mergeStatus.conflicts.length === 1 ? "" : "s"} below. Use the inline
+										buttons to accept current/incoming/both, then "Save &amp; stage".
 									</span>
 								</div>
 							)}
@@ -1661,7 +1644,11 @@ export function App() {
 						surface="diff"
 						title="Ask about this diff"
 						context={aiReviewContext}
-						onRemoveSelection={(index) => setAiSelections((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+						onRemoveSelection={(index) =>
+							setAiSelections((current) =>
+								current.filter((_, itemIndex) => itemIndex !== index),
+							)
+						}
 					/>
 					<SearchPalette
 						isOpen={palette.open}
@@ -1752,9 +1739,7 @@ export function App() {
 					<ConfirmDialog
 						open={editConfirm !== null}
 						title={
-							editConfirm?.kind === "exit"
-								? "Exit edit mode?"
-								: "Discard edits?"
+							editConfirm?.kind === "exit" ? "Exit edit mode?" : "Discard edits?"
 						}
 						description={
 							editConfirm?.kind === "exit"

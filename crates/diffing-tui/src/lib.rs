@@ -8,6 +8,7 @@ pub mod app;
 pub mod diff;
 pub mod diff_context;
 pub mod editorconfig;
+pub mod fs_rpc;
 pub mod handoff;
 pub mod inspect_scope;
 pub mod keys;

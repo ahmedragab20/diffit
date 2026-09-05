@@ -210,8 +210,12 @@ fn xml_characters(value: &str) -> String {
     value
         .chars()
         .map(|c| match c {
-            '\u{9}' | '\u{a}' | '\u{d}' | '\u{20}'..='\u{d7ff}'
-            | '\u{e000}'..='\u{fffd}' | '\u{10000}'..='\u{10ffff}' => c,
+            '\u{9}'
+            | '\u{a}'
+            | '\u{d}'
+            | '\u{20}'..='\u{d7ff}'
+            | '\u{e000}'..='\u{fffd}'
+            | '\u{10000}'..='\u{10ffff}' => c,
             _ => '\u{fffd}',
         })
         .collect()

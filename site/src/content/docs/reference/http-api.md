@@ -16,10 +16,32 @@ Loopback browsers can still bootstrap from the review page. When authentication 
 
 `--insecure-no-auth` explicitly disables authentication, including on loopback. The CLI requires it for wildcard binds (`0.0.0.0`/`::`). It does not disable Host/Origin checks. Prefer loopback; there is no automatic authenticated LAN login flow.
 
+## Native file access
+
+Selected local working-tree previews, saves, edits, suggestions and uploaded-image operations use a pinned native directory capability. Descendant symlinks and `.git` path components are denied; already-decoded API paths are not decoded again. The helper is discovered only in verified installation/source locations, never on PATH. Missing/incompatible helpers fail closed with `503`; there is no Node fallback for these operations. Source contributors build it with `pnpm build:tui:debug`.
+
+This is not project-wide containment: untracked/EditorConfig reads and trusted external Git/editor/LSP/search tools remain outside this guarantee. The continuation checklist is `docs/hardening-status.md` in the source checkout.
+
+| Method | Path | Behavior |
+| ------ | ---- | -------- |
+| `GET` | `/api/file-content?path&version` | Raw bytes; required `version=old\|new`; sandbox CSP prevents active preview content acting as the review app |
+| `GET` | `/api/file-text?path&version` | `{content, missing, hash}`; hash covers returned bytes; NUL in the first 8192 bytes returns `415` |
+| `POST` | `/api/save-file` | `{filePath, content, gitAdd?}`; native replacement, optional Git stage; no hash precondition |
+| `POST` | `/api/edit-save` | `{filePath, content, baseHash?, anchorUpdates?}`; optional optimistic pre-write hash check |
+| `POST` | `/api/comments/:id/apply-suggestion` | Reads current bytes, applies the suggestion and writes with the just-read hash |
+
+Limits: native files **50 MiB**, save/edit JSON requests **70 MiB**, uploaded images **10 MiB**, multipart requests **11 MiB**. Save paths are strings of at most 4096 UTF-16 code units without NUL. `baseHash`, when supplied, is 64 lowercase hex characters. At most 1024 anchor updates are accepted; IDs are nonempty, lines are nonnegative integers and optional positive range starts cannot exceed the end or accompany file-level line zero. Invalid payloads return `400` before writing.
+
+PR/custom comparisons (revisions, pathspecs or show mode) reject these writes with `403`. Hash mismatch returns `409` with `conflict: true`. Hash checks are **not cross-process compare-and-swap**. A reported metadata failure after a successful write returns `500` with `fileSaved: true` (edit-save also returns `hash`); reconcile metadata rather than reapply the file change. Failed optional staging returns `200`, `ok: true`, and `gitAddError` because the file was saved.
+
+Native failures return `{error, code, outcomeUnknown}`: invalid-path/invalid-request/not-file `400`, denied `403`, not-found `404`, conflict `409`, too-large `413`, protocol `502`, unavailable/busy `503`, timeout `504`, io `500`. Validation and other endpoints can use simpler error bodies. If `outcomeUnknown` is true, inspect current file state before retrying; never blindly replay a write. Transport failure stays failed until explicit reset/restart.
+
+**Preview limitation:** local `new` reads the current working tree and `old` reads `HEAD`; exact staged/revision/commit-series sides are deferred. PR previews use the session base/head SHAs. Working-tree missing results only come from native not-found, but some legacy Git failures still appear as missing. Source completeness is not yet guaranteed by bounded-inspect metadata.
+
 ## Handoff
 
 | Method | Path | Role |
-|--------|------|------|
+| -------- | ------ | ------ |
 | `POST` | `/api/review/send` | Human releases waiters; increments round |
 | `GET` | `/api/review/await` | Long-poll (`sinceRound`, `timeoutMs` ≤ 50000) |
 | `GET` | `/api/review/status` | Round / waiters snapshot |
@@ -50,7 +72,7 @@ Loopback browsers can still bootstrap from the review page. When authentication 
 ## Bounded diff inspect
 
 | Method | Path | Role |
-|--------|------|------|
+| -------- | ------ | ------ |
 | `GET` | `/api/diff/summary?exclude` | Totals, kind counts, top-level directories. `exclude=lockfiles` drops lock/generated basenames from counts only |
 | `GET` | `/api/diff/files?path&cursor&limit` | Paged file metadata. `path` is a git pathspec-ish glob; `nextCursor` indexes the filtered list |
 | `GET` | `/api/diff/hunks?file\|path&cursor&limit&generation` | Hunk metadata. `path` XOR `file`; 0 matches → 404, many → 409 |
@@ -60,7 +82,7 @@ Loopback browsers can still bootstrap from the review page. When authentication 
 ## Comments
 
 | Method | Path | Role |
-|--------|------|------|
+| -------- | ------ | ------ |
 | `GET` | `/api/comments` | List threads |
 | `POST` | `/api/comments` | Create (filePath, side, lineNumber, body, optional startLineNumber, severity) |
 | `PUT` | `/api/comments/:id` | Edit body or `{ status }` |
@@ -102,14 +124,14 @@ Comment updates require a valid `body` or `status: "open" | "resolved"`. Reply c
 ## Attachments
 
 `POST /api/attachments` (multipart) · `GET /api/attachments/:filename`  
-Stored under per-repo `attachments/`. Image-only for AI/composer use (PNG, JPEG, WebP, GIF; ≤ 10 MB).
+Stored under per-repo `attachments/` through the native storage-root capability. PNG, JPEG, WebP and GIF only; images are limited to 10 MiB and multipart requests to 11 MiB. Magic-byte/type mismatch on upload returns `415`. GET only serves regular files with an allowed image signature; missing/invalid images return `404`, traversal returns `403`, and native denial/unavailability remains `403`/`503`. Codex receives captured image bytes as a data URL rather than a local-image path to reopen.
 
 ## AI assistance
 
 Loopback-only review assistant used by the web UI. Inference requires `trigger: "user"` — clients must not call `/api/ai/run` from lifecycle, hover, selection, refresh, or navigation events.
 
 | Method | Path | Role |
-|--------|------|------|
+| -------- | ------ | ------ |
 | `GET` | `/api/ai/connections` | Connection status for Codex, Claude, OpenCode, Cursor, Grok |
 | `GET` | `/api/ai/models` | Models from connected sources |
 | `POST` | `/api/ai/connections/:source/key` | Store direct API key (`apiKey`, optional `remember`) |
@@ -147,7 +169,7 @@ Plan CRUD and comments live under `/api/plans…` (list, get, versions, submit, 
 Comment scope = **version + screen + viewport** (`desktop|tablet|mobile`); `viewport` is part of every posted comment and every inspect filter. Prefer CLI/MCP for agents; use HTTP when embedding or debugging.
 
 | Method | Path | Role |
-|--------|------|------|
+| -------- | ------ | ------ |
 | `GET` | `/api/mockups[?include=comments\|full]` | Compact summaries by default; `include=comments` adds threads (single-op lookup helpers); `include=full` returns raw records (compatibility) |
 | `POST` | `/api/mockups` | Submit (`html` or `screens[]`; `id` resubmits → version++) |
 | `GET` | `/api/mockups/:id` | One mockup (screens + comments) |

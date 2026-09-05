@@ -495,22 +495,21 @@ pub fn load_local_preview(repo_root: &Path, path: &str) -> Result<SearchPreview>
         bail!("preview path must stay inside the repository");
     }
 
-    let repo_root = repo_root
-        .canonicalize()
-        .context("resolving preview repository")?;
-    let candidate = repo_root.join(relative);
-    if !candidate.exists() {
-        return Ok(SearchPreview {
-            path: path.to_string(),
-            content: String::new(),
-            missing: true,
-            binary: false,
-            truncated: false,
-        });
-    }
-
-    let mut file = crate::path_safety::open_file_within_repo(repo_root.as_path(), relative)
-        .context("opening search preview")?;
+    let filesystem =
+        diffing_core::repo_fs::RepoFs::open(repo_root).context("opening preview repository")?;
+    let mut file = match filesystem.open_read_file(relative) {
+        Ok(file) => file,
+        Err(diffing_core::repo_fs::RepoFsError::NotFound) => {
+            return Ok(SearchPreview {
+                path: path.to_string(),
+                content: String::new(),
+                missing: true,
+                binary: false,
+                truncated: false,
+            });
+        }
+        Err(error) => return Err(error).context("opening search preview"),
+    };
     let mut bytes = Vec::new();
     Read::by_ref(&mut file)
         .take((MAX_PREVIEW_BYTES + 1) as u64)

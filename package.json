@@ -26,6 +26,17 @@
   "bin": {
     "diffing": "./dist/cli.mjs"
   },
+  "publishConfig": {
+    "executableFiles": [
+      "dist/native/tui-darwin-arm64/diffing-tui",
+      "dist/native/tui-darwin-x64/diffing-tui",
+      "dist/native/tui-linux-arm64-gnu/diffing-tui",
+      "dist/native/tui-linux-arm64-musl/diffing-tui",
+      "dist/native/tui-linux-x64-gnu/diffing-tui",
+      "dist/native/tui-linux-x64-musl/diffing-tui",
+      "dist/native/tui-win32-x64-msvc/diffing-tui.exe"
+    ]
+  },
   "files": [
     "dist",
     "scripts/postinstall.mjs",

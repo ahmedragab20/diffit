@@ -1570,11 +1570,7 @@ mod tests {
         std::fs::write(repo.path().join("secret.txt"), "PLAIN\nCHANGED\n").unwrap();
         // A textconv filter would replace every character with X when enabled.
         Command::new("git")
-            .args([
-                "config",
-                "diff.mock.textconv",
-                "sed 's/./X/g'",
-            ])
+            .args(["config", "diff.mock.textconv", "sed 's/./X/g'"])
             .current_dir(repo.path())
             .status()
             .unwrap();

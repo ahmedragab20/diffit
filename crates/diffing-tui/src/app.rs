@@ -37,9 +37,8 @@ use crate::lsp::{
 use crate::path_safety;
 use crate::persistence::FileDisplay;
 use crate::search::{
-    diff_first_search_hits, execute_search_request, interleave_search_hits, load_local_preview,
-    SearchClient, SearchHit, SearchHitKind, SearchPreview, SearchRequest, SearchResponse,
-    SearchScope, SearchWorkerContext,
+    diff_first_search_hits, execute_search_request, load_local_preview, SearchClient, SearchHit,
+    SearchHitKind, SearchPreview, SearchRequest, SearchResponse, SearchScope, SearchWorkerContext,
 };
 use crate::themes::{Palette, ThemeName};
 use crate::ui::agent_activity_toast::{render_toast, Toast};
@@ -1605,12 +1604,11 @@ impl App {
                     self.dispatch_command(command);
                     return;
                 }
-                if self.keymap.pending_display().is_empty() {
-                    if key.code == crossterm::event::KeyCode::Esc
-                        && self.visual_anchor.take().is_some()
-                    {
-                        self.status_message = Some("line selection cancelled".to_string());
-                    }
+                if self.keymap.pending_display().is_empty()
+                    && key.code == crossterm::event::KeyCode::Esc
+                    && self.visual_anchor.take().is_some()
+                {
+                    self.status_message = Some("line selection cancelled".to_string());
                 }
             }
         }
@@ -3570,7 +3568,7 @@ impl App {
             crate::ui::comment_form::FormKind::Edit => match selected_comment_id.as_deref() {
                 Some(id) => self
                     .comment_store
-                    .update(&id, Some(&body), None)
+                    .update(id, Some(&body), None)
                     .and_then(|updated| {
                         updated
                             .map(|_| ())
@@ -3581,7 +3579,7 @@ impl App {
             crate::ui::comment_form::FormKind::Reply => match selected_comment_id.as_deref() {
                 Some(id) => self
                     .comment_store
-                    .add_reply(&id, &body, Some("user"), None, now)
+                    .add_reply(id, &body, Some("user"), None, now)
                     .and_then(|updated| {
                         updated
                             .map(|_| ())
@@ -7335,10 +7333,7 @@ fn compact_path(value: &str, max_width: usize) -> (String, String) {
     if max_width == 0 {
         return (String::new(), String::new());
     }
-    let split = value
-        .rfind(|character| character == '/' || character == '\\')
-        .map(|index| index + 1)
-        .unwrap_or(0);
+    let split = value.rfind(['/', '\\']).map(|index| index + 1).unwrap_or(0);
     let (directory, basename) = value.split_at(split);
     if UnicodeWidthStr::width(basename) >= max_width {
         return (String::new(), ellipsize(basename, max_width));
@@ -7701,6 +7696,7 @@ fn with_context_lines(args: &[String], context: u32) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::interleave_search_hits;
 
     #[test]
     fn context_arguments_are_replaced_without_moving_pathspecs() {

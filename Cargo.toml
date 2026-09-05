@@ -28,6 +28,9 @@ notify = "6"
 notify-debouncer-full = "0.3"
 once_cell = "1"
 getrandom = "0.2"
+cap-std = "4.0.3"
+cap-fs-ext = "4.0.3"
+base64 = "0.22.1"
 
 [profile.release]
 opt-level = 3

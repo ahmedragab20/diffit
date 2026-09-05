@@ -38,7 +38,9 @@ function fakeSecrets(): SecretStore {
 }
 
 function codexAdapter() {
-	return createDefaultAdapters(fakeSecrets()).find((adapter) => adapter.id === "codex");
+	const adapter = createDefaultAdapters(fakeSecrets()).find((item) => item.id === "codex");
+	if (!adapter) throw new Error("Codex adapter is missing");
+	return adapter;
 }
 
 function request(images?: AiRunRequest["resolvedImages"]): AiRunRequest {
@@ -90,7 +92,7 @@ function createFakeChild(onTurnStart: (input: unknown) => void): FakeChild {
 			}
 		}
 	});
-	harness.spawnImpl = () => child as unknown as NodeJS.Process;
+	harness.spawnImpl = () => child;
 	return child;
 }
 
@@ -101,7 +103,7 @@ describe("Codex app-server image handling", () => {
 		const adapter = codexAdapter();
 		const controller = new AbortController();
 		try {
-			await expect(adapter?.run(request([{
+			await expect(adapter.run(request([{
 				url: "/api/attachments/pasted_image_a.png",
 				name: "a.png",
 				mimeType: "image/png",
@@ -132,7 +134,7 @@ describe("Codex app-server image handling", () => {
 		const adapter = codexAdapter();
 		const controller = new AbortController();
 		try {
-			await expect(adapter?.run(request(), controller.signal, async () => {})).resolves.toBe("checked");
+			await expect(adapter.run(request(), controller.signal, async () => {})).resolves.toBe("checked");
 		} finally {
 			controller.abort();
 			child.stdin.destroy();

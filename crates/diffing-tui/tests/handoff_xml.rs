@@ -91,9 +91,7 @@ fn file_path_attribute_escapes_quotes_ampersand_angle_brackets_and_whitespace() 
     c.file_path = "we'\"rd<&>p\ta\th\r\nb.rs".to_string();
     let out = format_comments(&[c], None, None);
     assert!(
-        out.contains(
-            "  <file path=\"we&apos;&quot;rd&lt;&amp;&gt;p&#9;a&#9;h&#13;&#10;b.rs\">"
-        ),
+        out.contains("  <file path=\"we&apos;&quot;rd&lt;&amp;&gt;p&#9;a&#9;h&#13;&#10;b.rs\">"),
         "filePath must attribute-escape quote/&/</> and tab/LF/CR; got:\n{out}"
     );
 }
@@ -101,11 +99,7 @@ fn file_path_attribute_escapes_quotes_ampersand_angle_brackets_and_whitespace() 
 #[test]
 fn reply_model_attribute_escapes_the_same_character_set() {
     let mut c = comment("c1", "src/a.rs", "body");
-    c.replies.push(reply(
-        "r1",
-        "ok",
-        "mo\"del<&>\ttab\t\r\nlf",
-    ));
+    c.replies.push(reply("r1", "ok", "mo\"del<&>\ttab\t\r\nlf"));
     let out = format_comments(&[c], None, None);
     assert!(
         out.contains(" model=\"mo&quot;del&lt;&amp;&gt;&#9;tab&#9;&#13;&#10;lf\""),
@@ -132,7 +126,9 @@ fn code_content_with_repeated_terminators_and_crlf_is_split_safely() {
     c.line_content = "x\r\ny]]>z".to_string();
     let out = format_comments(&[c], None, None);
     assert!(
-        out.contains("      <code><![CDATA[\n+ x]]>\x26#13;<![CDATA[\n+ y]]]]><![CDATA[>z\n]]></code>"),
+        out.contains(
+            "      <code><![CDATA[\n+ x]]>\x26#13;<![CDATA[\n+ y]]]]><![CDATA[>z\n]]></code>"
+        ),
         "code content must split `]]>` and emit CR as `&#13;`; got:\n{out}"
     );
 }
@@ -143,7 +139,9 @@ fn reply_body_with_repeated_terminators_and_crlf_is_split_safely() {
     c.replies.push(reply("r1", "p\r\nq]]>r]]>s", "m1"));
     let out = format_comments(&[c], None, None);
     assert!(
-        out.contains("          <![CDATA[p]]>\x26#13;<![CDATA[\nq]]]]><![CDATA[>r]]]]><![CDATA[>s]]>"),
+        out.contains(
+            "          <![CDATA[p]]>\x26#13;<![CDATA[\nq]]]]><![CDATA[>r]]]]><![CDATA[>s]]>"
+        ),
         "reply body must split `]]>` and emit CR as `&#13;`; got:\n{out}"
     );
 }

@@ -7,7 +7,7 @@
 //! `Vec<u8>` (output) so nothing escapes the process except the CLI smoke
 //! test, which pipes a child `diffing-tui --fs-rpc`.
 
-use std::io::{BufRead, Cursor, Write};
+use std::io::{Cursor, Write};
 use std::process::{Command, Stdio};
 
 use diffing_core::repo_fs::RepoFs;
@@ -44,10 +44,19 @@ fn run(fs: &RepoFs, requests: &str) -> Vec<serde_json::Value> {
 
 fn ready(replies: &[serde_json::Value]) -> serde_json::Value {
     let ready = &replies[0];
-    assert_eq!(ready["type"], "ready", "first line must be the ready banner");
+    assert_eq!(
+        ready["type"], "ready",
+        "first line must be the ready banner"
+    );
     assert_eq!(ready["protocol"], PROTOCOL_VERSION);
-    assert!(ready["maxFileBytes"].is_u64(), "ready must carry maxFileBytes");
-    assert!(ready["maxFrameBytes"].is_u64(), "ready must carry maxFrameBytes");
+    assert!(
+        ready["maxFileBytes"].is_u64(),
+        "ready must carry maxFileBytes"
+    );
+    assert!(
+        ready["maxFrameBytes"].is_u64(),
+        "ready must carry maxFrameBytes"
+    );
     ready.clone()
 }
 
@@ -69,7 +78,7 @@ fn expect_err(replies: &[serde_json::Value], idx: usize) -> serde_json::Value {
 #[test]
 fn ready_read_write_binary_round_trip() {
     let tmp = TempDir::new().expect("tempdir");
-    let fs = RepoFs::new(tmp.path());
+    let fs = RepoFs::open(tmp.path()).expect("open root");
 
     let read_req = serde_json::json!({"id": 1, "op": {"kind": "read", "path": "blob.bin"}});
     let write_req = serde_json::json!({
@@ -88,7 +97,7 @@ fn ready_read_write_binary_round_trip() {
 
     // The read of the not-yet-existing file fails cleanly.
     let err = expect_err(&replies, 1);
-    assert_ne!(err["code"], "", "missing-file read must carry an error code");
+    assert_eq!(err["code"], "not-found");
 
     // The write succeeds and reports the exact digest and size of the bytes.
     let result = expect_ok(&replies, 2, 2);
@@ -115,30 +124,41 @@ fn traversal_denial_never_touches_outside_sentinel() {
     let sentinel = outside.path().join("sentinel-9f3a.txt");
     std::fs::write(&sentinel, b"OUTSIDE-SENTINEL").expect("sentinel");
 
-    let fs = RepoFs::new(tmp.path());
+    let fs = RepoFs::open(tmp.path()).expect("open root");
     let req = serde_json::json!({"id": 7, "op": {"kind": "read", "path": "../sentinel-9f3a.txt"}});
     let mut out: Vec<u8> = Vec::new();
-    serve(&fs, Cursor::new(serde_json::to_string(&req).unwrap().into_bytes()), &mut out)
-        .expect("serve should report the denial, not fail");
+    serve(
+        &fs,
+        Cursor::new(serde_json::to_string(&req).unwrap().into_bytes()),
+        &mut out,
+    )
+    .expect("serve should report the denial, not fail");
 
     let replies = parse_lines(&out);
     assert_eq!(replies.len(), 2, "ready + one denial reply");
     ready(&replies);
     let err = expect_err(&replies, 1);
-    assert_ne!(err["code"], "", "denial must carry an error code");
+    assert_eq!(err["code"], "invalid-path");
 
     // No sentinel path or content may appear anywhere in the server output.
-    assert!(!out.windows(b"sentinel-9f3a".len()).any(|w| w == b"sentinel-9f3a"));
-    assert!(!out.windows(b"OUTSIDE-SENTINEL".len()).any(|w| w == b"OUTSIDE-SENTINEL"));
+    assert!(!out
+        .windows(b"sentinel-9f3a".len())
+        .any(|w| w == b"sentinel-9f3a"));
+    assert!(!out
+        .windows(b"OUTSIDE-SENTINEL".len())
+        .any(|w| w == b"OUTSIDE-SENTINEL"));
     // The sentinel itself is untouched.
-    assert_eq!(std::fs::read(&sentinel).expect("sentinel still readable"), b"OUTSIDE-SENTINEL");
+    assert_eq!(
+        std::fs::read(&sentinel).expect("sentinel still readable"),
+        b"OUTSIDE-SENTINEL"
+    );
 }
 
 #[test]
 fn malformed_requests_recover_and_valid_request_still_succeeds() {
     let tmp = TempDir::new().expect("tempdir");
     std::fs::write(tmp.path().join("hello.txt"), b"hello").expect("fixture");
-    let fs = RepoFs::new(tmp.path());
+    let fs = RepoFs::open(tmp.path()).expect("open root");
 
     let unknown_op = serde_json::json!({"id": 3, "op": {"kind": "chmod", "path": "hello.txt"}});
     let unknown_field = serde_json::json!({
@@ -178,8 +198,12 @@ fn malformed_requests_recover_and_valid_request_still_succeeds() {
 
     // Invalid base64 payload: rejected, and the target file is untouched.
     let err = expect_err(&replies, 4);
-    assert_ne!(err["code"], "", "invalid base64 must carry an error code");
-    assert_eq!(std::fs::read(tmp.path().join("hello.txt")).expect("fixture"), b"hello");
+    assert_eq!(err["code"], "invalid-request");
+    assert_eq!(replies[4]["id"], 5);
+    assert_eq!(
+        std::fs::read(tmp.path().join("hello.txt")).expect("fixture"),
+        b"hello"
+    );
 
     // The valid request after the error storm succeeds with its own id.
     let result = expect_ok(&replies, 5, 6);
@@ -191,7 +215,7 @@ fn malformed_requests_recover_and_valid_request_still_succeeds() {
 #[test]
 fn stale_expected_sha256_rejects_write_and_preserves_bytes() {
     let tmp = TempDir::new().expect("tempdir");
-    let fs = RepoFs::new(tmp.path());
+    let fs = RepoFs::open(tmp.path()).expect("open root");
 
     // Seed the file via a correct write.
     let seed = serde_json::json!({
@@ -222,18 +246,21 @@ fn stale_expected_sha256_rejects_write_and_preserves_bytes() {
     let replies = run(&fs, &format!("{stale}\n"));
     assert_eq!(replies.len(), 2);
     let err = expect_err(&replies, 1);
-    assert_ne!(err["code"], "", "stale hash must carry an error code");
-    assert_eq!(std::fs::read(tmp.path().join("doc.txt")).expect("seeded file"), b"hello");
+    assert_eq!(err["code"], "conflict");
+    assert_eq!(
+        std::fs::read(tmp.path().join("doc.txt")).expect("seeded file"),
+        b"hello"
+    );
 }
 
 #[test]
 fn overlong_frame_gets_single_too_large_reply_and_ends_processing() {
     let tmp = TempDir::new().expect("tempdir");
-    let fs = RepoFs::new(tmp.path());
+    let fs = RepoFs::open(tmp.path()).expect("open root");
 
     // One line exactly one byte past the ceiling, no trailing newline, and
     // nothing else — the input never exceeds bound + 1.
-    let frame = "a".repeat(MAX_RPC_FRAME_BYTES + 1);
+    let frame = "a".repeat((MAX_RPC_FRAME_BYTES + 1) as usize);
     let replies = run(&fs, &frame);
 
     assert_eq!(replies.len(), 2, "ready + exactly one too-large reply");
@@ -254,6 +281,12 @@ fn cli_fs_rpc_smoke_ready_plus_single_reply() {
     std::fs::write(tmp.path().join("hello.txt"), b"hello").expect("fixture");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_diffing-tui"))
+        .current_dir(tmp.path())
+        .env("HOME", tmp.path())
+        .env("XDG_CONFIG_HOME", tmp.path().join("config"))
+        .env("APPDATA", tmp.path().join("config"))
+        .env("LOCALAPPDATA", tmp.path().join("local"))
+        .env("DIFFING_STORAGE_ROOT", tmp.path().join("state"))
         .arg("--repo")
         .arg(tmp.path())
         .arg("--fs-rpc")
@@ -275,7 +308,12 @@ fn cli_fs_rpc_smoke_ready_plus_single_reply() {
     drop(child.stdin.take());
     let out = child.wait_with_output().expect("wait for child");
 
-    assert!(out.status.success(), "exit {:?}, stderr: {}", out.status.code(), String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "exit {:?}, stderr: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
 
     let replies = parse_lines(&out.stdout);
     assert_eq!(replies.len(), 2, "exactly ready + reply, no TUI noise");
