@@ -1,4 +1,5 @@
 import type { Plan, PlanComment, PlanDecision, PlanMode } from './plan-types.js'
+import { escapeXmlAttribute as escapeAttr, escapeCdataText, joinReviewXml } from './xml.js'
 
 /**
  * Serialize a reviewed plan into the `<plan-review>` XML envelope handed back to
@@ -8,14 +9,6 @@ import type { Plan, PlanComment, PlanDecision, PlanMode } from './plan-types.js'
  * Shared by the server's `/api/plan-review/await` handoff, the `diffing plan`
  * CLI, and the MCP server so every channel emits byte-identical output.
  */
-
-function escapeAttr(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
 
 /** Human-readable guidance the agent should act on, derived from the verdict. */
 export function decisionSummary(decision: PlanDecision): string {
@@ -109,11 +102,11 @@ export function formatPlanReview(plan: Plan, options: FormatPlanReviewOptions = 
   lines.push(
     `  <plan id="${escapeAttr(plan.id)}" title="${escapeAttr(titleToRender)}" version="${plan.version}" decision="${plan.decision}"${decidedAttr}${viewingAttr}${modeAttr}>`,
   )
-  lines.push(`    <decision-summary><![CDATA[${decisionSummary(plan.decision)}]]></decision-summary>`)
+  lines.push(`    <decision-summary><![CDATA[${escapeCdataText(decisionSummary(plan.decision))}]]></decision-summary>`)
 
   const trimmedDecisionComment = plan.decisionComment?.trim()
   if (trimmedDecisionComment) {
-    lines.push(`    <decision-comment><![CDATA[${trimmedDecisionComment}]]></decision-comment>`)
+    lines.push(`    <decision-comment><![CDATA[${escapeCdataText(trimmedDecisionComment)}]]></decision-comment>`)
   }
 
   if (isHistorical) {
@@ -122,7 +115,7 @@ export function formatPlanReview(plan: Plan, options: FormatPlanReviewOptions = 
     )
   }
 
-  lines.push(`    <plan-body><![CDATA[${bodyToRender}]]></plan-body>`)
+  lines.push(`    <plan-body><![CDATA[${escapeCdataText(bodyToRender)}]]></plan-body>`)
 
   if (visibleComments.length > 0) {
     lines.push('    <comments>')
@@ -135,7 +128,7 @@ export function formatPlanReview(plan: Plan, options: FormatPlanReviewOptions = 
           ? ` severity="${comment.severity}"`
           : ''
       lines.push(
-        `      <comment id="${escapeAttr(comment.id)}" line="${lineLabel(comment)}"${sectionAttr} status="${comment.status}"${severityAttr} created-at="${isoDate}"${versionAttr}>`,
+        `      <comment id="${escapeAttr(comment.id)}" line="${escapeAttr(lineLabel(comment))}"${sectionAttr} status="${comment.status}"${severityAttr} created-at="${isoDate}"${versionAttr}>`,
       )
       if (comment.lineNumber !== 0 && (comment.lineContent || comment.selectedQuote)) {
         const start = comment.startLineNumber && comment.startLineNumber !== comment.lineNumber
@@ -145,25 +138,25 @@ export function formatPlanReview(plan: Plan, options: FormatPlanReviewOptions = 
         const endAttr = end !== start ? ` end-line="${end}"` : ''
         lines.push(`        <context line="${start}"${endAttr}>`)
         if (comment.selectedQuote?.trim()) {
-          lines.push(`          <quote><![CDATA[${comment.selectedQuote.trim()}]]></quote>`)
+          lines.push(`          <quote><![CDATA[${escapeCdataText(comment.selectedQuote.trim())}]]></quote>`)
         }
         if (comment.lineContent) {
           lines.push(
-            `          <source line="${start}"${endAttr}><![CDATA[${comment.lineContent}]]></source>`,
+            `          <source line="${start}"${endAttr}><![CDATA[${escapeCdataText(comment.lineContent)}]]></source>`,
           )
         }
         lines.push('        </context>')
       }
-      lines.push(`        <body><![CDATA[${comment.body}]]></body>`)
+      lines.push(`        <body><![CDATA[${escapeCdataText(comment.body)}]]></body>`)
 
       if (comment.replies && comment.replies.length > 0) {
         lines.push('        <replies>')
         for (const reply of comment.replies) {
           const replyIsoDate = new Date(reply.createdAt).toISOString()
-          const roleAttr = reply.role ? ` role="${reply.role}"` : ' role="agent"'
+          const roleAttr = reply.role ? ` role="${escapeAttr(reply.role)}"` : ' role="agent"'
           const modelAttr = reply.model ? ` model="${escapeAttr(reply.model)}"` : ''
           lines.push(`          <reply id="${escapeAttr(reply.id)}" created-at="${replyIsoDate}"${roleAttr}${modelAttr}>`)
-          lines.push(`            <![CDATA[${reply.body}]]>`)
+          lines.push(`            <![CDATA[${escapeCdataText(reply.body)}]]>`)
           lines.push('          </reply>')
         }
         lines.push('        </replies>')
@@ -175,7 +168,7 @@ export function formatPlanReview(plan: Plan, options: FormatPlanReviewOptions = 
 
   lines.push('  </plan>')
   lines.push('</plan-review>')
-  return lines.join('\n')
+  return joinReviewXml(lines)
 }
 
 /**
