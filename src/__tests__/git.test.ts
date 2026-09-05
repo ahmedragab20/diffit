@@ -8,6 +8,9 @@ const mockIsSafePath = vi.fn()
 const mockParseEditorConfig = vi.fn()
 const mockToSafeRelativePath = vi.fn((filePath) => mockIsSafePath(filePath) ? filePath : null)
 
+const mockNativeRead = vi.hoisted(() => vi.fn())
+const mockNativeClose = vi.hoisted(() => vi.fn())
+
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   return { ...actual, execFileSync: mockExecFileSync, execFile: mockExecFile }
@@ -21,12 +24,25 @@ vi.mock('node:fs', async (importOriginal) => {
 vi.mock('../lib/path.js', () => ({
   isSafePath: mockIsSafePath,
   toSafeRelativePath: mockToSafeRelativePath,
+  toSafeLiteralRelativePath: mockToSafeRelativePath,
 }))
+// Partial mock: keep the real NativeFsError so error-code semantics are
+// exercised against the genuine class, but swap the repository-fs factory
+// so file reads resolve through our controllable mock.
+vi.mock('../lib/native-fs.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../lib/native-fs.js')>()
+  return {
+    ...actual,
+    getNativeRepositoryFs: () => ({ read: mockNativeRead }),
+    closeNativeRepositoryFs: mockNativeClose,
+  }
+})
 vi.mock('editorconfig', () => ({ parseSync: mockParseEditorConfig }))
 
 describe('git', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
+    mockNativeRead.mockReset()
     try {
       const { _resetRepoRootCache } = await import('../lib/git.js')
       _resetRepoRootCache()
@@ -185,45 +201,82 @@ describe('git', () => {
   })
 
   describe('getFileContent', () => {
-    it('returns null for unsafe path', async () => {
+    it('rejects with invalid-path code for unsafe path', async () => {
       mockIsSafePath.mockReturnValue(false)
       mockExecFileSync.mockReturnValue('/repo\n')
       const { getFileContent } = await import('../lib/git.js')
-      expect(getFileContent('../etc/passwd', 'new')).toBeNull()
+      await expect(getFileContent('../etc/passwd', 'new')).rejects.toMatchObject({ code: 'invalid-path' })
     })
 
-    it('reads file from disk for new version', async () => {
+    it('reads new content through the capability-backed native fs', async () => {
       mockIsSafePath.mockReturnValue(true)
       mockExecFileSync.mockReturnValue('/repo\n')
-      mockReadFileSync.mockReturnValue(Buffer.from('file content'))
+      mockNativeRead.mockResolvedValue({
+        bytes: new Uint8Array([0x66, 0x69, 0x6c, 0x65]),
+        sha256: 'deadbeef',
+      })
       const { getFileContent } = await import('../lib/git.js')
-      expect(getFileContent('src/index.ts', 'new')).toEqual(Buffer.from('file content'))
+      expect(await getFileContent('src/index.ts', 'new')).toEqual(Buffer.from('file'))
+      expect(mockNativeRead).toHaveBeenCalledWith(expect.stringContaining('src/index.ts'))
     })
 
-    it('returns null when new file missing', async () => {
+    it('returns null when native read reports not-found', async () => {
       mockIsSafePath.mockReturnValue(true)
       mockExecFileSync.mockReturnValue('/repo\n')
-      mockReadFileSync.mockImplementation(() => { throw new Error('ENOENT') })
+      const { NativeFsError } = await import('../lib/native-fs.js')
+      mockNativeRead.mockRejectedValue(new NativeFsError('no such file', 'ENOENT'))
       const { getFileContent } = await import('../lib/git.js')
-      expect(getFileContent('src/index.ts', 'new')).toBeNull()
+      expect(await getFileContent('src/index.ts', 'new')).toBeNull()
     })
 
-    it('reads file from git for old version', async () => {
+    it('propagates native read denial instead of returning null', async () => {
       mockIsSafePath.mockReturnValue(true)
-      mockExecFileSync
-        .mockReturnValueOnce('/repo\n')
-        .mockReturnValueOnce(Buffer.from('old content'))
+      mockExecFileSync.mockReturnValue('/repo\n')
+      const { NativeFsError } = await import('../lib/native-fs.js')
+      mockNativeRead.mockRejectedValue(new NativeFsError('permission denied', 'EACCES'))
       const { getFileContent } = await import('../lib/git.js')
-      expect(getFileContent('src/index.ts', 'old')).toEqual(Buffer.from('old content'))
+      await expect(getFileContent('src/index.ts', 'new')).rejects.toThrow('permission denied')
     })
 
-    it('returns null when old file missing', async () => {
+    it('propagates native unavailability instead of returning null', async () => {
       mockIsSafePath.mockReturnValue(true)
-      mockExecFileSync
-        .mockReturnValueOnce('/repo\n')
-        .mockImplementationOnce(() => { throw new Error('fatal') })
+      mockExecFileSync.mockReturnValue('/repo\n')
+      const { NativeFsError } = await import('../lib/native-fs.js')
+      mockNativeRead.mockRejectedValue(new NativeFsError('resource unavailable', 'EAGAIN'))
       const { getFileContent } = await import('../lib/git.js')
-      expect(getFileContent('newfile.ts', 'old')).toBeNull()
+      await expect(getFileContent('src/index.ts', 'new')).rejects.toThrow('resource unavailable')
+    })
+
+    it('reads old content from git via promisified execFile', async () => {
+      mockIsSafePath.mockReturnValue(true)
+      mockExecFileSync.mockReturnValue('/repo\n')
+      // promisify(execFile) resolves the (stdout, stderr) pair into a single
+      // object — pass one object argument so the resolved value keeps the
+      // shape the production code expects.
+      mockExecFile.mockImplementationOnce(
+        (_cmd: string, _args: string[] | undefined, _opts: unknown, cb: any) => {
+          cb(null, { stdout: Buffer.from('old content'), stderr: Buffer.alloc(0) })
+        },
+      )
+      const { getFileContent } = await import('../lib/git.js')
+      expect(await getFileContent('src/index.ts', 'old')).toEqual(Buffer.from('old content'))
+      // execFileSync is reserved for the repo-root lookup; old content goes
+      // through execFile. Only project safe projected fields (no options
+      // object, which carries process.env).
+      expect(mockExecFile.mock.calls[0][0]).toBe('git')
+      expect(mockExecFile.mock.calls[0][1]).toEqual(['show', 'HEAD:src/index.ts'])
+    })
+
+    it('returns null when the old file lookup errors', async () => {
+      mockIsSafePath.mockReturnValue(true)
+      mockExecFileSync.mockReturnValue('/repo\n')
+      mockExecFile.mockImplementationOnce(
+        (_cmd: string, _args: string[] | undefined, _opts: unknown, cb: any) => {
+          cb(new Error('fatal: path does not exist'))
+        },
+      )
+      const { getFileContent } = await import('../lib/git.js')
+      expect(await getFileContent('newfile.ts', 'old')).toBeNull()
     })
   })
 
