@@ -1,20 +1,10 @@
 // @vitest-environment node
-//
-// Red regression tests for HTTP comment validation on /api/comments endpoints.
-// These describe the *desired* contract: invalid create/update/reply payloads
-// must return 400 and leave the store untouched. The current server does not
-// validate most of these fields, so many of these tests are expected to fail
-// until validation is implemented in src/server.ts.
-//
-// Isolation rules honored here:
-// - node:fs `watch` is partially mocked (returns an unref-able stub) so no
-//   real filesystem watcher is ever registered.
-// - A fresh InMemoryCommentStore is injected into createApp for every test,
-//   so no real state (files, git, network) is touched and the server is
-//   never started.
+// In-memory HTTP validation tests for the /api/comments endpoints: each test
+// injects a fresh InMemoryCommentStore and mocks fs/git so no real state is touched.
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import type { Hono } from 'hono'
 import { InMemoryCommentStore } from '../lib/comments.js'
+import type { ReviewComment } from '../lib/types.js'
 
 // Partially mock node:fs: keep every real export, only replace `watch` so
 // createApp's repo/storage watchers get a disposable handle.
@@ -89,17 +79,17 @@ function putJson(app: Hono, url: string, payload: unknown): Promise<Response> {
   )
 }
 
-async function listComments(app: Hono): Promise<unknown[]> {
+async function listComments(app: Hono): Promise<ReviewComment[]> {
   const res = await app.fetch(new Request(`${BASE}/api/comments`))
   expect(res.status).toBe(200)
-  return (await res.json()) as unknown[]
+  return (await res.json()) as ReviewComment[]
 }
 
 /** A valid POST that must round-trip through the store and return 201. */
-async function seedValidComment(app: Hono): Promise<Record<string, any>> {
+async function seedValidComment(app: Hono): Promise<ReviewComment> {
   const res = await postJson(app, '/api/comments', VALID_CREATE)
   expect(res.status).toBe(201)
-  return (await res.json()) as Record<string, any>
+  return (await res.json()) as ReviewComment
 }
 
 describe('POST /api/comments validation', () => {
@@ -135,7 +125,7 @@ describe('POST /api/comments validation', () => {
       startLineNumber: 1,
     })
     expect(res.status).toBe(201)
-    const created = (await res.json()) as Record<string, any>
+    const created = (await res.json()) as ReviewComment
     expect(created.startLineNumber).toBe(1)
     expect(created.lineNumber).toBe(2)
 
@@ -151,7 +141,7 @@ describe('POST /api/comments validation', () => {
       lineContent: undefined,
     })
     expect(res.status).toBe(201)
-    const created = (await res.json()) as Record<string, any>
+    const created = (await res.json()) as ReviewComment
     expect(created.lineNumber).toBe(0)
     expect(created.body).toBe('Review this')
 
@@ -163,8 +153,8 @@ describe('POST /api/comments validation', () => {
   it('does not reject a comment that is missing only lineContent (legacy compatibility)', async () => {
     const { lineContent: _omitted, ...payload } = VALID_CREATE
     const res = await postJson(app, '/api/comments', payload)
-    // Legacy clients omit lineContent; this must never be a 400.
-    expect(res.status).not.toBe(400)
+    // Legacy clients omit lineContent; this must be accepted.
+    expect(res.status).toBe(201)
   })
 
   describe.each([
@@ -197,8 +187,8 @@ describe('POST /api/comments validation', () => {
     {
       name: 'missing body',
       payload: {
-        filePath: 'src/file.ts',
         side: 'additions',
+        filePath: 'src/file.ts',
         lineNumber: 2,
         lineContent: 'const value = 1',
       },
@@ -273,7 +263,7 @@ describe('POST /api/comments validation', () => {
 describe('PUT /api/comments/:id validation', () => {
   let app: Hono
   let commentId: string
-  let original: Record<string, any>
+  let original: ReviewComment
 
   beforeEach(async () => {
     app = (await makeApp()).app
@@ -322,7 +312,7 @@ describe('PUT /api/comments/:id validation', () => {
       body: 'Updated review note',
     })
     expect(res.status).toBe(200)
-    const updated = (await res.json()) as Record<string, any>
+    const updated = (await res.json()) as ReviewComment
     expect(updated.body).toBe('Updated review note')
     expect(updated.status).toBe('open')
   })
@@ -332,7 +322,7 @@ describe('PUT /api/comments/:id validation', () => {
       status: 'resolved',
     })
     expect(res.status).toBe(200)
-    const updated = (await res.json()) as Record<string, any>
+    const updated = (await res.json()) as ReviewComment
     expect(updated.status).toBe('resolved')
     expect(updated.body).toBe('Review this')
   })
@@ -358,7 +348,7 @@ describe('POST /api/comments/:id/replies validation', () => {
   const expectNoReplies = async () => {
     const comments = await listComments(app)
     expect(comments).toHaveLength(1)
-    expect((comments[0] as Record<string, any>).replies).toEqual([])
+    expect(comments[0].replies).toEqual([])
   }
 
   it.each([
@@ -382,7 +372,7 @@ describe('POST /api/comments/:id/replies validation', () => {
       body: 'user note',
     })
     expect(res.status).toBe(200)
-    const updated = (await res.json()) as Record<string, any>
+    const updated = (await res.json()) as ReviewComment
     expect(updated.replies).toHaveLength(1)
     expect(updated.replies[0]).toMatchObject({
       body: 'user note',
@@ -396,7 +386,7 @@ describe('POST /api/comments/:id/replies validation', () => {
       model: 'gpt-5.6-sol',
     })
     expect(res.status).toBe(200)
-    const updated = (await res.json()) as Record<string, any>
+    const updated = (await res.json()) as ReviewComment
     expect(updated.replies).toHaveLength(1)
     expect(updated.replies[0]).toMatchObject({
       body: 'agent note',
@@ -427,7 +417,7 @@ describe('PUT /api/comments/:id/replies/:replyId validation', () => {
       body: 'original reply',
     })
     expect(res.status).toBe(200)
-    const updated = (await res.json()) as Record<string, any>
+    const updated = (await res.json()) as ReviewComment
     replyId = updated.replies[0].id
     originalBody = updated.replies[0].body
   })
@@ -435,7 +425,7 @@ describe('PUT /api/comments/:id/replies/:replyId validation', () => {
   const expectReplyUnchanged = async () => {
     const comments = await listComments(app)
     expect(comments).toHaveLength(1)
-    const replies = (comments[0] as Record<string, any>).replies
+    const replies = comments[0].replies
     expect(replies).toHaveLength(1)
     expect(replies[0].body).toBe(originalBody)
   }
@@ -467,7 +457,7 @@ describe('PUT /api/comments/:id/replies/:replyId validation', () => {
       { body: 'edited reply' },
     )
     expect(res.status).toBe(200)
-    const updated = (await res.json()) as Record<string, any>
+    const updated = (await res.json()) as ReviewComment
     expect(updated.replies[0].body).toBe('edited reply')
   })
 })
