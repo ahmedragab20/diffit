@@ -202,6 +202,8 @@ interface FileDiffCardProps {
     threadId: string,
     resolved: boolean,
   ) => Promise<void>;
+  onApplyExisting?: (commentId: number) => Promise<void>;
+  expectedHeadSha?: string;
   /** Hide editor/revert actions on remote or otherwise read-only review surfaces. */
   allowLocalActions?: boolean;
   /**
@@ -270,6 +272,8 @@ export const FileDiffCard = memo(function FileDiffCard({
   onEditExisting,
   onDeleteExisting,
   onSetExistingResolved,
+  onApplyExisting,
+  expectedHeadSha,
   allowLocalActions = true,
   onCardToggleCollapse,
   canEdit = false,
@@ -796,6 +800,8 @@ export const FileDiffCard = memo(function FileDiffCard({
           onEdit={onEditExisting}
           onDelete={onDeleteExisting}
           onSetResolved={onSetExistingResolved}
+          onApplySuggestion={onApplyExisting}
+          expectedHeadSha={expectedHeadSha}
         />
       );
     }
@@ -1351,6 +1357,8 @@ export const FileDiffCard = memo(function FileDiffCard({
                     onEdit={onEditExisting}
                     onDelete={onDeleteExisting}
                     onSetResolved={onSetExistingResolved}
+                    onApplySuggestion={onApplyExisting}
+                    expectedHeadSha={expectedHeadSha}
                   />
                 ))}
 

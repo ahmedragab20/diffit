@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { PrReviewActivity } from '../PrReviewActivity'
 
 const reviews = [
@@ -44,5 +44,32 @@ describe('PrReviewActivity', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Older review' }))
     expect(screen.getByText('Please address the failing check.')).toBeInTheDocument()
     expect(screen.getByText('Changes requested')).toBeInTheDocument()
+  })
+
+  it('sorts pending reviews first and exposes submit/discard actions', async () => {
+    const onSubmitPending = vi.fn().mockResolvedValue(undefined)
+    const onDiscardPending = vi.fn().mockResolvedValue(undefined)
+    render(
+      <PrReviewActivity
+        reviews={[
+          reviews[0],
+          {
+            id: 9,
+            author: { login: 'me' },
+            body: 'still writing',
+            state: 'PENDING',
+            submittedAt: null,
+          },
+        ]}
+        onSubmitPending={onSubmitPending}
+        onDiscardPending={onDiscardPending}
+      />,
+    )
+    expect(screen.getByText('Pending')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(onSubmitPending).toHaveBeenCalledWith(9, 'APPROVE'))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard pending review' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
+    await waitFor(() => expect(onDiscardPending).toHaveBeenCalledWith(9))
   })
 })

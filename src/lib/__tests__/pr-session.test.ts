@@ -114,4 +114,92 @@ describe("FilePrSessionStore", () => {
         expect(await store.get()).toBeNull();
         rmSync(dir, { recursive: true, force: true });
     });
+
+    it("keeps a previous PR's drafts after switching the active session", async () => {
+        const store = new FilePrSessionStore(dir);
+        await store.set({
+            ...baseSession,
+            comments: [
+                {
+                    id: "keep-me",
+                    filePath: "x.ts",
+                    side: "additions",
+                    lineNumber: 1,
+                    lineContent: "x",
+                    body: "draft-a",
+                    status: "open",
+                    createdAt: 1,
+                    replies: [],
+                },
+            ],
+        });
+        await store.set({
+            ...baseSession,
+            owner: "other",
+            repo: "repo",
+            pullNumber: 99,
+            comments: [],
+        });
+        const previous = await store.getFor({
+            owner: "acme",
+            repo: "widget",
+            pullNumber: 1234,
+        });
+        expect(previous?.comments.map((comment) => comment.body)).toEqual([
+            "draft-a",
+        ]);
+        rmSync(dir, { recursive: true, force: true });
+    });
+
+    it("serializes concurrent apply mutations", async () => {
+        const store = new InMemoryPrSessionStore();
+        await store.set(baseSession);
+        await Promise.all([
+            store.apply((current) =>
+                current
+                    ? {
+                          ...current,
+                          comments: [
+                              ...current.comments,
+                              {
+                                  id: "a",
+                                  filePath: "x.ts",
+                                  side: "additions",
+                                  lineNumber: 1,
+                                  lineContent: "x",
+                                  body: "a",
+                                  status: "open",
+                                  createdAt: 1,
+                                  replies: [],
+                              },
+                          ],
+                      }
+                    : null,
+            ),
+            store.apply((current) =>
+                current
+                    ? {
+                          ...current,
+                          comments: [
+                              ...current.comments,
+                              {
+                                  id: "b",
+                                  filePath: "x.ts",
+                                  side: "additions",
+                                  lineNumber: 1,
+                                  lineContent: "x",
+                                  body: "b",
+                                  status: "open",
+                                  createdAt: 2,
+                                  replies: [],
+                              },
+                          ],
+                      }
+                    : null,
+            ),
+        ]);
+        const bodies =
+            (await store.get())?.comments.map((comment) => comment.body) ?? [];
+        expect(bodies.sort()).toEqual(["a", "b"]);
+    });
 });

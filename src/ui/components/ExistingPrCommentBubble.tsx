@@ -12,13 +12,15 @@ interface ExistingPrCommentBubbleProps {
   onEdit?: (commentId: number, body: string) => Promise<void>
   onDelete?: (commentId: number) => Promise<void>
   onSetResolved?: (threadId: string, resolved: boolean) => Promise<void>
+  onApplySuggestion?: (commentId: number) => Promise<void>
+  expectedHeadSha?: string
 }
 
 /**
  * Bubble for an existing PR review comment, including GitHub-backed replies,
  * edits, deletion, and thread resolution controls.
  */
-export function ExistingPrCommentBubble({ comment, lineContent, onReply, onEdit, onDelete, onSetResolved }: ExistingPrCommentBubbleProps) {
+export function ExistingPrCommentBubble({ comment, lineContent, onReply, onEdit, onDelete, onSetResolved, onApplySuggestion, expectedHeadSha }: ExistingPrCommentBubbleProps) {
   const [expanded, setExpanded] = useState(false)
   const [replying, setReplying] = useState(false)
   const [replyBody, setReplyBody] = useState('')
@@ -28,6 +30,7 @@ export function ExistingPrCommentBubble({ comment, lineContent, onReply, onEdit,
   const [editBody, setEditBody] = useState(comment.body)
   const [busy, setBusy] = useState(false)
   const [deleteConfirming, setDeleteConfirming] = useState(false)
+  const [applyConfirming, setApplyConfirming] = useState(false)
 
   useEffect(() => {
     if (!editing) setEditBody(comment.body)
@@ -179,6 +182,16 @@ export function ExistingPrCommentBubble({ comment, lineContent, onReply, onEdit,
               <div className="pr-existing-suggestion-head">
                 <span>Suggested change</span>
                 <span className="pr-existing-suggestion-preview-label">Preview</span>
+                {onApplySuggestion && comment.side !== "LEFT" && (
+                  <button
+                    type="button"
+                    className="btn btn-sm"
+                    disabled={busy}
+                    onClick={() => setApplyConfirming(true)}
+                  >
+                    Apply
+                  </button>
+                )}
               </div>
               <div className="pr-existing-suggestion-diff">
                 {lineContent != null && lineContent !== '' && (
@@ -284,6 +297,29 @@ export function ExistingPrCommentBubble({ comment, lineContent, onReply, onEdit,
           setDeleteConfirming(false)
           setError(null)
         }}
+      />
+      <ConfirmDialog
+        open={applyConfirming}
+        title="Apply suggestion to the PR head?"
+        description={
+          expectedHeadSha
+            ? `Commits this suggestion onto the PR head (${expectedHeadSha.slice(0, 7)}). Diffing will refuse if the head moved.`
+            : "Commits this suggestion onto the PR head branch."
+        }
+        confirmLabel="Apply suggestion"
+        variant="warning"
+        busy={busy}
+        error={error}
+        onConfirm={async () => {
+          if (!onApplySuggestion) return
+          try {
+            await run(() => onApplySuggestion(comment.id))
+            setApplyConfirming(false)
+          } catch {
+            // keep dialog open
+          }
+        }}
+        onCancel={() => setApplyConfirming(false)}
       />
     </div>
   )

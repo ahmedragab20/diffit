@@ -141,6 +141,8 @@ async function ghThreads(args: string[]): Promise<number> {
       author: { type: 'string' },
       cursor: { type: 'string' },
       limit: { type: 'string' },
+      'reply-cursor': { type: 'string' },
+      'reply-limit': { type: 'string' },
       format: { type: 'string' },
       'full-body': { type: 'boolean' },
       'body-max': { type: 'string' },
@@ -154,6 +156,8 @@ async function ghThreads(args: string[]): Promise<number> {
   if (values.author) params.set('author', values.author)
   if (values.cursor) params.set('cursor', values.cursor)
   if (values.limit) params.set('limit', values.limit)
+  if (values['reply-cursor']) params.set('replyCursor', values['reply-cursor'])
+  if (values['reply-limit']) params.set('replyLimit', values['reply-limit'])
   if (values['full-body']) params.set('fullBody', 'true')
   if (values['body-max']) params.set('bodyMaxChars', values['body-max'])
   const format = values.json ? 'json' : (values.format ?? 'xml')
@@ -300,6 +304,7 @@ async function ghPrReview(args: string[]): Promise<number> {
       decision: { type: 'string', short: 'd' },
       body: { type: 'string', short: 'b' },
       'dry-run': { type: 'boolean' },
+      'pending-id': { type: 'string' },
       json: { type: 'boolean' },
     },
     allowPositionals: false,
@@ -317,10 +322,12 @@ async function ghPrReview(args: string[]): Promise<number> {
     return EXIT_USAGE
   }
   const base = baseUrl()
+  const pendingId = values['pending-id'] ? Number(values['pending-id']) : undefined
   const payload = {
     decision,
     body: values.body ?? '',
     dryRun: values['dry-run'] === true,
+    pendingReviewId: Number.isFinite(pendingId) ? pendingId : undefined,
   }
   const res = await apiFetch(`${base}/api/gh/submit`, {
     method: 'POST',
@@ -355,6 +362,184 @@ async function ghPrReview(args: string[]): Promise<number> {
   return EXIT_OK
 }
 
+async function ghPending(args: string[]): Promise<number> {
+  const action = args[0]
+  const rest = args.slice(1)
+  const { values } = parseArgs({
+    args: rest,
+    options: {
+      id: { type: 'string' },
+      event: { type: 'string' },
+      body: { type: 'string' },
+      json: { type: 'boolean' },
+    },
+    allowPositionals: false,
+  })
+  const id = Number(values.id)
+  if (!Number.isFinite(id)) {
+    console.error('Usage: diffing gh pending <submit|discard|resume> --id <review-id> [--event APPROVE|REQUEST_CHANGES|COMMENT]')
+    return EXIT_USAGE
+  }
+  const base = baseUrl()
+  if (action === 'discard') {
+    const res = await apiFetch(`${base}/api/gh/reviews/${id}`, { method: 'DELETE' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      console.error((err as any).error ?? res.statusText)
+      return 1
+    }
+    console.log(`Discarded pending review #${id}`)
+    return EXIT_OK
+  }
+  if (action === 'resume') {
+    const res = await apiFetch(`${base}/api/gh/reviews/${id}/comments`, { method: 'POST' })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      console.error((err as any).error ?? res.statusText)
+      return 1
+    }
+    const body = await res.json()
+    if (values.json) process.stdout.write(JSON.stringify(body, null, 2) + '\n')
+    else console.log(`Attached ${(body as any).attached ?? 0} draft comment(s) to pending review #${id}`)
+    return EXIT_OK
+  }
+  if (action !== 'submit') {
+    console.error('Usage: diffing gh pending <submit|discard|resume> --id <review-id>')
+    return EXIT_USAGE
+  }
+  const event = values.event
+  if (event !== 'APPROVE' && event !== 'REQUEST_CHANGES' && event !== 'COMMENT') {
+    console.error('diffing gh pending submit: --event must be APPROVE, REQUEST_CHANGES, or COMMENT')
+    return EXIT_USAGE
+  }
+  const res = await apiFetch(`${base}/api/gh/reviews/${id}/submit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ event, body: values.body }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    console.error((err as any).error ?? res.statusText)
+    return 1
+  }
+  const body = await res.json()
+  if (values.json) process.stdout.write(JSON.stringify(body, null, 2) + '\n')
+  else console.log(`Submitted pending review #${id} as ${event}`)
+  return EXIT_OK
+}
+
+async function ghPrUpdate(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      title: { type: 'string' },
+      body: { type: 'string' },
+      'dry-run': { type: 'boolean' },
+    },
+    allowPositionals: false,
+  })
+  if (values.title == null && values.body == null) {
+    console.error('Usage: diffing gh pr-update [--title T] [--body B] [--dry-run]')
+    return EXIT_USAGE
+  }
+  const res = await apiFetch(`${baseUrl()}/api/gh/pr`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      title: values.title,
+      body: values.body,
+      dryRun: values['dry-run'] === true,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    console.error((err as any).error ?? res.statusText)
+    return 1
+  }
+  console.log(values['dry-run'] ? 'Dry run OK' : 'Pull request updated')
+  return EXIT_OK
+}
+
+async function ghPrState(path: string, label: string, args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: { 'dry-run': { type: 'boolean' } },
+    allowPositionals: false,
+  })
+  const res = await apiFetch(`${baseUrl()}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dryRun: values['dry-run'] === true }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    console.error((err as any).error ?? res.statusText)
+    return 1
+  }
+  console.log(values['dry-run'] ? `Dry run OK (${label})` : label)
+  return EXIT_OK
+}
+
+async function ghPrMerge(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      method: { type: 'string' },
+      'expected-head': { type: 'string' },
+      'dry-run': { type: 'boolean' },
+    },
+    allowPositionals: false,
+  })
+  const method = values.method ?? 'merge'
+  if (method !== 'merge' && method !== 'squash' && method !== 'rebase') {
+    console.error('diffing gh pr-merge: --method must be merge, squash, or rebase')
+    return EXIT_USAGE
+  }
+  const res = await apiFetch(`${baseUrl()}/api/gh/pr/merge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      method,
+      expectedHeadSha: values['expected-head'],
+      dryRun: values['dry-run'] === true,
+    }),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    console.error((err as any).error ?? res.statusText)
+    return 1
+  }
+  console.log(values['dry-run'] ? 'Dry run OK' : `Merged via ${method}`)
+  return EXIT_OK
+}
+
+async function ghTimeline(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      cursor: { type: 'string' },
+      limit: { type: 'string' },
+      json: { type: 'boolean' },
+    },
+    allowPositionals: false,
+  })
+  const params = new URLSearchParams()
+  if (values.cursor) params.set('cursor', values.cursor)
+  if (values.limit) params.set('limit', values.limit)
+  const res = await apiFetch(`${baseUrl()}/api/gh/timeline?${params}`)
+  if (res.status === 404) {
+    console.error('No active PR session.')
+    return EXIT_NOT_FOUND
+  }
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    console.error((err as any).error ?? res.statusText)
+    return 1
+  }
+  process.stdout.write(JSON.stringify(await res.json(), null, values.json ? 2 : undefined) + '\n')
+  return EXIT_OK
+}
+
 export async function runGhSubcommand(args: string[]): Promise<number> {
   const action = args[0]
   const rest = args.slice(1)
@@ -367,15 +552,27 @@ export async function runGhSubcommand(args: string[]): Promise<number> {
       return ghThreads(rest)
     case 'reviews':
       return ghReviews(rest)
+    case 'timeline':
+      return ghTimeline(rest)
+    case 'pending':
+      return ghPending(rest)
     case 'pr-fetch':
       return ghPrFetch(rest)
     case 'pr-review':
       return ghPrReview(rest)
     case 'pr-list-comments':
       return ghPrListComments()
+    case 'pr-update':
+      return ghPrUpdate(rest)
+    case 'pr-close':
+      return ghPrState('/api/gh/pr/close', 'Pull request closed', rest)
+    case 'pr-reopen':
+      return ghPrState('/api/gh/pr/reopen', 'Pull request reopened', rest)
+    case 'pr-merge':
+      return ghPrMerge(rest)
     default:
       console.error(
-        'Usage: diffing gh <status|overview|threads|reviews|pr-fetch|pr-review|pr-list-comments> [...]',
+        'Usage: diffing gh <status|overview|threads|reviews|timeline|pending|pr-fetch|pr-review|pr-list-comments|pr-update|pr-close|pr-reopen|pr-merge> [...]',
       )
       return EXIT_USAGE
   }
