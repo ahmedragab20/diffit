@@ -17,6 +17,12 @@ const githubMocks = vi.hoisted(() => ({
     refreshPrSession: vi.fn(),
     submitPendingReview: vi.fn(),
     deletePendingReview: vi.fn(),
+    addCommentsToPendingReview: vi.fn(),
+    fetchPrConversation: vi.fn(),
+    updatePrMetadata: vi.fn(),
+    setPrOpenState: vi.fn(),
+    mergePullRequest: vi.fn(),
+    applyPrSuggestion: vi.fn(),
 }));
 
 vi.mock("../lib/github.js", async (importOriginal) => {
@@ -33,6 +39,19 @@ vi.mock("../lib/github.js", async (importOriginal) => {
         refreshPrSession: githubMocks.refreshPrSession,
         submitPendingReviewViaGh: githubMocks.submitPendingReview,
         deletePendingReviewViaGh: githubMocks.deletePendingReview,
+    };
+});
+
+vi.mock("../lib/github-pr-actions.js", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../lib/github-pr-actions.js")>();
+    return {
+        ...actual,
+        addCommentsToPendingReviewViaGh: githubMocks.addCommentsToPendingReview,
+        fetchPrConversationViaGh: githubMocks.fetchPrConversation,
+        updatePrMetadataViaGh: githubMocks.updatePrMetadata,
+        setPrOpenStateViaGh: githubMocks.setPrOpenState,
+        mergePullRequestViaGh: githubMocks.mergePullRequest,
+        applyPrSuggestionViaGh: githubMocks.applyPrSuggestion,
     };
 });
 
@@ -222,6 +241,30 @@ describe("gh-pr endpoints (integration)", () => {
         githubMocks.refreshPrSession.mockImplementation(
             async (session) => session,
         );
+        githubMocks.submitPendingReview.mockResolvedValue({
+            ok: true,
+            htmlUrl: "https://github.test/review/88",
+        });
+        githubMocks.deletePendingReview.mockResolvedValue({ ok: true });
+        githubMocks.addCommentsToPendingReview.mockResolvedValue({
+            ok: true,
+            attached: 1,
+            failed: 0,
+        });
+        githubMocks.fetchPrConversation.mockResolvedValue({
+            issueComments: [],
+            timelineEvents: [],
+        });
+        githubMocks.updatePrMetadata.mockResolvedValue({ ok: true });
+        githubMocks.setPrOpenState.mockResolvedValue({ ok: true });
+        githubMocks.mergePullRequest.mockResolvedValue({
+            ok: true,
+            sha: "mergedsha",
+        });
+        githubMocks.applyPrSuggestion.mockResolvedValue({
+            ok: true,
+            sha: "appliedsha",
+        });
         prStore = new InMemoryPrSessionStore();
         app = await makeApp(prStore);
     });
@@ -1355,5 +1398,257 @@ index 111..222 100644
             "src/x.ts",
             "merge-base",
         );
+    });
+
+    const pendingReview = {
+        id: 88,
+        author: { login: "octocat" },
+        body: "still drafting",
+        state: "PENDING" as const,
+        submittedAt: null,
+        htmlUrl: "https://github.test/review/88",
+    };
+
+    it("POST /api/gh/reviews/:id/submit finishes a pending review", async () => {
+        await prStore.set({
+            ...baseSession,
+            existingReviews: [pendingReview],
+            comments: [
+                {
+                    id: "c1",
+                    filePath: "src/x.ts",
+                    side: "additions",
+                    lineNumber: 1,
+                    lineContent: "+ x",
+                    body: "nit",
+                    status: "open",
+                    createdAt: 1,
+                    replies: [],
+                },
+            ],
+        });
+        const res = await app.fetch(
+            new Request("http://localhost/api/gh/reviews/88/submit", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ event: "APPROVE", body: "LGTM" }),
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(githubMocks.addCommentsToPendingReview).toHaveBeenCalled();
+        expect(githubMocks.submitPendingReview).toHaveBeenCalledWith(
+            expect.objectContaining({ owner: "acme", pullNumber: 1234 }),
+            88,
+            "APPROVE",
+            "LGTM",
+        );
+        const after = await prStore.get();
+        expect(after?.existingReviews?.[0].state).toBe("APPROVED");
+        expect(after?.comments).toEqual([]);
+    });
+
+    it("DELETE /api/gh/reviews/:id discards a pending review", async () => {
+        await prStore.set({
+            ...baseSession,
+            existingReviews: [pendingReview],
+        });
+        const res = await app.fetch(
+            new Request("http://localhost/api/gh/reviews/88", {
+                method: "DELETE",
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(githubMocks.deletePendingReview).toHaveBeenCalled();
+        expect((await prStore.get())?.existingReviews).toEqual([]);
+    });
+
+    it("POST /api/gh/reviews/:id/comments attaches local drafts onto a pending review", async () => {
+        await prStore.set({
+            ...baseSession,
+            existingReviews: [pendingReview],
+            comments: [
+                {
+                    id: "c1",
+                    filePath: "src/x.ts",
+                    side: "additions",
+                    lineNumber: 2,
+                    lineContent: "+ y",
+                    body: "resume me",
+                    status: "open",
+                    createdAt: 1,
+                    replies: [],
+                },
+            ],
+        });
+        const res = await app.fetch(
+            new Request("http://localhost/api/gh/reviews/88/comments", {
+                method: "POST",
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(githubMocks.addCommentsToPendingReview).toHaveBeenCalled();
+        expect((await prStore.get())?.comments).toEqual([]);
+    });
+
+    it("GET /api/gh/threads paginates replies independently of threads", async () => {
+        await prStore.set({
+            ...baseSession,
+            existingComments: [
+                {
+                    ...baseSession.existingComments[0],
+                    replies: [
+                        {
+                            id: 1,
+                            author: { login: "a" },
+                            body: "one",
+                            createdAt: "t",
+                            updatedAt: "t",
+                        },
+                        {
+                            id: 2,
+                            author: { login: "b" },
+                            body: "two",
+                            createdAt: "t",
+                            updatedAt: "t",
+                        },
+                        {
+                            id: 3,
+                            author: { login: "c" },
+                            body: "three",
+                            createdAt: "t",
+                            updatedAt: "t",
+                        },
+                    ],
+                },
+            ],
+        });
+        const res = await app.fetch(
+            new Request(
+                "http://localhost/api/gh/threads?replyLimit=1&replyCursor=1",
+            ),
+        );
+        const body = await res.json();
+        expect(body.threads[0].replyCount).toBe(3);
+        expect(body.threads[0].repliesReturned).toBe(1);
+        expect(body.threads[0].replies[0].id).toBe(2);
+        expect(body.threads[0].repliesNextCursor).toBe(2);
+        expect(body.headSha).toBe("head");
+    });
+
+    it("GET /api/gh/timeline pages description, issue comments, and reviews", async () => {
+        await prStore.set({
+            ...baseSession,
+            body: "Please review.",
+            issueComments: [
+                {
+                    id: 5,
+                    author: { login: "alice" },
+                    body: "hi",
+                    createdAt: "2026-01-02T00:00:00.000Z",
+                    updatedAt: "2026-01-02T00:00:00.000Z",
+                },
+            ],
+        });
+        const res = await app.fetch(
+            new Request("http://localhost/api/gh/timeline?limit=10"),
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.items[0].kind).toBe("pr-description");
+        expect(body.total).toBeGreaterThanOrEqual(2);
+    });
+
+    it("PATCH /api/gh/pr updates title and body", async () => {
+        await prStore.set(baseSession);
+        const res = await app.fetch(
+            new Request("http://localhost/api/gh/pr", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ title: "New title", body: "New body" }),
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect(githubMocks.updatePrMetadata).toHaveBeenCalled();
+        expect((await prStore.get())?.title).toBe("New title");
+    });
+
+    it("POST /api/gh/pr/merge refuses a blocked PR", async () => {
+        await prStore.set({
+            ...baseSession,
+            mergeable: "CONFLICTING",
+            mergeStateStatus: "dirty",
+            headRefName: "topic",
+        });
+        const res = await app.fetch(
+            new Request("http://localhost/api/gh/pr/merge", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    method: "squash",
+                    expectedHeadSha: "head",
+                }),
+            }),
+        );
+        expect(res.status).toBe(409);
+        expect(githubMocks.mergePullRequest).not.toHaveBeenCalled();
+    });
+
+    it("POST /api/gh/pr/merge succeeds when GitHub policy allows it", async () => {
+        await prStore.set({
+            ...baseSession,
+            mergeable: "MERGEABLE",
+            mergeStateStatus: "clean",
+            headRefName: "topic",
+        });
+        const res = await app.fetch(
+            new Request("http://localhost/api/gh/pr/merge", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    method: "merge",
+                    expectedHeadSha: "head",
+                }),
+            }),
+        );
+        expect(res.status).toBe(200);
+        expect((await prStore.get())?.state).toBe("merged");
+    });
+
+    it("POST /api/gh/existing-comments/:id/apply-suggestion is head-guarded", async () => {
+        await prStore.set({
+            ...baseSession,
+            headRefName: "topic",
+            existingComments: [
+                {
+                    ...baseSession.existingComments[0],
+                    body: "```suggestion\nfixed\n```",
+                    line: 4,
+                    side: "RIGHT",
+                },
+            ],
+        });
+        const stale = await app.fetch(
+            new Request(
+                "http://localhost/api/gh/existing-comments/999/apply-suggestion",
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ expectedHeadSha: "other" }),
+                },
+            ),
+        );
+        expect(stale.status).toBe(409);
+        const ok = await app.fetch(
+            new Request(
+                "http://localhost/api/gh/existing-comments/999/apply-suggestion",
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ expectedHeadSha: "head" }),
+                },
+            ),
+        );
+        expect(ok.status).toBe(200);
+        expect(githubMocks.applyPrSuggestion).toHaveBeenCalled();
     });
 });

@@ -5,6 +5,8 @@ import type {
   PrExistingComment,
   PrExistingReview,
   PrAuthor,
+  PrMergeable,
+  PrState,
 } from "./pr-session.js";
 import type { ReviewComment } from "./types.js";
 
@@ -238,6 +240,15 @@ export interface PrMetadata {
   mergeBaseSha?: string;
   /** Files-API completeness when the unified diff was synthesized. */
   diffCompleteness?: { listedFiles: number; omittedPatches: number };
+  body?: string;
+  state?: PrState;
+  isDraft?: boolean;
+  createdAt?: string;
+  mergeable?: PrMergeable;
+  mergeStateStatus?: string;
+  maintainerCanModify?: boolean;
+  headOwner?: string;
+  headRepo?: string;
 }
 
 /**
@@ -638,6 +649,23 @@ export async function fetchPrMetadataViaGh(
       { encoding: "utf-8", maxBuffer: 20 * 1024 * 1024 },
     );
     metaJson = JSON.parse(stdout);
+    try {
+      const extra = await execFileAsync(
+        "gh",
+        [
+          "pr",
+          "view",
+          String(resolved.pullNumber),
+          ...args,
+          "--json",
+          "body,state,isDraft,createdAt,mergeable,mergeStateStatus,maintainerCanModify",
+        ],
+        { encoding: "utf-8", maxBuffer: 5 * 1024 * 1024 },
+      );
+      Object.assign(metaJson, JSON.parse(extra.stdout));
+    } catch {
+      // Older gh builds omit some fields; description/mergeability stay optional.
+    }
   } catch (err: any) {
     const stderr = err?.stderr || err?.message || "unknown error";
     throw new Error(`gh pr view failed: ${stderr.trim()}`);
@@ -724,7 +752,47 @@ export async function fetchPrMetadataViaGh(
     existingReviews,
     mergeBaseSha,
     diffCompleteness,
+    body: typeof metaJson.body === "string" ? metaJson.body : "",
+    state: normalizePrState(metaJson.state, metaJson.closed, metaJson.mergedAt),
+    isDraft: Boolean(metaJson.isDraft),
+    createdAt: typeof metaJson.createdAt === "string" ? metaJson.createdAt : undefined,
+    mergeable: normalizeMergeable(metaJson.mergeable),
+    mergeStateStatus:
+      typeof metaJson.mergeStateStatus === "string"
+        ? metaJson.mergeStateStatus
+        : undefined,
+    maintainerCanModify:
+      typeof metaJson.maintainerCanModify === "boolean"
+        ? metaJson.maintainerCanModify
+        : undefined,
+    headOwner:
+      typeof metaJson.headRepositoryOwner?.login === "string"
+        ? metaJson.headRepositoryOwner.login
+        : undefined,
+    headRepo:
+      typeof metaJson.headRepository?.name === "string"
+        ? metaJson.headRepository.name
+        : undefined,
   };
+}
+
+function normalizePrState(
+  state: unknown,
+  closed: unknown,
+  mergedAt: unknown,
+): PrState | undefined {
+  const raw = typeof state === "string" ? state.toUpperCase() : "";
+  if (raw === "MERGED" || mergedAt) return "merged";
+  if (raw === "CLOSED" || closed === true) return "closed";
+  if (raw === "OPEN") return "open";
+  return undefined;
+}
+
+function normalizeMergeable(value: unknown): PrMergeable | undefined {
+  if (value === true || value === "MERGEABLE") return "MERGEABLE";
+  if (value === false || value === "CONFLICTING") return "CONFLICTING";
+  if (value === "UNKNOWN") return "UNKNOWN";
+  return undefined;
 }
 
 async function fetchMergeBaseSha(
@@ -1056,6 +1124,8 @@ export interface SubmitInput {
   comments: ReviewComment[];
   /** Reviewed head SHA. Bound into the GitHub review so a later push cannot steal the verdict. */
   commitId?: string;
+  /** When set, attach comments onto this PENDING review instead of creating a new one. */
+  pendingReviewId?: number;
 }
 
 export interface SubmitOutput {
@@ -1260,6 +1330,9 @@ export function canonicalReviewPath(path: string): string {
 }
 
 async function submitViaGh(input: SubmitInput): Promise<SubmitOutput> {
+  if (input.pendingReviewId != null) {
+    return submitOntoPendingReview(input, "gh");
+  }
   const payload = buildReviewPayload(input);
   const endpoint = `repos/${input.resolved.owner}/${input.resolved.repo}/pulls/${input.resolved.pullNumber}/reviews`;
   // `gh api` accepts a JSON body via `--input -` + stdin. Pass it via env to
@@ -1303,10 +1376,65 @@ async function submitViaGh(input: SubmitInput): Promise<SubmitOutput> {
   }
 }
 
+async function submitOntoPendingReview(
+  input: SubmitInput,
+  authSource: AuthSource,
+): Promise<SubmitOutput> {
+  const reviewId = input.pendingReviewId;
+  if (reviewId == null) {
+    return { ok: false, authSource, error: "pendingReviewId is required" };
+  }
+  const payload = buildReviewPayload(input);
+  if (payload.comments.length > 0) {
+    const { addCommentsToPendingReviewViaGh } = await import(
+      "./github-pr-actions.js"
+    );
+    const attached = await addCommentsToPendingReviewViaGh(
+      input.resolved,
+      reviewId,
+      payload.comments,
+    );
+    if (!attached.ok) {
+      return {
+        ok: false,
+        authSource,
+        failedComments: attached.failed,
+        error: attached.error,
+      };
+    }
+  }
+  if (input.decision === "draft") {
+    return { ok: true, authSource, reviewId };
+  }
+  const event = decisionToEvent(input.decision);
+  if (!event) {
+    return { ok: false, authSource, error: "Invalid pending review event" };
+  }
+  const submitted = await submitPendingReviewViaGh(
+    input.resolved,
+    reviewId,
+    event,
+    payload.body,
+  );
+  if (!submitted.ok) {
+    return { ok: false, authSource, error: submitted.error };
+  }
+  return {
+    ok: true,
+    authSource,
+    reviewId,
+    reviewUrl: submitted.htmlUrl,
+    failedComments: 0,
+  };
+}
+
 async function submitViaToken(
   input: SubmitInput,
   token: string,
 ): Promise<SubmitOutput> {
+  if (input.pendingReviewId != null) {
+    return submitOntoPendingReview(input, "token");
+  }
   const payload = buildReviewPayload(input);
   const url = `${githubApiBase(input.resolved.host)}/repos/${input.resolved.owner}/${input.resolved.repo}/pulls/${input.resolved.pullNumber}/reviews`;
   try {
@@ -1681,7 +1809,7 @@ export async function buildPrSession(ref: string): Promise<PrSession> {
   // (gh returns the enterprise URL) so later API calls keep the right host.
   const host =
     resolved.host ?? parseGitRemoteUrl(meta.url)?.host ?? cwdRepo?.host;
-  return {
+  const session: PrSession = {
     ref,
     owner: meta.owner,
     repo: meta.repo,
@@ -1703,14 +1831,24 @@ export async function buildPrSession(ref: string): Promise<PrSession> {
     existingReviews: meta.existingReviews,
     mergeBaseSha: meta.mergeBaseSha,
     diffCompleteness: meta.diffCompleteness,
+    body: meta.body,
+    state: meta.state,
+    isDraft: meta.isDraft,
+    createdAt: meta.createdAt,
+    mergeable: meta.mergeable,
+    mergeStateStatus: meta.mergeStateStatus,
+    maintainerCanModify: meta.maintainerCanModify,
+    headOwner: meta.headOwner,
+    headRepo: meta.headRepo,
   };
+  return attachPrConversation(resolved, session);
 }
 
 /** Refresh `diff` + `existingComments` + head SHA in an existing session. */
 export async function refreshPrSession(session: PrSession): Promise<PrSession> {
   const resolved = resolvedFromSession(session);
   const meta = await fetchPrMetadataViaGh(resolved);
-  return {
+  const next: PrSession = {
     ...session,
     baseSha: meta.baseSha,
     headSha: meta.headSha,
@@ -1727,5 +1865,28 @@ export async function refreshPrSession(session: PrSession): Promise<PrSession> {
     existingReviews: meta.existingReviews,
     mergeBaseSha: meta.mergeBaseSha,
     diffCompleteness: meta.diffCompleteness,
+    body: meta.body,
+    state: meta.state,
+    isDraft: meta.isDraft,
+    createdAt: meta.createdAt,
+    mergeable: meta.mergeable,
+    mergeStateStatus: meta.mergeStateStatus,
+    maintainerCanModify: meta.maintainerCanModify,
+    headOwner: meta.headOwner,
+    headRepo: meta.headRepo,
   };
+  return attachPrConversation(resolved, next);
+}
+
+async function attachPrConversation(
+  resolved: ResolvedPr,
+  session: PrSession,
+): Promise<PrSession> {
+  try {
+    const { fetchPrConversationViaGh } = await import("./github-pr-actions.js");
+    const convo = await fetchPrConversationViaGh(resolved);
+    return { ...session, ...convo, syncedAt: Date.now() };
+  } catch {
+    return { ...session, syncedAt: Date.now() };
+  }
 }

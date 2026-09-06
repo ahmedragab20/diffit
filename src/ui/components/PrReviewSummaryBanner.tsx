@@ -1,6 +1,8 @@
+import { useState } from "react";
 import { GitPullRequest } from "lucide-react";
 import type { PrSession } from "../../lib/pr-session";
 import { PrChecksPopover } from "./PrChecksPopover";
+import { Markdown } from "./Markdown";
 
 interface PrReviewSummaryBannerProps {
   session: PrSession;
@@ -12,6 +14,7 @@ export function PrReviewSummaryBanner({
   session,
   draftCount,
 }: PrReviewSummaryBannerProps) {
+  const [bodyOpen, setBodyOpen] = useState(false);
   return (
     <section
       className="diff-overview-banner pr-overview-banner"
@@ -77,9 +80,32 @@ export function PrReviewSummaryBanner({
                 {session.diffCompleteness.listedFiles} files lack patches
               </span>
             )}
+          {session.state && (
+            <span className="toolbar-chip" data-state={session.state}>
+              {session.isDraft ? "draft" : session.state}
+            </span>
+          )}
           <PrChecksPopover headSha={session.headSha} />
         </div>
       </header>
+      {session.body?.trim() ? (
+        <div className="pr-overview-body">
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={() => setBodyOpen((open) => !open)}
+            aria-expanded={bodyOpen}
+          >
+            {bodyOpen ? "Hide description" : "Show description"}
+          </button>
+          {bodyOpen && (
+            <Markdown
+              content={session.body}
+              className="pr-overview-description markdown-body"
+            />
+          )}
+        </div>
+      ) : null}
     </section>
   );
 }

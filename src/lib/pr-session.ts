@@ -68,6 +68,40 @@ export interface PrExistingReview {
   commitId?: string;
 }
 
+export type PrState = "open" | "closed" | "merged";
+export type PrMergeable = "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
+
+/** Issue-level (non-review) comment on the pull request conversation. */
+export interface PrIssueComment {
+  id: number;
+  author: PrAuthor | null;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+  htmlUrl?: string;
+}
+
+/** Compact GitHub timeline event (labels, close/reopen, force-push, …). */
+export interface PrTimelineEvent {
+  id: string;
+  event: string;
+  createdAt: string;
+  actor: PrAuthor | null;
+  label?: string;
+  assignee?: string;
+  commitId?: string;
+  rename?: { from: string; to: string };
+}
+
+export function findPendingReview(
+  reviews: PrExistingReview[] | undefined,
+  reviewId?: number,
+): PrExistingReview | undefined {
+  const pending = (reviews ?? []).filter((review) => review.state === "PENDING");
+  if (reviewId != null) return pending.find((review) => review.id === reviewId);
+  return pending[0];
+}
+
 export interface PrAuthor {
   login: string;
   avatarUrl?: string;
@@ -147,6 +181,22 @@ export interface PrSession {
   reviewDecision?: PrDecision;
   /** Durable publication receipt for the latest submit attempt. */
   publication?: PrPublication;
+  /** PR description markdown (GitHub issue body). */
+  body?: string;
+  /** OPEN/CLOSED/MERGED as lowercase. */
+  state?: PrState;
+  isDraft?: boolean;
+  createdAt?: string;
+  mergeable?: PrMergeable;
+  mergeStateStatus?: string;
+  maintainerCanModify?: boolean;
+  /** Head repository when the PR is from a fork. */
+  headOwner?: string;
+  headRepo?: string;
+  issueComments?: PrIssueComment[];
+  timelineEvents?: PrTimelineEvent[];
+  /** Epoch ms of the last successful GitHub conversation/metadata sync. */
+  syncedAt?: number;
   /** Set after a successful submit; allows us to surface a no-op on double-click. */
   submittedAt?: number;
   submittedReviewId?: number;

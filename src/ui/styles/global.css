@@ -13059,6 +13059,121 @@ button.toolbar-last-send-btn:hover {
   font-style: italic;
 }
 
+.pr-pending-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border-weak);
+}
+
+.pr-pending-review-actions p {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.pr-conversation-timeline {
+  margin: 0 0 12px;
+  overflow: hidden;
+  border: 1px solid var(--border-weak);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.pr-conversation-timeline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border-weak);
+  background: var(--bg-tertiary);
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.pr-conversation-timeline-head span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pr-conversation-timeline-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 14px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.pr-conversation-timeline-body,
+.pr-conversation-timeline-empty {
+  margin: 0;
+  padding: 11px 14px 12px;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.pr-conversation-timeline-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.pr-overview-body {
+  padding: 8px 14px 12px;
+  border-top: 1px solid var(--border-weak);
+}
+
+.pr-overview-description {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
+.pr-author-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.pr-author-actions-error {
+  color: var(--feedback-danger-text);
+  font-size: 11px;
+}
+
+.pr-author-title-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.pr-author-title-form input {
+  min-width: 180px;
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--border-normal);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+
+.srp-pending-hint {
+  margin: 0 16px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--feedback-warning-border);
+  border-radius: var(--radius-sm);
+  background: var(--feedback-warning-bg);
+  color: var(--feedback-warning-text);
+  font-size: 12px;
+}
+
 .pr-main .pr-existing-summary,
 .pr-main .pr-error {
   margin: 0 0 12px;

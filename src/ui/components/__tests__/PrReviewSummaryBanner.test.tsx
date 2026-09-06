@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("../PrChecksPopover", () => ({
@@ -43,7 +43,7 @@ describe("PrReviewSummaryBanner", () => {
 
   it("omits an empty draft badge", () => {
     render(<PrReviewSummaryBanner session={session} draftCount={0} />);
-    expect(screen.queryByText(/draft/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/1 draft/)).not.toBeInTheDocument();
   });
 
   it("shows the head and base branch names in the banner", () => {
@@ -67,6 +67,18 @@ describe("PrReviewSummaryBanner", () => {
     expect(screen.queryByText("feature/widget")).not.toBeInTheDocument();
     expect(screen.queryByText("main")).not.toBeInTheDocument();
     expect(screen.queryByTitle(/Comparing/)).not.toBeInTheDocument();
+  });
+
+  it("lets the reviewer expand the PR description", () => {
+    render(
+      <PrReviewSummaryBanner
+        session={{ ...session, body: "Fixes the race in the handler." }}
+        draftCount={0}
+      />,
+    );
+    expect(screen.queryByText(/Fixes the race/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Show description" }));
+    expect(screen.getByText(/Fixes the race in the handler/)).toBeInTheDocument();
   });
 
   it("shows omitted-patch completeness when files lack patches", () => {

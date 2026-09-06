@@ -109,7 +109,7 @@ import {
 	injectSessionTokenIntoHtml,
 	type ServerAuthConfig,
 } from "./lib/server-auth.js";
-import { FilePrSessionStore, samePrIdentity } from "./lib/pr-session.js";
+import { FilePrSessionStore, findPendingReview, samePrIdentity } from "./lib/pr-session.js";
 import type {
 	PrSessionStore,
 	PrDecision,
@@ -135,6 +135,20 @@ import {
 	paginatePrReviews,
 	buildPrOverviewPayload,
 } from "./lib/pr-agent-format.js";
+import { paginatePrTimeline, mergeBlockedReason } from "./lib/pr-timeline.js";
+import {
+	FileViewedStore,
+	fingerprintsForPatch,
+	viewedScopeKey,
+} from "./lib/viewed-files.js";
+import {
+	addCommentsToPendingReviewViaGh,
+	applyPrSuggestionViaGh,
+	fetchPrConversationViaGh,
+	mergePullRequestViaGh,
+	setPrOpenStateViaGh,
+	updatePrMetadataViaGh,
+} from "./lib/github-pr-actions.js";
 import {
 	buildPrSession,
 	refreshPrSession,
@@ -150,6 +164,9 @@ import {
 	fetchPrFileContentViaGh,
 	parsePrRef,
 	detectCwdRepo,
+	expandMultiLineComments,
+	classifyPrComments,
+	buildReviewPayload,
 } from "./lib/github.js";
 import { AiService } from "./lib/ai/service.js";
 import { ByteLruCache } from "./lib/ai/cache.js";
@@ -335,7 +352,15 @@ export function createApp(
 	}> | null = null;
 	const agentDiffCache = new AgentDiffIndexCache();
 	const uiStateStore = new FileUiStateStore();
+	const viewedStore = new FileViewedStore();
 	const viewedFiles = new Set<string>();
+
+	const currentViewedScope = async () => {
+		const session = prMode ? await prStore.get() : null;
+		const key = viewedScopeKey(session, prMode);
+		const fingerprints = session ? fingerprintsForPatch(session.diff ?? "") : null;
+		return { key, fingerprints, headSha: session?.headSha, session };
+	};
 	/** Agent-reported progress events for the human UI (SSE `agent-progress`). */
 	let lastAgentProgress: {
 		at: number;
@@ -1738,8 +1763,13 @@ export function createApp(
 		return c.json(merged);
 	});
 
-	app.get("/api/viewed", (c) => {
-		return c.json([...viewedFiles]);
+	app.get("/api/viewed", async (c) => {
+		const scope = await currentViewedScope();
+		if (!prMode) {
+			return c.json([...viewedFiles]);
+		}
+		const paths = await viewedStore.list(scope.key, scope.fingerprints);
+		return c.json(paths);
 	});
 
 	app.put("/api/viewed", async (c) => {
@@ -1747,12 +1777,25 @@ export function createApp(
 			filePath: string;
 			viewed: boolean;
 		}>();
-		if (viewed) {
-			viewedFiles.add(filePath);
-		} else {
-			viewedFiles.delete(filePath);
+		if (!prMode) {
+			if (viewed) viewedFiles.add(filePath);
+			else viewedFiles.delete(filePath);
+			const list = [...viewedFiles];
+			await viewedStore.toggle("local", filePath, viewed);
+			broadcast("viewed", JSON.stringify(list));
+			return c.json({ ok: true });
 		}
-		broadcast("viewed", JSON.stringify([...viewedFiles]));
+		const scope = await currentViewedScope();
+		const fingerprint = scope.fingerprints?.[filePath];
+		const paths = await viewedStore.toggle(
+			scope.key,
+			filePath,
+			viewed,
+			fingerprint,
+			scope.headSha,
+			scope.fingerprints,
+		);
+		broadcast("viewed", JSON.stringify(paths));
 		return c.json({ ok: true });
 	});
 
@@ -1929,6 +1972,17 @@ export function createApp(
 			reviewBody: session.reviewBody,
 			reviewDecision: session.reviewDecision,
 			publication: session.publication,
+			body: session.body,
+			state: session.state,
+			isDraft: session.isDraft,
+			createdAt: session.createdAt,
+			mergeable: session.mergeable,
+			mergeStateStatus: session.mergeStateStatus,
+			maintainerCanModify: session.maintainerCanModify,
+			issueComments: session.issueComments ?? [],
+			timelineEvents: session.timelineEvents ?? [],
+			syncedAt: session.syncedAt,
+			mergeBlockedReason: mergeBlockedReason(session),
 		});
 	});
 
@@ -2044,6 +2098,8 @@ export function createApp(
 			bodyMaxChars: parseUInt(c.req.query("bodyMaxChars"), 500),
 			fullBody:
 				c.req.query("fullBody") === "true" || c.req.query("fullBody") === "1",
+			replyCursor: parseUInt(c.req.query("replyCursor"), 0),
+			replyLimit: parseUInt(c.req.query("replyLimit"), 20),
 		});
 		const format = (c.req.query("format") ?? "json").toLowerCase();
 		if (format === "xml") {
@@ -2074,6 +2130,23 @@ export function createApp(
 		return c.json(page);
 	});
 
+	app.get("/api/gh/timeline", async (c) => {
+		if (!prMode) return notInPrMode(c);
+		const session = await prStore.get();
+		if (!session) return notInPrMode(c);
+		const page = paginatePrTimeline(session, {
+			cursor: parseUInt(c.req.query("cursor"), 0),
+			limit: parseUInt(c.req.query("limit"), 30),
+		});
+		return c.json({
+			...page,
+			headSha: session.headSha,
+			syncedAt: session.syncedAt ?? null,
+			body: session.body ?? "",
+			state: session.state ?? null,
+		});
+	});
+
 	app.post("/api/gh/reviews/:id/submit", async (c) => {
 		if (!prMode) return notInPrMode(c);
 		const session = await prStore.get();
@@ -2102,11 +2175,40 @@ export function createApp(
 			);
 		}
 		const note = typeof body.body === "string" ? body.body : undefined;
+		const attachDrafts = body.attachDrafts !== false;
+		const resolved = resolvedFromSession(session);
+		const classified = classifyPrComments(session.comments ?? []);
+		if (attachDrafts) {
+			const inline = expandMultiLineComments(session.comments ?? []);
+			if (inline.length > 0) {
+				const attached = await addCommentsToPendingReviewViaGh(
+					resolved,
+					reviewId,
+					inline,
+				);
+				if (!attached.ok) {
+					return c.json(
+						{ error: attached.error ?? "Failed to attach draft comments" },
+						502,
+					);
+				}
+			}
+		}
+		const payload = buildReviewPayload({
+			decision:
+				event === "APPROVE"
+					? "approve"
+					: event === "REQUEST_CHANGES"
+						? "request-changes"
+						: "comment",
+			body: note ?? "",
+			comments: attachDrafts ? classified.fileLevel : [],
+		});
 		const result = await submitPendingReviewViaGh(
-			resolvedFromSession(session),
+			resolved,
 			reviewId,
 			event,
-			note,
+			payload.body,
 		);
 		if (!result.ok)
 			return c.json({ error: result.error ?? "Submit failed" }, 502);
@@ -2126,8 +2228,25 @@ export function createApp(
 					}
 				: review,
 		);
+		const submittedIds = new Set(
+			attachDrafts
+				? [...classified.inline, ...classified.fileLevel].map(
+						(comment) => comment.id,
+					)
+				: [],
+		);
 		await prStore.apply((latest) =>
-			latest ? { ...latest, existingReviews } : null,
+			latest
+				? {
+						...latest,
+						existingReviews,
+						comments: attachDrafts
+							? (latest.comments ?? []).filter(
+									(comment) => !submittedIds.has(comment.id),
+								)
+							: latest.comments,
+					}
+				: null,
 		);
 		return c.json({ ok: true, reviewId, htmlUrl: result.htmlUrl });
 	});
@@ -2159,6 +2278,50 @@ export function createApp(
 			};
 		});
 		return c.json({ ok: true, reviewId });
+	});
+
+	/** Attach local draft comments onto an existing PENDING GitHub review. */
+	app.post("/api/gh/reviews/:id/comments", async (c) => {
+		if (!prMode) return notInPrMode(c);
+		const session = await prStore.get();
+		if (!session) return notInPrMode(c);
+		const reviewId = Number(c.req.param("id"));
+		if (!Number.isFinite(reviewId))
+			return c.json({ error: "Invalid review id" }, 400);
+		const pending = findPendingReview(session.existingReviews, reviewId);
+		if (!pending) return c.json({ error: "No pending review with that id" }, 404);
+		const inline = expandMultiLineComments(session.comments ?? []);
+		if (inline.length === 0) {
+			return c.json({ ok: true, reviewId, attached: 0, failed: 0 });
+		}
+		const result = await addCommentsToPendingReviewViaGh(
+			resolvedFromSession(session),
+			reviewId,
+			inline,
+		);
+		if (!result.ok)
+			return c.json({ error: result.error ?? "Resume failed" }, 502);
+		const attachedIds = new Set(
+			(session.comments ?? [])
+				.filter((comment) => comment.status === "open" && comment.lineNumber !== 0)
+				.map((comment) => comment.id),
+		);
+		await prStore.apply((latest) =>
+			latest
+				? {
+						...latest,
+						comments: (latest.comments ?? []).filter(
+							(comment) => !attachedIds.has(comment.id),
+						),
+					}
+				: null,
+		);
+		return c.json({
+			ok: true,
+			reviewId,
+			attached: result.attached,
+			failed: result.failed,
+		});
 	});
 
 	/**
@@ -2254,7 +2417,24 @@ export function createApp(
 					(comment) => comment.createdAt > current.submittedAt!,
 				)
 			: current.comments;
-		const next = { ...current, comments, existingComments, existingReviews };
+		let issueComments = current.issueComments ?? [];
+		let timelineEvents = current.timelineEvents ?? [];
+		try {
+			const convo = await fetchPrConversationViaGh(resolved);
+			issueComments = convo.issueComments;
+			timelineEvents = convo.timelineEvents;
+		} catch {
+			// Keep last-known conversation on a timeline fetch outage.
+		}
+		const next = {
+			...current,
+			comments,
+			existingComments,
+			existingReviews,
+			issueComments,
+			timelineEvents,
+			syncedAt: Date.now(),
+		};
 		if (remainingPending.length > 0)
 			next.pendingOptimisticReplyIds = remainingPending;
 		else delete next.pendingOptimisticReplyIds;
@@ -2292,7 +2472,14 @@ export function createApp(
 					: drafts;
 				return { ...refreshed, comments };
 			});
-			return c.json({ ok: true, headSha: next?.headSha ?? refreshed.headSha });
+			const persisted = next ?? refreshed;
+			const viewed = await viewedStore.reconcile(
+				viewedScopeKey(persisted, true),
+				persisted.headSha,
+				fingerprintsForPatch(persisted.diff ?? ""),
+			);
+			broadcast("viewed", JSON.stringify(viewed));
+			return c.json({ ok: true, headSha: persisted.headSha });
 		} catch (err: any) {
 			return c.json({ error: err?.message ?? "Refresh failed" }, 500);
 		}
@@ -2422,6 +2609,59 @@ export function createApp(
 		return c.json({ ok: true, existingComments: next.existingComments });
 	});
 
+	app.post("/api/gh/existing-comments/:id/apply-suggestion", async (c) => {
+		if (!prMode) return notInPrMode(c);
+		const session = await prStore.get();
+		if (!session) return notInPrMode(c);
+		const commentId = Number(c.req.param("id"));
+		const comment = (session.existingComments ?? []).find(
+			(item) => item.id === commentId,
+		);
+		if (!comment) return c.json({ error: "Comment not found" }, 404);
+		const body = (await c.req.json().catch(() => ({}))) as {
+			expectedHeadSha?: string;
+			dryRun?: boolean;
+		};
+		const expectedHeadSha = body.expectedHeadSha || session.headSha;
+		if (expectedHeadSha !== session.headSha) {
+			return c.json(
+				{
+					error: "expectedHeadSha does not match the reviewed head",
+					headSha: session.headSha,
+				},
+				409,
+			);
+		}
+		if (!session.headRefName) {
+			return c.json({ error: "PR head branch is unknown" }, 400);
+		}
+		if (body.dryRun === true) {
+			return c.json({
+				ok: true,
+				dryRun: true,
+				path: comment.path,
+				expectedHeadSha,
+			});
+		}
+		const result = await applyPrSuggestionViaGh({
+			resolved: resolvedFromSession(session),
+			path: comment.path,
+			body: comment.body,
+			line: comment.line ?? 0,
+			startLine: comment.startLine,
+			side: comment.side,
+			expectedHeadSha,
+			headRefName: session.headRefName,
+			headOwner: session.headOwner,
+			headRepo: session.headRepo,
+		});
+		if (!result.ok) {
+			const status = /moved|mismatch|409/i.test(result.error ?? "") ? 409 : 502;
+			return c.json({ error: result.error ?? "Apply failed" }, status);
+		}
+		return c.json({ ok: true, sha: result.sha, path: comment.path });
+	});
+
 	/** Resolve or reopen a published GitHub review thread. */
 	app.put("/api/gh/review-threads/:threadId", async (c) => {
 		if (!prMode) return notInPrMode(c);
@@ -2472,6 +2712,122 @@ export function createApp(
 				500,
 			);
 		}
+	});
+
+	app.patch("/api/gh/pr", async (c) => {
+		if (!prMode) return notInPrMode(c);
+		const session = await prStore.get();
+		if (!session) return notInPrMode(c);
+		const body = (await c.req.json().catch(() => ({}))) as {
+			title?: string;
+			body?: string;
+			dryRun?: boolean;
+		};
+		if (body.dryRun === true) {
+			return c.json({
+				ok: true,
+				dryRun: true,
+				title: body.title ?? session.title,
+				body: body.body ?? session.body ?? "",
+			});
+		}
+		const result = await updatePrMetadataViaGh(resolvedFromSession(session), {
+			title: body.title,
+			body: body.body,
+		});
+		if (!result.ok) return c.json({ error: result.error ?? "Update failed" }, 502);
+		const next = await prStore.apply((latest) =>
+			latest
+				? {
+						...latest,
+						...(typeof body.title === "string" ? { title: body.title } : {}),
+						...(typeof body.body === "string" ? { body: body.body } : {}),
+					}
+				: null,
+		);
+		return c.json({
+			ok: true,
+			title: next?.title ?? session.title,
+			body: next?.body ?? session.body ?? "",
+		});
+	});
+
+	const setPrOpenState = async (
+		c: any,
+		state: "open" | "closed",
+		dryRun: boolean,
+	) => {
+		if (!prMode) return notInPrMode(c);
+		const session = await prStore.get();
+		if (!session) return notInPrMode(c);
+		if (dryRun) return c.json({ ok: true, dryRun: true, state });
+		const result = await setPrOpenStateViaGh(
+			resolvedFromSession(session),
+			state,
+		);
+		if (!result.ok) return c.json({ error: result.error ?? "Update failed" }, 502);
+		await prStore.apply((latest) =>
+			latest ? { ...latest, state: state === "closed" ? "closed" : "open" } : null,
+		);
+		return c.json({ ok: true, state });
+	};
+
+	app.post("/api/gh/pr/close", async (c) => {
+		const body = (await c.req.json().catch(() => ({}))) as { dryRun?: boolean };
+		return setPrOpenState(c, "closed", body.dryRun === true);
+	});
+
+	app.post("/api/gh/pr/reopen", async (c) => {
+		const body = (await c.req.json().catch(() => ({}))) as { dryRun?: boolean };
+		return setPrOpenState(c, "open", body.dryRun === true);
+	});
+
+	app.post("/api/gh/pr/merge", async (c) => {
+		if (!prMode) return notInPrMode(c);
+		const session = await prStore.get();
+		if (!session) return notInPrMode(c);
+		const body = (await c.req.json().catch(() => ({}))) as {
+			method?: string;
+			expectedHeadSha?: string;
+			dryRun?: boolean;
+			commitTitle?: string;
+			commitMessage?: string;
+		};
+		const method =
+			body.method === "squash" || body.method === "rebase" || body.method === "merge"
+				? body.method
+				: "merge";
+		const expectedHeadSha = body.expectedHeadSha || session.headSha;
+		if (expectedHeadSha !== session.headSha) {
+			return c.json(
+				{
+					error: "expectedHeadSha does not match the reviewed head",
+					headSha: session.headSha,
+				},
+				409,
+			);
+		}
+		const blocked = mergeBlockedReason(session);
+		if (blocked) return c.json({ error: blocked }, 409);
+		if (body.dryRun === true) {
+			return c.json({
+				ok: true,
+				dryRun: true,
+				method,
+				expectedHeadSha,
+			});
+		}
+		const result = await mergePullRequestViaGh(resolvedFromSession(session), {
+			method,
+			expectedHeadSha,
+			commitTitle: body.commitTitle,
+			commitMessage: body.commitMessage,
+		});
+		if (!result.ok) return c.json({ error: result.error ?? "Merge failed" }, 502);
+		await prStore.apply((latest) =>
+			latest ? { ...latest, state: "merged" } : null,
+		);
+		return c.json({ ok: true, sha: result.sha, method });
 	});
 
 	// PR-mode comments live inside `pr-session.json`. The UI calls these instead
@@ -2644,6 +3000,11 @@ export function createApp(
 		if (!submitInFlight) {
 			submitInFlight = (async () => {
 				const current = (await prStore.get()) ?? session;
+				const pendingReviewIdRaw = body.pendingReviewId;
+				const pendingReviewId =
+					typeof pendingReviewIdRaw === "number"
+						? pendingReviewIdRaw
+						: findPendingReview(current.existingReviews)?.id;
 				const submittedIds = new Set(
 					(current.comments ?? []).map((comment) => comment.id),
 				);
@@ -2669,6 +3030,7 @@ export function createApp(
 					body: generalBody,
 					comments: current.comments ?? [],
 					commitId: current.headSha,
+					pendingReviewId,
 				});
 
 				if (result.ok) {

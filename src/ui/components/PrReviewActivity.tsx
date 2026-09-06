@@ -11,6 +11,7 @@ import {
 import type { PrExistingReview } from "../../lib/pr-session";
 import { timeAgo } from "../utils";
 import { Markdown } from "./Markdown";
+import { ConfirmDialog } from "../primitives/ConfirmDialog";
 
 const REVIEW_STATE = {
   APPROVED: {
@@ -66,6 +67,7 @@ export function PrReviewActivity({
   const [failedAvatarUrl, setFailedAvatarUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [discardOpen, setDiscardOpen] = useState(false);
 
   useEffect(() => {
     setActiveId(ordered[0]?.id ?? null);
@@ -251,13 +253,28 @@ export function PrReviewActivity({
               type="button"
               className="btn btn-sm"
               disabled={busy}
-              onClick={() => void runPending(() => onDiscardPending(review.id))}
+              onClick={() => setDiscardOpen(true)}
             >
               Discard pending review
             </button>
           )}
         </div>
       )}
+      <ConfirmDialog
+        open={discardOpen}
+        title="Discard pending review?"
+        description="This deletes the unpublished GitHub pending review. Local drafts are kept."
+        confirmLabel="Discard"
+        variant="danger"
+        busy={busy}
+        onConfirm={() => {
+          if (!onDiscardPending) return;
+          void runPending(() => onDiscardPending(review.id)).finally(() =>
+            setDiscardOpen(false),
+          );
+        }}
+        onCancel={() => setDiscardOpen(false)}
+      />
     </section>
   );
 }

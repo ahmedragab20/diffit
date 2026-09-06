@@ -97,6 +97,8 @@ describe('buildPrOverviewPayload', () => {
     expect(ov.counts.unresolvedThreads).toBe(1)
     expect(ov.counts.resolvedThreads).toBe(1)
     expect(ov.counts.reviews).toBe(1)
+    expect(ov.counts.pendingReviews).toBe(0)
+    expect(ov.hasBody).toBe(false)
     expect(ov.counts.localDrafts).toBe(1)
     expect(ov.counts.openDrafts).toBe(1)
     expect(ov.patchBytes).toBeGreaterThan(0)
@@ -115,6 +117,24 @@ describe('paginatePrThreads', () => {
     expect(page.threads[0].bodyTruncated).toBe(true)
     expect(page.threads[0].body.endsWith('…')).toBe(true)
     expect(page.threads[0].replyCount).toBe(1)
+    expect(page.threads[0].repliesReturned).toBe(1)
+    expect(page.headSha).toBe('abc123def456')
+  })
+
+  it('paginates replies so a giant thread cannot dump every reply', () => {
+    const session = sampleSession()
+    session.existingComments[0].replies = Array.from({ length: 5 }, (_, i) => ({
+      id: 100 + i,
+      author: { login: 'bob' },
+      body: `reply ${i}`,
+      createdAt: '2026-01-01T01:00:00.000Z',
+      updatedAt: '2026-01-01T01:00:00.000Z',
+    }))
+    const page = paginatePrThreads(session, { replyLimit: 2, replyCursor: 2 })
+    expect(page.threads[0].replyCount).toBe(5)
+    expect(page.threads[0].repliesReturned).toBe(2)
+    expect(page.threads[0].replies[0].id).toBe(102)
+    expect(page.threads[0].repliesNextCursor).toBe(4)
   })
 
   it('requires fullBody to bypass a zero body budget', () => {

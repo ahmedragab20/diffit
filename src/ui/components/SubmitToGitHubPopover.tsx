@@ -65,6 +65,9 @@ export function SubmitToGitHubPopover({
     panelRef,
   } = useSubmitPanelSize();
 
+  const pendingReview = (session.existingReviews ?? []).find(
+    (review) => review.state === "PENDING",
+  );
   const classified = useMemo(() => classifyPrComments(comments), [comments]);
   const publishable = useMemo(
     () =>
@@ -98,6 +101,7 @@ export function SubmitToGitHubPopover({
       const result = await submitMutation.mutateAsync({
         decision: verdict,
         body: general,
+        pendingReviewId: pendingReview?.id,
       });
       onSubmitted?.(result);
       setGeneral("");
@@ -272,6 +276,13 @@ export function SubmitToGitHubPopover({
             />
           </div>
 
+          {pendingReview && (
+            <p className="srp-pending-hint">
+              A pending GitHub review (#{pendingReview.id}) will receive these
+              drafts instead of creating a new review.
+            </p>
+          )}
+
           {submitMutation.isError && (
             <div className="srp-error" role="alert">
               <AlertCircle size={13} />
@@ -352,7 +363,7 @@ const VERDICT_OPTIONS: {
     value: "draft",
     label: "Save as draft",
     description:
-      "Post a PENDING review on GitHub — finish it later in the PR UI.",
+      "Post a PENDING review on GitHub — resume, submit, or discard it here.",
     icon: FilePenLine,
     className: "plan-verdict-comment-only",
   },

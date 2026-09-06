@@ -66,6 +66,8 @@ interface DiffViewerProps {
     threadId: string,
     resolved: boolean,
   ) => Promise<void>;
+  onApplyExisting?: (commentId: number) => Promise<void>;
+  expectedHeadSha?: string;
   /** Whether controls that mutate/open the local working tree are available. */
   allowLocalActions?: boolean;
   /**
@@ -161,6 +163,8 @@ export const DiffViewer = memo(function DiffViewer({
   onEditExisting,
   onDeleteExisting,
   onSetExistingResolved,
+  onApplyExisting,
+  expectedHeadSha,
   allowLocalActions = true,
   onCardToggleCollapse,
   canEdit = false,
@@ -260,6 +264,8 @@ export const DiffViewer = memo(function DiffViewer({
               onEditExisting={onEditExisting}
               onDeleteExisting={onDeleteExisting}
               onSetExistingResolved={onSetExistingResolved}
+              onApplyExisting={onApplyExisting}
+              expectedHeadSha={expectedHeadSha}
               allowLocalActions={allowLocalActions}
               onCardToggleCollapse={onCardToggleCollapse}
               canEdit={canEdit}

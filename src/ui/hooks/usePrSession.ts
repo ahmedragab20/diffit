@@ -314,6 +314,7 @@ export interface SubmitPrReviewInput {
   decision: PrDecision;
   body: string;
   dryRun?: boolean;
+  pendingReviewId?: number;
 }
 
 export interface SubmitPrReviewResult {
@@ -341,6 +342,7 @@ export function useSubmitPrReview() {
             decision: input.decision,
             body: input.body,
             dryRun: input.dryRun,
+            pendingReviewId: input.pendingReviewId,
           }),
         });
         const data = (await res.json()) as SubmitPrReviewResult;

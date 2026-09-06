@@ -63,6 +63,8 @@ import { PrReviewActivity } from "./PrReviewActivity";
 import { PrConversationInbox } from "./PrConversationInbox";
 import { PrReviewSummaryBanner } from "./PrReviewSummaryBanner";
 import { commentsMissingFromPatch } from "../../lib/pr-conversation-inbox";
+import { buildPrTimeline } from "../../lib/pr-timeline";
+import { PrConversationTimeline } from "./PrConversationTimeline";
 import { PrSubmittedToast } from "./PrSubmittedToast";
 import { SearchPalette } from "./SearchPalette";
 import { ShortcutsHelpModal } from "./ShortcutsHelpModal";
@@ -145,6 +147,7 @@ export function PrReviewApp() {
   const [submissionToast, setSubmissionToast] =
     useState<SubmitPrReviewResult | null>(null);
   const [aiRailOpen, setAiRailOpen] = useState(false);
+  const [timelineCursor, setTimelineCursor] = useState(0);
 
   const appRef = useRef<HTMLDivElement>(null);
   const sidebarRef = useRef<HTMLElement>(null);
@@ -190,6 +193,16 @@ export function PrReviewApp() {
         files.map((file) => file.name),
       ),
     [session, files],
+  );
+
+  const timelineItems = useMemo(
+    () => (session ? buildPrTimeline(session) : []),
+    [session],
+  );
+  const timelinePageSize = 20;
+  const timelinePage = timelineItems.slice(
+    timelineCursor,
+    timelineCursor + timelinePageSize,
   );
 
   const commentCounts = useMemo(() => {
@@ -342,6 +355,26 @@ export function PrReviewApp() {
       await queryClient.invalidateQueries({ queryKey: ["pr-session"] });
     },
     [queryClient],
+  );
+
+  const applyExistingSuggestion = useCallback(
+    async (commentId: number) => {
+      const response = await fetch(
+        `/api/gh/existing-comments/${commentId}/apply-suggestion`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expectedHeadSha: session?.headSha }),
+        },
+      );
+      const data = (await response.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (!response.ok)
+        throw new Error(data.error || `HTTP ${response.status}`);
+      await queryClient.invalidateQueries({ queryKey: ["pr-session"] });
+    },
+    [queryClient, session?.headSha],
   );
 
   const setExistingThreadResolved = useCallback(
@@ -737,6 +770,9 @@ export function PrReviewApp() {
           onDeleteComment={removeComment}
           onSubmitted={setSubmissionToast}
           onOpenAiAssistant={() => setAiRailOpen(true)}
+          onAuthorChanged={() =>
+            queryClient.invalidateQueries({ queryKey: ["pr-session"] })
+          }
         />
 
         {!sidebarCollapsed && (
@@ -836,6 +872,12 @@ export function PrReviewApp() {
                 queryClient.invalidateQueries({ queryKey: ["pr-session"] });
               }}
             />
+            <PrConversationTimeline
+              items={timelinePage}
+              total={timelineItems.length}
+              cursor={timelineCursor}
+              onPage={setTimelineCursor}
+            />
             <PrConversationInbox comments={inboxComments} />
             {(session.existingComments?.length ?? 0) > 0 && (
               <div className="pr-existing-summary">
@@ -887,6 +929,8 @@ export function PrReviewApp() {
                 }
                 onDeleteExisting={(id) => mutateExistingComment("DELETE", id)}
                 onSetExistingResolved={setExistingThreadResolved}
+                onApplyExisting={applyExistingSuggestion}
+                expectedHeadSha={session.headSha}
               />
             )}
           </main>
@@ -986,6 +1030,8 @@ function PrDiffSurface({
   onEditExisting,
   onDeleteExisting,
   onSetExistingResolved,
+  onApplyExisting,
+  expectedHeadSha,
 }: {
   files: FileDiffMetadata[];
   fileAnnotations: Map<
@@ -1017,6 +1063,8 @@ function PrDiffSurface({
   onEditExisting: (commentId: number, body: string) => Promise<void>;
   onDeleteExisting: (commentId: number) => Promise<void>;
   onSetExistingResolved: (threadId: string, resolved: boolean) => Promise<void>;
+  onApplyExisting: (commentId: number) => Promise<void>;
+  expectedHeadSha?: string;
 }) {
   return (
     <div className="pr-diff-surface">
@@ -1071,6 +1119,8 @@ function PrDiffSurface({
               onEditExisting={onEditExisting}
               onDeleteExisting={onDeleteExisting}
               onSetExistingResolved={onSetExistingResolved}
+              onApplyExisting={onApplyExisting}
+              expectedHeadSha={expectedHeadSha}
               onCardToggleCollapse={onCardToggleCollapse}
               allowLocalActions={false}
               fileSearch={fileSearch}
