@@ -3,31 +3,32 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { DiffLineAnnotation, FileDiffMetadata } from '@pierre/diffs'
 import type { EditSessionView } from '../../hooks/useEditSessions'
-import type { ReviewComment } from '../../lib/types'
+import type { ReviewComment } from '../../../lib/types'
+import type { ComponentProps } from 'react'
 
 // Capture the props actually handed to MultiFileDiff so we can assert the
-// edit surface (`edit`, seed content) and drive editorOptions callbacks.
+// edit surface (`edit`, seed content) and drive edit callbacks.
 const { lastMultiFileDiffProps, StubMultiFileDiff } = vi.hoisted(() => {
   const lastMultiFileDiffProps: {
     edit?: boolean
     newFileContents?: string
     oldFileContents?: string
-    onChange?: (...args: unknown[]) => void
+    onChange?: (event: { file: unknown; lineAnnotations?: unknown }) => void
     onAttach?: (...args: unknown[]) => void
   } = {}
   const StubMultiFileDiff = (props: {
     edit?: boolean
     newFile?: { name?: string; contents?: string }
     oldFile?: { name?: string; contents?: string }
+    onEditChange?: (event: { file: unknown; lineAnnotations?: unknown }) => void
     editorOptions?: {
-      onChange?: (...args: unknown[]) => void
       onAttach?: (...args: unknown[]) => void
     }
   }) => {
     lastMultiFileDiffProps.edit = props.edit
     lastMultiFileDiffProps.newFileContents = props.newFile?.contents
     lastMultiFileDiffProps.oldFileContents = props.oldFile?.contents
-    lastMultiFileDiffProps.onChange = props.editorOptions?.onChange
+    lastMultiFileDiffProps.onChange = props.onEditChange
     lastMultiFileDiffProps.onAttach = props.editorOptions?.onAttach
     return (
       <div
@@ -78,15 +79,9 @@ function session(overrides: Partial<EditSessionView> = {}): EditSessionView {
   }
 }
 
-interface RenderArgs {
-  canEdit?: boolean
-  editSession?: EditSessionView
-  onRequestEdit?: ReturnType<typeof vi.fn>
-  onEditChange?: ReturnType<typeof vi.fn>
-  onEditAttach?: ReturnType<typeof vi.fn>
-  onEditSave?: ReturnType<typeof vi.fn>
-  onEditDiscard?: ReturnType<typeof vi.fn>
-}
+type RenderArgs = Pick<ComponentProps<typeof FileDiffCard>,
+  'canEdit' | 'editSession' | 'onRequestEdit' | 'onEditChange' | 'onEditAttach' | 'onEditSave' | 'onEditDiscard'
+>
 
 function renderCard(args: RenderArgs = {}) {
   const {
@@ -220,7 +215,7 @@ describe('FileDiffCard in-place edit surface', () => {
     expect(lastMultiFileDiffProps.oldFileContents).toBe('old content')
   })
 
-  it('wires editorOptions onChange to onEditChange(filePath, file, undefined)', async () => {
+  it('wires component onEditChange to onEditChange(filePath, file, undefined)', async () => {
     const { onEditChange } = renderCard({
       canEdit: true,
       editSession: session(),
@@ -229,7 +224,7 @@ describe('FileDiffCard in-place edit surface', () => {
     expect(lastMultiFileDiffProps.onChange).toBeTypeOf('function')
     const file = { name: FILE_PATH, contents: 'edited' }
     act(() => {
-      lastMultiFileDiffProps.onChange!(file as never, undefined)
+      lastMultiFileDiffProps.onChange!({ file, lineAnnotations: undefined })
     })
     expect(onEditChange).toHaveBeenCalledTimes(1)
     expect(onEditChange).toHaveBeenCalledWith(FILE_PATH, file, undefined)

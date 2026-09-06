@@ -10,7 +10,15 @@ vi.mock('../useHaptics', () => ({
 
 import { useDiffReviewKeymaps } from '../useDiffReviewKeymaps'
 
-function makeActions() {
+type TestActions = Omit<
+  Parameters<typeof useDiffReviewKeymaps>[0],
+  'onExitZen' | 'onCloseFileSearch'
+> & {
+  onExitZen?: ReturnType<typeof vi.fn<() => void>>
+  onCloseFileSearch?: ReturnType<typeof vi.fn<() => void>>
+}
+
+function makeActions(): TestActions {
   return {
     onNavigateFile: vi.fn(),
     onNavigateCommit: vi.fn(),
@@ -210,6 +218,95 @@ describe('shared diff review keymaps', () => {
     input.blur()
     fireEvent.keyDown(window, { key: 'Enter', metaKey: true })
     expect(actions.onOpenSendReview).toHaveBeenCalledOnce()
+  })
+
+  it('does not invoke global Cmd+Enter when a bubbling keydown is already defaultPrevented', () => {
+    const actions = makeActions()
+    render(
+      <Harness actions={actions}>
+        <button data-testid="button" onKeyDown={(event) => event.preventDefault()} />
+      </Harness>,
+    )
+
+    fireEvent.keyDown(screen.getByTestId('button'), {
+      key: 'Enter',
+      metaKey: true,
+    })
+
+    expect(actions.onOpenSendReview).not.toHaveBeenCalled()
+  })
+
+  it('ignores composing j and Cmd+Enter keydowns', () => {
+    const actions = makeActions()
+    render(<Harness actions={actions} />)
+
+    fireEvent.keyDown(window, { key: 'j', isComposing: true })
+    fireEvent.keyDown(window, { key: 'Enter', metaKey: true, keyCode: 229 })
+
+    expect(window.scrollBy).not.toHaveBeenCalled()
+    expect(actions.onOpenSendReview).not.toHaveBeenCalled()
+  })
+
+  it('does not invoke Cmd+Enter after a textarea removes and blurs itself synchronously', () => {
+    const actions = makeActions()
+    const { container } = render(<Harness actions={actions} />)
+    const textarea = document.createElement('textarea')
+    textarea.addEventListener('keydown', () => {
+      textarea.blur()
+      textarea.remove()
+    })
+    container.appendChild(textarea)
+
+    textarea.focus()
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true })
+
+    expect(actions.onOpenSendReview).not.toHaveBeenCalled()
+  })
+
+  it('does not handle keydowns from a focused contenteditable inside a shadow root', () => {
+    const actions = makeActions()
+    const { container } = render(<Harness actions={actions} />)
+    const host = document.createElement('div')
+    if (typeof host.attachShadow !== 'function') return
+    const shadow = host.attachShadow({ mode: 'open' })
+    const editable = document.createElement('div')
+    editable.setAttribute('contenteditable', 'true')
+    shadow.appendChild(editable)
+    container.appendChild(host)
+    editable.focus()
+
+    fireEvent.keyDown(window, { key: 'j' })
+    fireEvent.keyDown(window, { key: 'Enter', metaKey: true })
+
+    expect(window.scrollBy).not.toHaveBeenCalled()
+    expect(actions.onOpenSendReview).not.toHaveBeenCalled()
+  })
+
+  it('does not scroll for meta+j or alt+j', () => {
+    const actions = makeActions()
+    render(<Harness actions={actions} />)
+
+    fireEvent.keyDown(window, { key: 'j', metaKey: true })
+    fireEvent.keyDown(window, { key: 'j', altKey: true })
+
+    expect(window.scrollBy).not.toHaveBeenCalled()
+    expect(actions.onNavigateFile).not.toHaveBeenCalled()
+  })
+
+  it('does not trigger background actions while a dialog is mounted', () => {
+    const actions = makeActions()
+    render(
+      <Harness actions={actions}>
+        <div role="dialog" data-testid="dialog" />
+      </Harness>,
+    )
+
+    const dialog = screen.getByTestId('dialog')
+    fireEvent.keyDown(dialog, { key: 'j' })
+    fireEvent.keyDown(dialog, { key: 'Enter', metaKey: true })
+
+    expect(window.scrollBy).not.toHaveBeenCalled()
+    expect(actions.onOpenSendReview).not.toHaveBeenCalled()
   })
 
   it('does not open send-review while a contenteditable inside a shadow root has focus', () => {

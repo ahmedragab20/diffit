@@ -211,8 +211,8 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                 draftKey={`edit:${comment.id}`}
                 initialBody={comment.body}
                 lineContent={comment.lineContent}
-                onSubmit={(newBody) => {
-                  editComment(comment.id, newBody)
+                onSubmit={async (newBody) => {
+                  await editComment(comment.id, newBody)
                   setIsEditing(false)
                 }}
                 onCancel={() => setIsEditing(false)}
@@ -467,8 +467,8 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                       <CommentForm
                         draftKey={`reply-edit:${comment.id}:${reply.id}`}
                         initialBody={reply.body}
-                        onSubmit={(body) => {
-                          editReply(comment.id, reply.id, body)
+                        onSubmit={async (body) => {
+                          await editReply(comment.id, reply.id, body)
                           setEditingReplyId(null)
                         }}
                         onCancel={() => setEditingReplyId(null)}
@@ -486,8 +486,7 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
 
       {/* Footer (Reply trigger and Resolve toggle) */}
       <div className="comment-canvas-footer">
-        {!isReplying &&
-          ((comment.severity && comment.severity !== 'none') || comment.outdated) && (
+        {!isReplying && ((comment.severity && comment.severity !== 'none') || comment.outdated) && (
           <div className="comment-canvas-footer-meta">
             {comment.severity && comment.severity !== 'none' && (
               <SeverityBadge severity={comment.severity} />
@@ -555,8 +554,8 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
           <div className="comment-reply-composer">
             <CommentForm
               draftKey={`reply:${comment.id}`}
-              onSubmit={(body) => {
-                addReply(comment.id, body)
+              onSubmit={async (body) => {
+                await addReply(comment.id, body)
                 setIsReplying(false)
               }}
               onCancel={() => {

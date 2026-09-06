@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import type { Scope } from '../lib/searchTypes'
 import { fireFeedback, playSound } from './useHaptics'
-import { isTypingInFocus } from '../utils'
+import { isTypingInFocus, isEditableKeyEvent } from '../utils'
 
 interface DiffReviewKeymapActions {
   onNavigateFile: (direction: 'next' | 'prev') => void
@@ -54,6 +54,15 @@ export function useDiffReviewKeymaps(actions: DiffReviewKeymapActions) {
     }
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.keyCode === 229 ||
+        document.querySelector('[role="dialog"], [role="alertdialog"]')
+      ) {
+        resetBuffer()
+        return
+      }
       // The command palette remains global, including while an editor is focused.
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault()
@@ -93,11 +102,16 @@ export function useDiffReviewKeymaps(actions: DiffReviewKeymapActions) {
       // The focus guard must also see contenteditable surfaces inside shadow
       // roots (the @pierre/diffs edit surface), where document.activeElement
       // retargets to the shadow host.
-      if (isTypingInFocus()) return
+      if (isEditableKeyEvent(event) || isTypingInFocus()) {
+        resetBuffer()
+        return
+      }
 
       if (
         (event.metaKey || event.ctrlKey) &&
-        (event.key === '?' || (event.key === '/' && event.shiftKey) || (event.code === 'Slash' && event.shiftKey))
+        (event.key === '?' ||
+          (event.key === '/' && event.shiftKey) ||
+          (event.code === 'Slash' && event.shiftKey))
       ) {
         event.preventDefault()
         actions.onOpenShortcuts()
@@ -108,11 +122,7 @@ export function useDiffReviewKeymaps(actions: DiffReviewKeymapActions) {
 
       // Submit-review dialog: Cmd/Ctrl+Enter. Lives after the input-focus guard
       // so the overall-comment field keeps its local ⌘Enter-to-send binding.
-      if (
-        (event.metaKey || event.ctrlKey) &&
-        event.key === 'Enter' &&
-        actions.onOpenSendReview
-      ) {
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && actions.onOpenSendReview) {
         event.preventDefault()
         actions.onOpenSendReview()
         fireFeedback('medium', 'open')
@@ -152,13 +162,23 @@ export function useDiffReviewKeymaps(actions: DiffReviewKeymapActions) {
         return
       }
 
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        resetBuffer()
+        return
+      }
+
       const key = event.key
       if (key.length > 1 && key !== 'Escape' && key !== 'Enter') return
       clearTimeout(bufferTimeout)
       keyBuffer += key
-      bufferTimeout = setTimeout(() => { keyBuffer = '' }, 800)
+      bufferTimeout = setTimeout(() => {
+        keyBuffer = ''
+      }, 800)
 
-      const handled = (callback: () => void, feedback: 'navigate' | 'toggle' | 'open' = 'toggle') => {
+      const handled = (
+        callback: () => void,
+        feedback: 'navigate' | 'toggle' | 'open' = 'toggle',
+      ) => {
         event.preventDefault()
         callback()
         fireFeedback(feedback === 'open' ? 'medium' : 'selection', feedback)
@@ -167,7 +187,10 @@ export function useDiffReviewKeymaps(actions: DiffReviewKeymapActions) {
 
       if (keyBuffer === 'j' || keyBuffer === 'k') {
         event.preventDefault()
-        window.scrollBy({ top: keyBuffer === 'j' ? 100 : -100, behavior: 'auto' })
+        window.scrollBy({
+          top: keyBuffer === 'j' ? 100 : -100,
+          behavior: 'auto',
+        })
         const now = Date.now()
         if (now - lastNavSound > 80) {
           playSound('navigate')
@@ -177,7 +200,14 @@ export function useDiffReviewKeymaps(actions: DiffReviewKeymapActions) {
       } else if (keyBuffer === 'gg') {
         handled(() => window.scrollTo({ top: 0, behavior: 'auto' }), 'navigate')
       } else if (keyBuffer === 'G') {
-        handled(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: 'auto' }), 'navigate')
+        handled(
+          () =>
+            window.scrollTo({
+              top: document.documentElement.scrollHeight,
+              behavior: 'auto',
+            }),
+          'navigate',
+        )
       } else if (keyBuffer === 'J') {
         handled(() => actions.onNavigateFile('next'), 'navigate')
       } else if (keyBuffer === 'K') {

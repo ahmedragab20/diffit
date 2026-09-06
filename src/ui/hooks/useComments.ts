@@ -7,9 +7,11 @@ import { subscribeLive } from '../live'
 
 const COMMENTS_KEY = ['comments']
 
+import { readCommentResponse } from '../lib/commentResponse'
+
 async function fetchComments(): Promise<ReviewComment[]> {
   const res = await fetch('/api/comments')
-  if (!res.ok) return []
+  if (!res.ok) throw new Error(`Could not load comments (HTTP ${res.status})`)
   const data: unknown = await res.json()
   // The API returns `{ error }` on failure (e.g. missing session token) — a
   // non-array body must not crash consumers that iterate `comments`.
@@ -30,12 +32,20 @@ interface AgentStatus {
   lastSentAt: number | null
   lastDecision?: ReviewDecision
   lastOpenCount?: number
-  agents?: Array<{ id: string; model?: string; label?: string; connectedAt: number }>
+  agents?: Array<{
+    id: string
+    model?: string
+    label?: string
+    connectedAt: number
+  }>
 }
 
 export function useComments() {
   const queryClient = useQueryClient()
-  const { data: comments = [], isLoading } = useQuery({ queryKey: COMMENTS_KEY, queryFn: fetchComments })
+  const { data: comments = [], isLoading } = useQuery({
+    queryKey: COMMENTS_KEY,
+    queryFn: fetchComments,
+  })
 
   // Realtime: the server pushes a `comments` event whenever the store changes
   // (a user or agent added / replied / resolved / deleted). Refetch on push
@@ -60,12 +70,21 @@ export function useComments() {
     let cancelled = false
     fetch('/api/review/status')
       .then((r) => r.json())
-      .then((s) => { if (!cancelled) setAgentStatus(s) })
+      .then((s) => {
+        if (!cancelled) setAgentStatus(s)
+      })
       .catch(() => {})
     const unsubscribe = subscribeLive('agent-status', (data) => {
-      try { setAgentStatus(JSON.parse(data)) } catch { /* ignore malformed */ }
+      try {
+        setAgentStatus(JSON.parse(data))
+      } catch {
+        /* ignore malformed */
+      }
     })
-    return () => { cancelled = true; unsubscribe() }
+    return () => {
+      cancelled = true
+      unsubscribe()
+    }
   }, [])
 
   // Surface fresh agent replies so the UI can flash a "the agent responded"
@@ -120,31 +139,47 @@ export function useComments() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
       })
-      return res.json() as Promise<ReviewComment>
+      return readCommentResponse(res)
     },
-    onSuccess: (comment) => {
-      queryClient.setQueryData<ReviewComment[]>(COMMENTS_KEY, (prev = []) => [...prev, comment])
+    onSuccess: async (comment) => {
+      await queryClient.cancelQueries({ queryKey: COMMENTS_KEY })
+      queryClient.setQueryData<ReviewComment[]>(COMMENTS_KEY, (prev = []) =>
+        prev.some((item) => item.id === comment.id)
+          ? prev.map((item) => (item.id === comment.id ? comment : item))
+          : [...prev, comment],
+      )
     },
   })
 
   const removeMutation = useMutation({
     mutationFn: async (id: string) => {
-      await fetch(`/api/comments/${id}`, { method: 'DELETE' })
+      const res = await fetch(`/api/comments/${id}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error(`Could not delete comment (HTTP ${res.status})`)
       return id
     },
     onSuccess: (id) => {
-      queryClient.setQueryData<ReviewComment[]>(COMMENTS_KEY, (prev = []) => prev.filter((c) => c.id !== id))
+      queryClient.setQueryData<ReviewComment[]>(COMMENTS_KEY, (prev = []) =>
+        prev.filter((c) => c.id !== id),
+      )
     },
   })
 
   const editMutation = useMutation({
-    mutationFn: async ({ id, body, status }: { id: string; body?: string; status?: ReviewComment['status'] }) => {
+    mutationFn: async ({
+      id,
+      body,
+      status,
+    }: {
+      id: string
+      body?: string
+      status?: ReviewComment['status']
+    }) => {
       const res = await fetch(`/api/comments/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body, status }),
       })
-      return res.json() as Promise<ReviewComment>
+      return readCommentResponse(res)
     },
     onSuccess: (updated) => {
       queryClient.setQueryData<ReviewComment[]>(COMMENTS_KEY, (prev = []) =>
@@ -160,7 +195,7 @@ export function useComments() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body, role: 'user' }),
       })
-      return res.json() as Promise<ReviewComment>
+      return readCommentResponse(res)
     },
     onSuccess: (updated) => {
       queryClient.setQueryData<ReviewComment[]>(COMMENTS_KEY, (prev = []) =>
@@ -171,8 +206,10 @@ export function useComments() {
 
   const removeReplyMutation = useMutation({
     mutationFn: async ({ commentId, replyId }: { commentId: string; replyId: string }) => {
-      const res = await fetch(`/api/comments/${commentId}/replies/${replyId}`, { method: 'DELETE' })
-      return res.json() as Promise<ReviewComment>
+      const res = await fetch(`/api/comments/${commentId}/replies/${replyId}`, {
+        method: 'DELETE',
+      })
+      return readCommentResponse(res)
     },
     onSuccess: (updated) => {
       queryClient.setQueryData<ReviewComment[]>(COMMENTS_KEY, (prev = []) =>
@@ -182,13 +219,21 @@ export function useComments() {
   })
 
   const editReplyMutation = useMutation({
-    mutationFn: async ({ commentId, replyId, body }: { commentId: string; replyId: string; body: string }) => {
+    mutationFn: async ({
+      commentId,
+      replyId,
+      body,
+    }: {
+      commentId: string
+      replyId: string
+      body: string
+    }) => {
       const res = await fetch(`/api/comments/${commentId}/replies/${replyId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ body }),
       })
-      return res.json() as Promise<ReviewComment>
+      return readCommentResponse(res)
     },
     onSuccess: (updated) => {
       queryClient.setQueryData<ReviewComment[]>(COMMENTS_KEY, (prev = []) =>
@@ -220,9 +265,11 @@ export function useComments() {
         }),
       })
       if (res.status === 400) {
-        const body = (await res.json().catch(() => null)) as
-          | { ok?: false; error?: string; findings?: { rule: string; snippet: string; source: string }[] }
-          | null
+        const body = (await res.json().catch(() => null)) as {
+          ok?: false
+          error?: string
+          findings?: { rule: string; snippet: string; source: string }[]
+        } | null
         if (body?.error === 'secrets-detected') {
           const err = new Error('Secrets detected') as Error & {
             kind: 'secrets'
@@ -234,7 +281,13 @@ export function useComments() {
         }
       }
       if (!res.ok) throw new Error('Failed to send to agent')
-      return res.json() as Promise<{ ok: boolean; round: number; openCount: number; decision?: ReviewDecision; waiters: number }>
+      return res.json() as Promise<{
+        ok: boolean
+        round: number
+        openCount: number
+        decision?: ReviewDecision
+        waiters: number
+      }>
     },
   })
 
@@ -264,7 +317,7 @@ export function useComments() {
       startLineNumber?: number,
       severity?: CommentSeverity,
     ) => {
-      addMutation.mutate({
+      return addMutation.mutateAsync({
         filePath,
         side,
         lineNumber,
@@ -274,7 +327,7 @@ export function useComments() {
         severity: severity && severity !== 'none' ? severity : undefined,
       })
     },
-    [addMutation.mutate],
+    [addMutation.mutateAsync],
   )
 
   const removeComment = useCallback(
@@ -285,10 +338,8 @@ export function useComments() {
   )
 
   const editComment = useCallback(
-    (id: string, body: string) => {
-      editMutation.mutate({ id, body })
-    },
-    [editMutation.mutate],
+    (id: string, body: string) => editMutation.mutateAsync({ id, body }),
+    [editMutation.mutateAsync],
   )
 
   const resolveComment = useCallback(
@@ -306,10 +357,8 @@ export function useComments() {
   )
 
   const addReply = useCallback(
-    (id: string, body: string) => {
-      addReplyMutation.mutate({ id, body })
-    },
-    [addReplyMutation.mutate],
+    (id: string, body: string) => addReplyMutation.mutateAsync({ id, body }),
+    [addReplyMutation.mutateAsync],
   )
 
   const removeReply = useCallback(
@@ -320,10 +369,9 @@ export function useComments() {
   )
 
   const editReply = useCallback(
-    (commentId: string, replyId: string, body: string) => {
-      editReplyMutation.mutate({ commentId, replyId, body })
-    },
-    [editReplyMutation.mutate],
+    (commentId: string, replyId: string, body: string) =>
+      editReplyMutation.mutateAsync({ commentId, replyId, body }),
+    [editReplyMutation.mutateAsync],
   )
 
   const applySuggestion = useCallback(
@@ -362,7 +410,12 @@ export function useComments() {
 
   const sendToAgent = useCallback(
     (decision?: ReviewDecision, generalComment?: string, mode?: ReviewMode, force?: boolean) =>
-      sendToAgentMutation.mutateAsync({ decision, generalComment, mode, force }),
+      sendToAgentMutation.mutateAsync({
+        decision,
+        generalComment,
+        mode,
+        force,
+      }),
     [sendToAgentMutation.mutateAsync],
   )
 
@@ -377,7 +430,10 @@ export function useComments() {
     },
   })
 
-  const resolveAllOpen = useCallback(() => resolveAllOpenMutation.mutateAsync(), [resolveAllOpenMutation])
+  const resolveAllOpen = useCallback(
+    () => resolveAllOpenMutation.mutateAsync(),
+    [resolveAllOpenMutation],
+  )
 
   return {
     comments,

@@ -150,7 +150,7 @@ export function useFileMention(
       requestAnimationFrame(() => {
         const pos = (before + inserted).length
         ta.selectionStart = ta.selectionEnd = pos
-        ta.focus()
+        ta.focus({ preventScroll: true })
       })
     },
     [mention, text, setText],
@@ -188,10 +188,7 @@ export function useFileMention(
     [isOpen, items, focusedIndex, commitSelection],
   )
 
-  const onSelect = useCallback(
-    (path: string) => commitSelection(path),
-    [commitSelection],
-  )
+  const onSelect = useCallback((path: string) => commitSelection(path), [commitSelection])
 
   return {
     isOpen,

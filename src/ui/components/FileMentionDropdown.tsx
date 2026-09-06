@@ -26,7 +26,11 @@ function Highlight({ text, ranges }: { text: string; ranges: MatchRange[] }) {
   let last = 0
   ranges.forEach(([s, e], i) => {
     if (s > last) out.push(text.slice(last, s))
-    out.push(<mark key={i} className="mention-highlight">{text.slice(s, e)}</mark>)
+    out.push(
+      <mark key={i} className="mention-highlight">
+        {text.slice(s, e)}
+      </mark>,
+    )
     last = e
   })
   if (last < text.length) out.push(text.slice(last))
@@ -63,9 +67,14 @@ export function FileMentionDropdown({
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    const el = listRef.current?.querySelector('[data-focused="true"]') as HTMLElement | undefined
-    el?.scrollIntoView({ block: 'nearest' })
-  }, [focusedIndex])
+    const list = listRef.current
+    const el = list?.querySelector<HTMLElement>('[data-focused="true"]')
+    if (!list || !el) return
+    const item = el.getBoundingClientRect()
+    const viewport = list.getBoundingClientRect()
+    if (item.top < viewport.top) list.scrollTop += item.top - viewport.top
+    else if (item.bottom > viewport.bottom) list.scrollTop += item.bottom - viewport.bottom
+  }, [focusedIndex, results])
 
   if (results.length === 0) return null
 
@@ -94,9 +103,13 @@ export function FileMentionDropdown({
             }}
             onMouseEnter={() => onHover(i)}
           >
-            <span className="mention-icon"><FileText size={13} /></span>
+            <span className="mention-icon">
+              <FileText size={13} />
+            </span>
             <div className="mention-info">
-              <span className="mention-name"><Highlight text={name} ranges={ranges} /></span>
+              <span className="mention-name">
+                <Highlight text={name} ranges={ranges} />
+              </span>
               <span className="mention-dir">{dir(hit.path) || './'}</span>
             </div>
           </div>

@@ -1,3 +1,5 @@
+import { navigateToDiffLine } from './lib/diffNavigation'
+
 export function timeAgo(timestamp: number): string {
   const seconds = Math.floor((Date.now() - timestamp) / 1000)
   if (seconds < 5) return 'just now'
@@ -25,9 +27,15 @@ export const SHIKI_THEME_MAP: Record<string, { themeName: string; type: 'dark' |
   nord: { themeName: 'nord', type: 'dark' },
   'github-dark': { themeName: 'github-dark', type: 'dark' },
   'github-dark-dimmed': { themeName: 'github-dark-dimmed', type: 'dark' },
-  'github-dark-high-contrast': { themeName: 'github-dark-high-contrast', type: 'dark' },
+  'github-dark-high-contrast': {
+    themeName: 'github-dark-high-contrast',
+    type: 'dark',
+  },
   'github-light': { themeName: 'github-light', type: 'light' },
-  'github-light-high-contrast': { themeName: 'github-light-high-contrast', type: 'light' },
+  'github-light-high-contrast': {
+    themeName: 'github-light-high-contrast',
+    type: 'light',
+  },
   dracula: { themeName: 'dracula', type: 'dark' },
   'one-dark': { themeName: 'one-dark-pro', type: 'dark' },
   'synthwave-84': { themeName: 'synthwave-84', type: 'dark' },
@@ -49,9 +57,15 @@ export const SHIKI_THEME_MAP: Record<string, { themeName: string; type: 'dark' |
   laserwave: { themeName: 'laserwave', type: 'dark' },
   'material-theme': { themeName: 'material-theme', type: 'dark' },
   'material-theme-darker': { themeName: 'material-theme-darker', type: 'dark' },
-  'material-theme-lighter': { themeName: 'material-theme-lighter', type: 'light' },
+  'material-theme-lighter': {
+    themeName: 'material-theme-lighter',
+    type: 'light',
+  },
   'material-theme-ocean': { themeName: 'material-theme-ocean', type: 'dark' },
-  'material-theme-palenight': { themeName: 'material-theme-palenight', type: 'dark' },
+  'material-theme-palenight': {
+    themeName: 'material-theme-palenight',
+    type: 'dark',
+  },
   'min-dark': { themeName: 'min-dark', type: 'dark' },
   'min-light': { themeName: 'min-light', type: 'light' },
   'night-owl': { themeName: 'night-owl', type: 'dark' },
@@ -76,21 +90,24 @@ export const SHIKI_THEME_MAP: Record<string, { themeName: string; type: 'dark' |
   dawnfox: { themeName: 'dawnfox', type: 'light' },
 }
 
-export function findElementInElOrShadow(root: Element | ShadowRoot, selector: string): HTMLElement[] {
+export function findElementInElOrShadow(
+  root: Element | ShadowRoot,
+  selector: string,
+): HTMLElement[] {
   const elements: HTMLElement[] = []
-  
+
   // Query all in the current root
   const found = root.querySelectorAll(selector)
-  found.forEach(el => elements.push(el as HTMLElement))
-  
+  found.forEach((el) => elements.push(el as HTMLElement))
+
   // Search recursively in shadow roots of all descendants
   const allDescendants = root.querySelectorAll('*')
-  allDescendants.forEach(desc => {
+  allDescendants.forEach((desc) => {
     if (desc.shadowRoot) {
       elements.push(...findElementInElOrShadow(desc.shadowRoot, selector))
     }
   })
-  
+
   return elements
 }
 
@@ -102,11 +119,23 @@ export function findElementInElOrShadow(root: Element | ShadowRoot, selector: st
  * naive tagName/contenteditable check on it misses the real editable node;
  * this descends into `shadowRoot.activeElement` at each level of the chain.
  */
+function isEditableElement(element: Element): boolean {
+  return (
+    element.matches('input, textarea, select, [role="textbox"]') ||
+    (element instanceof HTMLElement && element.isContentEditable) ||
+    (element.hasAttribute('contenteditable') && element.getAttribute('contenteditable') !== 'false')
+  )
+}
+
+/** Event origins survive focus changes and synchronous composer removal. */
+export function isEditableKeyEvent(event: KeyboardEvent): boolean {
+  return event.composedPath().some((node) => node instanceof Element && isEditableElement(node))
+}
+
 export function isTypingInFocus(): boolean {
   let active: Element | null = document.activeElement
   while (active) {
-    const tag = active.tagName.toLowerCase()
-    if (tag === 'input' || tag === 'textarea' || active.hasAttribute('contenteditable')) {
+    if (isEditableElement(active)) {
       return true
     }
     const inner = active.shadowRoot?.activeElement ?? null
@@ -155,17 +184,25 @@ function flashHighlight(found: HTMLElement, highlightText?: string) {
 
   highlightTarget.style.setProperty('transition', 'none', 'important')
   highlightTarget.style.setProperty('background-color', 'rgba(235, 186, 0, 0.55)', 'important')
-  highlightTarget.style.setProperty('box-shadow', '0 0 0 2.5px rgba(235, 186, 0, 0.85)', 'important')
+  highlightTarget.style.setProperty(
+    'box-shadow',
+    '0 0 0 2.5px rgba(235, 186, 0, 0.85)',
+    'important',
+  )
   highlightTarget.style.setProperty('border-radius', '4px', 'important')
   if (highlightTarget !== found) {
     highlightTarget.style.setProperty('padding', '1px 5px', 'important')
   }
 
   // Force DOM reflow to trigger transition
-  highlightTarget.offsetHeight
+  void highlightTarget.offsetHeight
 
   setTimeout(() => {
-    highlightTarget.style.setProperty('transition', 'background-color 2.5s ease-out, box-shadow 2.5s ease-out', 'important')
+    highlightTarget.style.setProperty(
+      'transition',
+      'background-color 2.5s ease-out, box-shadow 2.5s ease-out',
+      'important',
+    )
     highlightTarget.style.removeProperty('background-color')
     highlightTarget.style.removeProperty('box-shadow')
 
@@ -183,7 +220,11 @@ function flashHighlight(found: HTMLElement, highlightText?: string) {
  * shadow DOM. Unlike {@link scrollToLine} this doesn't touch file-card "viewed"
  * state — the preview always renders the whole file.
  */
-export function highlightLineInElement(container: HTMLElement, lineNumber: number, highlightText?: string) {
+export function highlightLineInElement(
+  container: HTMLElement,
+  lineNumber: number,
+  highlightText?: string,
+) {
   const tryScroll = (attemptsRemaining: number) => {
     const allLineEls = findElementInElOrShadow(container, '[data-line]')
     let found: HTMLElement | null = null
@@ -204,70 +245,23 @@ export function highlightLineInElement(container: HTMLElement, lineNumber: numbe
   tryScroll(20)
 }
 
-export function scrollToLine(filePath: string, lineNumber: number, side: 'additions' | 'deletions' | 'addition' | 'deletion', highlightText?: string) {
-  const fileEl = document.getElementById(`file-${filePath}`)
-  if (!fileEl) return
-
-  // 1. If the file card is currently marked as "Viewed", it only renders the viewed header.
-  // We must programmatically unview/expand it to mount and display the diff body!
-  const checkbox = fileEl.querySelector('input[type="checkbox"]') as HTMLInputElement | null
-  if (checkbox && checkbox.checked) {
-    checkbox.click()
-  }
-
-  // 2. Scroll the container card into view instantly so that the IntersectionObserver triggers
-  // and mounts the actual file contents in the DOM!
-  fileEl.scrollIntoView({ block: 'start', behavior: 'auto' })
-
-  // Normalize side to addition/deletion
-  const expectedType = (side === 'additions' || side === 'addition') ? 'addition' : 'deletion'
-
-  // 3. Poll for the specific line to mount in the DOM/Shadow DOM
-  const tryScroll = (attemptsRemaining: number) => {
-    // Query all data-lines in the card, including shadow roots
-    const allLineEls = findElementInElOrShadow(fileEl, '[data-line]')
-    let found: HTMLElement | null = null
-
-    // First try to find matching line number AND side
-    for (const el of allLineEls) {
-      const elLine = el.getAttribute('data-line')
-      const elType = el.getAttribute('data-line-type')
-      if (elLine && parseInt(elLine, 10) === lineNumber && elType === expectedType) {
-        found = el
-        break
-      }
-    }
-
-    // Fall back to just matching line number
-    if (!found) {
-      for (const el of allLineEls) {
-        const elLine = el.getAttribute('data-line')
-        if (elLine && parseInt(elLine, 10) === lineNumber) {
-          found = el
-          break
-        }
-      }
-    }
-
-    if (found) {
-      // Scroll it into the center of the viewport instantly and cleanly
-      found.scrollIntoView({ block: 'center', behavior: 'auto' })
-      flashHighlight(found, highlightText)
-    } else if (attemptsRemaining > 0) {
-      // If the line is not found yet (card is still rendering), retry in 50ms
-      setTimeout(() => tryScroll(attemptsRemaining - 1), 50)
-    }
-  }
-
-  // Start polling attempts (up to 12 attempts * 50ms = 600ms buffer)
-  tryScroll(12)
-
-  // Also flash the file card header to draw attention
-  const headerEl = fileEl.querySelector('.file-diff-card-header, .file-diff-placeholder-header')
-  if (headerEl) {
-    headerEl.classList.add('symbol-flash')
-    setTimeout(() => headerEl.classList.remove('symbol-flash'), 1200)
-  }
+export function scrollToLine(
+  filePath: string,
+  lineNumber: number,
+  side: 'additions' | 'deletions' | 'addition' | 'deletion',
+  highlightText?: string,
+) {
+  const normalized = side === 'addition' || side === 'additions' ? 'additions' : 'deletions'
+  return navigateToDiffLine(filePath, lineNumber, normalized, () => {
+    const card = document.getElementById(`file-${filePath}`)
+    if (!card) return true
+    const expectedType = normalized === 'additions' ? 'addition' : 'deletion'
+    const found = findElementInElOrShadow(card, `[data-line="${lineNumber}"]`).find((element) => {
+      const type = element.getAttribute('data-line-type')
+      return type === expectedType || type === 'context'
+    })
+    if (!found) return false
+    flashHighlight(found, highlightText)
+    return true
+  })
 }
-
-

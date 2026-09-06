@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Diffing stability fixture</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font:
+          14px system-ui,
+          sans-serif;
+      }
+      body {
+        margin: 0;
+        background: #17151f;
+        color: #eee9f5;
+      }
+      #fixture-panel {
+        position: fixed;
+        right: 16px;
+        bottom: 16px;
+        z-index: 10000;
+        display: flex;
+        gap: 6px;
+        align-items: center;
+        padding: 8px;
+        border: 1px solid #655b78;
+        border-radius: 8px;
+        background: #292333;
+        box-shadow: 0 4px 20px #0008;
+      }
+      #fixture-panel button {
+        color: inherit;
+        background: #403650;
+        border: 1px solid #76688c;
+        border-radius: 4px;
+        padding: 6px 9px;
+        cursor: pointer;
+      }
+      #fixture-panel button:hover {
+        background: #55466a;
+      }
+      #fixture-metrics {
+        max-width: 280px;
+        white-space: pre-wrap;
+        font-size: 11px;
+        color: #cfc4dd;
+      }
+      #fixture-heading {
+        position: fixed;
+        top: 10px;
+        left: 16px;
+        z-index: 10000;
+        margin: 0;
+        font-size: 14px;
+        font-weight: 500;
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="fixture-heading">
+      Isolated stability fixture — API writes stay in memory
+    </h1>
+    <div id="root"></div>
+    <div id="fixture-panel" aria-label="Fixture controls">
+      <button id="fixture-refresh" type="button">Refresh diff</button>
+      <button id="fixture-remote" type="button">Remote comment</button>
+      <button id="fixture-fail" type="button">Fail next comment</button>
+      <button id="fixture-sample" type="button">Sample metrics</button>
+      <output id="fixture-metrics" aria-live="polite"></output>
+    </div>
+    <script type="module" src="./stability.ts"></script>
+  </body>
+</html>

@@ -87,7 +87,10 @@ interface DiffViewerProps {
   ) => void;
   onEditAttach?: (
     filePath: string,
-    editor: Editor<import("../hooks/useEditSessions").EditSessionMetadata>,
+    editor: Editor<
+      "file-diff",
+      import("../hooks/useEditSessions").EditSessionMetadata
+    >,
   ) => void;
   onEditSave?: (filePath: string) => void;
   onEditDiscard?: (filePath: string) => void;
@@ -99,6 +102,7 @@ interface DiffViewerProps {
 }
 
 const emptyAnnotations: DiffLineAnnotation<ReviewComment>[] = [];
+const emptyExistingComments: PrExistingComment[] = [];
 
 /**
  * Shared file-name comparator used by `<DiffViewer>` and by App.tsx when
@@ -234,7 +238,9 @@ export const DiffViewer = memo(function DiffViewer({
               fileDiff={file}
               filePath={filePath}
               annotations={fileAnnotationsMap.get(filePath) ?? emptyAnnotations}
-              existingComments={existingCommentsMap?.get(filePath) ?? []}
+              existingComments={
+                existingCommentsMap?.get(filePath) ?? emptyExistingComments
+              }
               diffStyle={diffStyle}
               tabSize={tabSizeMap[filePath] ?? defaultTabSize}
               viewed={viewedFiles.has(filePath)}

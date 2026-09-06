@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
@@ -48,6 +48,59 @@ afterEach(() => {
 })
 
 describe('CommentForm — @-mention dropdown offset parent', () => {
+  const renderForm = (onSubmit: (body: string) => void | Promise<unknown>) =>
+    render(
+      <QueryClientProvider client={queryClient}>
+        <CommentForm showSeverity={false} onSubmit={onSubmit} onCancel={vi.fn()} />
+      </QueryClientProvider>,
+    )
+
+  it('submits only once while a Cmd+Enter submission is pending', async () => {
+    const user = userEvent.setup()
+    let resolve!: () => void
+    const onSubmit = vi.fn(() => new Promise<void>((done) => { resolve = done }))
+    renderForm(onSubmit)
+    const textarea = screen.getByLabelText('Comment body')
+    await user.type(textarea, 'draft')
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true })
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true })
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    resolve()
+
+    await screen.findByRole('button', { name: 'Comment' })
+  })
+
+  it('shows rejected submission errors and keeps the draft', async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn().mockRejectedValue(new Error('save failed'))
+    renderForm(onSubmit)
+    const textarea = screen.getByLabelText('Comment body')
+    await user.type(textarea, 'keep this')
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true })
+    expect(await screen.findByRole('alert')).toHaveTextContent('save failed')
+    expect(textarea).toHaveValue('keep this')
+  })
+
+  it('does not submit on plain Enter', async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn()
+    renderForm(onSubmit)
+    const textarea = screen.getByLabelText('Comment body')
+    await user.type(textarea, 'line')
+    fireEvent.keyDown(textarea, { key: 'Enter' })
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(textarea).toHaveValue('line')
+  })
+
+  it('does not submit Cmd+Enter during IME composition', async () => {
+    const user = userEvent.setup()
+    const onSubmit = vi.fn()
+    renderForm(onSubmit)
+    const textarea = screen.getByLabelText('Comment body')
+    await user.type(textarea, '日本語')
+    fireEvent.keyDown(textarea, { key: 'Enter', metaKey: true, isComposing: true, keyCode: 229 })
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
 	it('adds the exact selected diff range to Ask without submitting a comment', async () => {
 		const onAddToAsk = vi.fn()
 		const onSubmit = vi.fn()

@@ -19,6 +19,8 @@ import type {
 import { useDiffReviewKeymaps } from "./hooks/useDiffReviewKeymaps";
 import { useSearchSession } from "./hooks/useSearchSession";
 import { buildChangedLineKeys, buildDiffFileSet } from "./lib/diffIndex";
+import { reconcileDiffFiles } from "./lib/reconcileDiffFiles";
+import { navigateToFile, cancelDiffNavigation } from "./lib/diffNavigation";
 import { SHIKI_THEME_MAP } from "./utils";
 import type { ReviewComment } from "../lib/types";
 import { useDiff } from "./hooks/useDiff";
@@ -520,17 +522,27 @@ export function App() {
 		return patch;
 	}, [showMode, commitWalkIndex, commits, patch]);
 	const aiReviewContext = useMemo(
-		() => ({ ...diffReviewContextForAi(activePatch, {
-			repoName,
-			branch,
-			focusedFilePath: activeFile,
-		}), selections: aiSelections }),
+		() => ({
+			...diffReviewContextForAi(activePatch, {
+				repoName,
+				branch,
+				focusedFilePath: activeFile,
+			}),
+			selections: aiSelections,
+		}),
 		[activePatch, activeFile, aiSelections, branch, repoName],
 	);
 	const addSelectionToAsk = useCallback((selection: AiDiffSelection) => {
 		setAiSelections((current) => {
 			const key = `${selection.filePath}:${selection.side}:${selection.startLine}:${selection.endLine}`;
-			if (current.some((item) => `${item.filePath}:${item.side}:${item.startLine}:${item.endLine}` === key)) return current;
+			if (
+				current.some(
+					(item) =>
+						`${item.filePath}:${item.side}:${item.startLine}:${item.endLine}` ===
+						key,
+				)
+			)
+				return current;
 			return [...current, selection].slice(-8);
 		});
 		setAiRailOpen(true);
@@ -576,23 +588,10 @@ export function App() {
 				return true;
 			});
 
-			// Optimize rendering by keeping exact object references for unchanged files
-			const cachedFiles = dedupedParsedFiles.map((newFile) => {
-				const prevFile = prevFilesRef.current.find(
-					(f) => f.name === newFile.name,
-				);
-				if (
-					prevFile &&
-					prevFile.type === newFile.type &&
-					prevFile.isPartial === newFile.isPartial &&
-					prevFile.deletionLines.length === newFile.deletionLines.length &&
-					prevFile.additionLines.length === newFile.additionLines.length &&
-					JSON.stringify(prevFile.hunks) === JSON.stringify(newFile.hunks)
-				) {
-					return prevFile;
-				}
-				return newFile;
-			});
+			const cachedFiles = reconcileDiffFiles(
+				prevFilesRef.current,
+				dedupedParsedFiles,
+			);
 
 			prevFilesRef.current = cachedFiles;
 			return cachedFiles;
@@ -697,7 +696,7 @@ export function App() {
 		(path: string) => {
 			fileSearch.open(path);
 		},
-		[fileSearch],
+		[fileSearch.open],
 	);
 
 	const searchNavContext = useMemo(
@@ -783,10 +782,7 @@ export function App() {
 	const handleFileClick = useCallback((filePath: string) => {
 		explicitActiveFileRef.current = Date.now();
 		setActiveFile(filePath);
-		const el = document.getElementById(`file-${filePath}`);
-		if (el) {
-			el.scrollIntoView({ block: "start" });
-		}
+		navigateToFile(filePath);
 	}, []);
 
 	const handleApplyExtensions = useCallback((extensions: string[]) => {
@@ -1045,10 +1041,7 @@ export function App() {
 			if (!nextFile) return;
 			explicitActiveFileRef.current = Date.now();
 			setActiveFile(nextFile);
-			const el = document.getElementById(`file-${nextFile}`);
-			if (el) {
-				el.scrollIntoView({ block: "start" });
-			}
+			navigateToFile(nextFile);
 		},
 		[sortedFiles, activeFile, setActiveFile],
 	);
@@ -1072,14 +1065,9 @@ export function App() {
 		if (!isCurrentlyViewed) scrollToNextFile(activeFile);
 	}, [activeFile, viewedFiles, setViewed, scrollToNextFile]);
 
-	const handleCardToggleCollapse = useCallback(
-		(filePath: string, willCollapse: boolean) => {
-			if (willCollapse) {
-				explicitActiveFileRef.current = Date.now();
-				scrollToNextFile(filePath);
-			}
-		},
-		[scrollToNextFile],
+	useEffect(
+		() => cancelDiffNavigation,
+		[settings.staged, settings.untracked, commitWalkIndex],
 	);
 
 	const toggleDiffStyle = useCallback(() => {
@@ -1151,7 +1139,7 @@ export function App() {
 			// ⌘Enter opens the Send-review surface: the toolbar popover outside
 			// zen, the centered dialog in zen. Suppressed while an overlay is
 			// open so its own ⌘Enter handling (e.g. palette peek) keeps working.
-			onOpenSendReview: !overlayOpen ? () => setSendOpen(true) : undefined,
+			onOpenSendReview: overlayOpen ? undefined : () => setSendOpen(true),
 		}),
 		[
 			navigateFile,
@@ -1648,7 +1636,6 @@ export function App() {
 								onAddComment={addComment}
 								onDeleteComment={removeComment}
 								onAddSelectionToAsk={addSelectionToAsk}
-								onCardToggleCollapse={handleCardToggleCollapse}
 								canEdit={canEditScope}
 								editSessions={editSessions}
 								onRequestEdit={enterEdit}
@@ -1668,7 +1655,11 @@ export function App() {
 						surface="diff"
 						title="Ask about this diff"
 						context={aiReviewContext}
-						onRemoveSelection={(index) => setAiSelections((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+						onRemoveSelection={(index) =>
+							setAiSelections((current) =>
+								current.filter((_, itemIndex) => itemIndex !== index),
+							)
+						}
 					/>
 					<SearchPalette
 						isOpen={palette.open}

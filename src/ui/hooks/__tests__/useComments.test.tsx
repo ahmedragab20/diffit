@@ -91,16 +91,16 @@ describe('useComments', () => {
     mockFetch.mockImplementation((url: string | URL, options?: RequestInit) => {
       const urlStr = typeof url === 'string' ? url : url.toString()
       if (urlStr === '/api/comments' && options?.method === 'POST') {
-        return Promise.resolve({ json: () => Promise.resolve(newComment) })
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(newComment) })
       }
-      return Promise.resolve({ json: () => Promise.resolve([]) })
+      return Promise.resolve({ ok: true, json: () => Promise.resolve([]) })
     })
 
     const { result } = renderHook(() => useComments(), { wrapper: createWrapper() })
     await waitFor(() => expect(result.current.comments).toEqual([]))
 
     await act(async () => {
-      result.current.addComment('src/index.ts', 'additions', 15, 'newFn()', 'Nice addition')
+      await result.current.addComment('src/index.ts', 'additions', 15, 'newFn()', 'Nice addition')
     })
 
     expect(mockFetch).toHaveBeenCalledWith('/api/comments', {
@@ -118,6 +118,36 @@ describe('useComments', () => {
     await waitFor(() => {
       expect(result.current.comments).toHaveLength(1)
     })
+  })
+
+  it('rejects a failed add and leaves the cached comments unchanged', async () => {
+    mockApi()
+    const { result } = renderHook(() => useComments(), { wrapper: createWrapper() })
+    await waitFor(() => expect(result.current.comments).toHaveLength(2))
+    mockFetch.mockImplementation((url: string | URL, options?: RequestInit) => {
+      if (String(url) === '/api/comments' && options?.method === 'POST') {
+        return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: 'server down' }) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(sampleComments) })
+    })
+    await expect(result.current.addComment('x.ts', 'additions', 1, 'x', 'body')).rejects.toThrow('server down')
+    expect(result.current.comments).toEqual(sampleComments)
+  })
+
+  it('does not duplicate a comment when creation returns an existing id', async () => {
+    mockApi()
+    const { result } = renderHook(() => useComments(), { wrapper: createWrapper() })
+    await waitFor(() => expect(result.current.comments).toHaveLength(2))
+    mockFetch.mockImplementation((url: string | URL, options?: RequestInit) => {
+      if (String(url) === '/api/comments' && options?.method === 'POST') {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve(sampleComments[0]) })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(sampleComments) })
+    })
+    await act(async () => {
+      await result.current.addComment('src/index.ts', 'additions', 10, 'const x = 1', 'Updated')
+    })
+    expect(result.current.comments.filter((comment) => comment.id === 'c1')).toHaveLength(1)
   })
 
   it('removes a comment via mutation', async () => {
@@ -350,9 +380,9 @@ describe('useComments', () => {
       mockFetch.mockImplementation((url: string | URL) => {
         const urlStr = typeof url === 'string' ? url : url.toString()
         if (urlStr === '/api/review/status') {
-          return Promise.resolve({ json: () => Promise.resolve({ round: 0, waiters: 1, lastSentAt: null }) })
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ round: 0, waiters: 1, lastSentAt: null }) })
         }
-        return Promise.resolve({ json: () => Promise.resolve([]) })
+        return Promise.resolve({ ok: true, json: () => Promise.resolve([]) })
       })
       const { result } = renderHook(() => useComments(), { wrapper: createWrapper() })
       await waitFor(() => expect(result.current.agentWaiting).toBe(true))
@@ -375,11 +405,10 @@ describe('useComments', () => {
       const { result } = renderHook(() => useComments(), { wrapper: createWrapper() })
       await waitFor(() => expect(result.current.comments).toHaveLength(2))
 
-      let resolved: { ok: boolean; resolved: number } | null = null
       await act(async () => {
-        resolved = await result.current.resolveAllOpen()
+        const resolved = await result.current.resolveAllOpen()
+        expect(resolved.resolved).toBe(3)
       })
-      expect(resolved?.resolved).toBe(3)
       expect(mockFetch).toHaveBeenCalledWith(
         '/api/comments/resolve-all',
         expect.objectContaining({ method: 'POST' }),

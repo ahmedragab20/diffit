@@ -2,16 +2,15 @@
  * In-place edit sessions for the diff review surface (P1).
  *
  * Each session is keyed by repo-relative file path and owns:
- * - `seedContent`  — the document the editor attached to (never mutated
- *   mid-session; feeding live drafts back into the surface would reset the
- *   editor's TextDocument on every keystroke).
+ * - `seedContent`  — the last saved document, not the live draft. Updated
+ *   after a successful save; never fed back on each keystroke.
  * - `draft`        — the latest live document text, kept in a ref mirror so
  *   save/markers callbacks never capture stale state.
  * - `baseHash`     — sha256 of the file as it was when the session started;
  *   sent to `/api/edit-save` for the disk conflict check.
  * - `annotations`  — the remapped annotation collection emitted by the editor
  *   (identity-stable: ordinary typing reuses the same array, structural edits
- *   emit a new one). Published with flushSync per the library's contract.
+ *   emit a new one). The renderer owns their placement during editing.
  *
  * Flow: enterEdit loads the lazy `@pierre/diffs/edit` module and the current
  * file text (+hash), then the card renders the full-context surface with
@@ -21,9 +20,8 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
 import type { DiffLineAnnotation, FileContents, LineAnnotation } from '@pierre/diffs'
-import type { Editor, EditorOptions } from '@pierre/diffs/edit'
+import type { Editor, EditorFactory } from '@pierre/diffs/edit'
 import { ensureEditModuleLoaded, getEditorClass } from '../lib/editModule'
 import { computeEditMarkers } from '../lib/editMarkers'
 import type { ReviewComment } from '../../lib/types'
@@ -78,7 +76,8 @@ export interface UseEditSessionsOptions {
 export function useEditSessions({ diagnosticsEnabled }: UseEditSessionsOptions) {
   const [sessions, setSessions] = useState<ReadonlyMap<string, EditSessionView>>(new Map())
   const sessionsRef = useRef<ReadonlyMap<string, EditSessionView>>(new Map())
-  const editorsRef = useRef<Map<string, Editor<EditSessionMetadata>>>(new Map())
+  const editorsRef = useRef<Map<string, Editor<'file-diff', EditSessionMetadata>>>(new Map())
+  const savingRef = useRef(new Set<string>())
   const markerTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const diagnosticsRef = useRef(diagnosticsEnabled)
   diagnosticsRef.current = diagnosticsEnabled
@@ -120,7 +119,9 @@ export function useEditSessions({ diagnosticsEnabled }: UseEditSessionsOptions) 
     await ensureEditModuleLoaded()
     const res = await fetch(`/api/file-text?path=${encodeURIComponent(path)}&version=new`)
     if (!res.ok) {
-      const json = (await res.json().catch(() => null)) as { error?: string } | null
+      const json = (await res.json().catch(() => null)) as {
+        error?: string
+      } | null
       throw new Error(json?.error ?? `HTTP ${res.status} loading ${path}`)
     }
     const json = (await res.json()) as {
@@ -156,36 +157,23 @@ export function useEditSessions({ diagnosticsEnabled }: UseEditSessionsOptions) 
         ? (lineAnnotations as EditAnnotation[])
         : undefined
 
-      if (nextAnnotations && nextAnnotations !== current.annotations) {
-        // Structural edit moved/reordered/removed annotations: publish the
-        // remapped collection synchronously so placement updates before paint.
-        flushSync(() => {
-          setSessions((prev) => {
-            const s = prev.get(path)
-            if (!s) return prev
-            return new Map(prev).set(path, {
-              ...s,
-              draft,
-              dirty,
-              annotations: nextAnnotations,
-              annotationsVersion: s.annotationsVersion + 1,
-            })
-          })
-        })
-      } else {
-        setSessions((prev) => {
-          const s = prev.get(path)
-          if (!s) return prev
-          return new Map(prev).set(path, { ...s, draft, dirty })
-        })
-      }
+      // Observe the draft for save/diagnostics, but never feed it back into
+      // Pierre's active document. The component owns annotation remapping.
+      const next = new Map(sessionsRef.current).set(path, {
+        ...current,
+        draft,
+        dirty,
+        annotations: nextAnnotations ?? current.annotations,
+      })
+      sessionsRef.current = next
+      setSessions(next)
       scheduleMarkers(path)
     },
     [scheduleMarkers],
   )
 
   const handleEditAttach = useCallback(
-    (path: string, editor: Editor<EditSessionMetadata>) => {
+    (path: string, editor: Editor<'file-diff', EditSessionMetadata>) => {
       editorsRef.current.set(path, editor)
       try {
         editor.focus({ lineNumber: 'first-visible', preventScroll: true })
@@ -213,7 +201,8 @@ export function useEditSessions({ diagnosticsEnabled }: UseEditSessionsOptions) 
 
   const saveEdit = useCallback(async (path: string) => {
     const current = sessionsRef.current.get(path)
-    if (!current || current.saving) return
+    if (!current || current.saving || savingRef.current.has(path)) return
+    savingRef.current.add(path)
     setSessions((prev) => {
       const s = prev.get(path)
       if (!s) return prev
@@ -222,10 +211,7 @@ export function useEditSessions({ diagnosticsEnabled }: UseEditSessionsOptions) 
     try {
       const anchors: EditSaveAnchor[] = (current.annotations ?? [])
         .filter(
-          (a) =>
-            a.lineNumber > 0 &&
-            !('_pending' in a.metadata) &&
-            !('_existingPr' in a.metadata),
+          (a) => a.lineNumber > 0 && !('_pending' in a.metadata) && !('_existingPr' in a.metadata),
         )
         .map((a) => ({
           id: (a.metadata as ReviewComment).id,
@@ -269,10 +255,10 @@ export function useEditSessions({ diagnosticsEnabled }: UseEditSessionsOptions) 
         // saved text so dirty stays false and discard restores it.
         return new Map(prev).set(path, {
           ...s,
-          seedContent: s.draft,
+          seedContent: current.draft,
           baseHash: json.hash ?? s.baseHash,
           saving: false,
-          dirty: false,
+          dirty: normalizeEol(s.draft) !== normalizeEol(current.draft),
           error: null,
         })
       })
@@ -280,8 +266,14 @@ export function useEditSessions({ diagnosticsEnabled }: UseEditSessionsOptions) 
       setSessions((prev) => {
         const s = prev.get(path)
         if (!s) return prev
-        return new Map(prev).set(path, { ...s, saving: false, error: err.message })
+        return new Map(prev).set(path, {
+          ...s,
+          saving: false,
+          error: err.message,
+        })
       })
+    } finally {
+      savingRef.current.delete(path)
     }
   }, [])
 
@@ -293,6 +285,7 @@ export function useEditSessions({ diagnosticsEnabled }: UseEditSessionsOptions) 
   }, [saveEdit])
 
   const discardEdit = useCallback((path: string) => {
+    if (savingRef.current.has(path)) return
     setSessions((prev) => {
       const s = prev.get(path)
       if (!s) return prev
@@ -314,6 +307,7 @@ export function useEditSessions({ diagnosticsEnabled }: UseEditSessionsOptions) 
   }, [])
 
   const exitEdit = useCallback((path: string) => {
+    if (savingRef.current.has(path)) return
     const s = sessionsRef.current.get(path)
     if (!s) return
     editorsRef.current.delete(path)
@@ -327,11 +321,23 @@ export function useEditSessions({ diagnosticsEnabled }: UseEditSessionsOptions) 
     })
   }, [])
 
-  const createEditor = useCallback((options: EditorOptions<EditAnnotation>) => {
-    const EditorClass = getEditorClass()
-    if (!EditorClass) throw new Error('Edit module not loaded yet')
-    return new EditorClass(options)
-  }, [])
+  const createEditor = useCallback<EditorFactory<EditSessionMetadata, undefined>>(
+    (editorType, options, editStateKey) => {
+      const EditorClass = getEditorClass()
+      if (!EditorClass) throw new Error('Edit module not loaded yet')
+      return new EditorClass(editorType, options, editStateKey)
+    },
+    [],
+  )
+
+  useEffect(
+    () => () => {
+      for (const timer of markerTimersRef.current.values()) clearTimeout(timer)
+      markerTimersRef.current.clear()
+      editorsRef.current.clear()
+    },
+    [],
+  )
 
   return {
     sessions,

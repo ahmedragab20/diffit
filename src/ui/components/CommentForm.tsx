@@ -171,7 +171,7 @@ interface CommentFormProps {
   onAdjustEnd?: (delta: -1 | 1) => void
   draftKey?: string
   /** Called with body + optional severity (omit / none = no severity). */
-  onSubmit: (body: string, severity?: CommentSeverity) => void
+  onSubmit: (body: string, severity?: CommentSeverity) => void | Promise<unknown>
   onCancel: () => void
   /** Hide severity control (e.g. reply-only contexts). Default true for new comments. */
   showSeverity?: boolean
@@ -215,6 +215,9 @@ export function CommentForm({
     return initialBody || ''
   })
   const [severity, setSeverity] = useState<CommentSeverity>('none')
+  const submittingRef = useRef(false)
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState<'write' | 'preview'>('write')
   const [showSavedReplies, setShowSavedReplies] = useState(false)
   const [saveTemplateOpen, setSaveTemplateOpen] = useState(false)
@@ -241,7 +244,7 @@ export function CommentForm({
       })
       setBody(result.text)
       setActiveTab('write')
-      requestAnimationFrame(() => textareaRef.current?.focus())
+      requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
     } catch (error) {
       setAiUndoBody(null)
       setAiError(error instanceof Error ? error.message : String(error))
@@ -254,7 +257,7 @@ export function CommentForm({
     setBody((prev) => (prev.trim() ? `${prev.trimEnd()}\n\n${reply.body}` : reply.body))
     setShowSavedReplies(false)
     setActiveTab('write')
-    requestAnimationFrame(() => textareaRef.current?.focus())
+    requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
   }
 
   const saveCurrentAsReply = () => {
@@ -272,9 +275,9 @@ export function CommentForm({
 
   useEffect(() => {
     if (activeTab === 'write') {
-      textareaRef.current?.focus()
+      textareaRef.current?.focus({ preventScroll: true })
     } else {
-      previewRef.current?.focus()
+      previewRef.current?.focus({ preventScroll: true })
     }
   }, [activeTab])
 
@@ -285,12 +288,12 @@ export function CommentForm({
     let cancelled = false
     const raf = requestAnimationFrame(() => {
       if (cancelled) return
-      textareaRef.current?.focus()
+      textareaRef.current?.focus({ preventScroll: true })
     })
     const retry = setTimeout(() => {
       if (cancelled) return
       if (document.activeElement !== textareaRef.current) {
-        textareaRef.current?.focus()
+        textareaRef.current?.focus({ preventScroll: true })
       }
     }, 200)
     return () => {
@@ -306,13 +309,22 @@ export function CommentForm({
     }
   }, [body, draftKey])
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     const trimmed = body.trim()
-    if (trimmed) {
+    if (!trimmed || submittingRef.current) return
+    submittingRef.current = true
+    setSubmitting(true)
+    setSubmitError(null)
+    try {
+      await onSubmit(trimmed, severity === 'none' ? undefined : severity)
       if (draftKey) clearDraft(draftKey)
       haptic('success')
       sound('success')
-      onSubmit(trimmed, severity === 'none' ? undefined : severity)
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'Could not save comment. Try again.')
+    } finally {
+      submittingRef.current = false
+      setSubmitting(false)
     }
   }
 
@@ -331,21 +343,29 @@ export function CommentForm({
       return `${prev.trimEnd()}\n\n${fence}`
     })
     setActiveTab('write')
-    requestAnimationFrame(() => textareaRef.current?.focus())
+    requestAnimationFrame(() => textareaRef.current?.focus({ preventScroll: true }))
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (mention.handleKeyDown(e)) return
+    if (e.nativeEvent.isComposing || e.nativeEvent.keyCode === 229) return
+    if (mention.handleKeyDown(e)) {
+      e.stopPropagation()
+      return
+    }
     if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
       e.preventDefault()
-      handleSubmit()
+      e.stopPropagation()
+      void handleSubmit()
     }
     if (e.key === 'p' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
       e.preventDefault()
+      e.stopPropagation()
       setActiveTab((t) => (t === 'write' ? 'preview' : 'write'))
     }
     if (e.key === 'Escape') {
-      if (body.includes('\n')) return
+      if (body.includes('\n') || submittingRef.current) return
+      e.preventDefault()
+      e.stopPropagation()
       onCancel()
     }
   }
@@ -524,33 +544,79 @@ export function CommentForm({
           <div className="comment-form-suggest-row">
             {ai && aiSurface && aiContext && (
               <div className="comment-form-ai-actions" aria-label="AI comment actions">
-                <button type="button" className="btn btn-sm comment-form-suggest-btn ai-comment-btn" disabled={aiRunning} onClick={() => void runAiEdit(body.trim() ? 'improve-comment' : 'draft-comment')}>
+                <button
+                  type="button"
+                  className="btn btn-sm comment-form-suggest-btn ai-comment-btn"
+                  disabled={aiRunning}
+                  onClick={() => void runAiEdit(body.trim() ? 'improve-comment' : 'draft-comment')}
+                >
                   <Sparkles size={12} /> {body.trim() ? 'Improve writing' : 'Draft comment'}
                 </button>
                 {body.trim() && (
                   <>
-                    <button type="button" className="btn btn-sm comment-form-suggest-btn" disabled={aiRunning} onClick={() => void runAiEdit('shorten-comment')}>Shorter</button>
-                    <button type="button" className="btn btn-sm comment-form-suggest-btn" disabled={aiRunning} onClick={() => void runAiEdit('make-specific')}>More specific</button>
+                    <button
+                      type="button"
+                      className="btn btn-sm comment-form-suggest-btn"
+                      disabled={aiRunning}
+                      onClick={() => void runAiEdit('shorten-comment')}
+                    >
+                      Shorter
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm comment-form-suggest-btn"
+                      disabled={aiRunning}
+                      onClick={() => void runAiEdit('make-specific')}
+                    >
+                      More specific
+                    </button>
                   </>
                 )}
-                {lineContent && <button type="button" className="btn btn-sm comment-form-suggest-btn" disabled={aiRunning} onClick={() => void runAiEdit('suggest-change')}>Generate suggestion</button>}
-                {onAddToAsk && aiContext?.kind === 'selection' && aiContext.filePath && aiContext.side && aiContext.startLine != null && aiContext.endLine != null && (
+                {lineContent && (
                   <button
                     type="button"
-                    className="btn btn-sm comment-form-suggest-btn ai-comment-btn"
+                    className="btn btn-sm comment-form-suggest-btn"
                     disabled={aiRunning}
-                    onClick={() => onAddToAsk({
-                      filePath: aiContext.filePath!,
-                      side: aiContext.side!,
-                      startLine: aiContext.startLine!,
-                      endLine: aiContext.endLine!,
-                      selectedText: aiContext.selectedText ?? lineContent ?? '',
-                    })}
+                    onClick={() => void runAiEdit('suggest-change')}
                   >
-                    <Sparkles size={13} /> Add to Ask
+                    Generate suggestion
                   </button>
                 )}
-                {aiUndoBody !== null && <button type="button" className="btn btn-sm comment-form-suggest-btn" onClick={() => { setBody(aiUndoBody); setAiUndoBody(null) }}>Undo AI edit</button>}
+                {onAddToAsk &&
+                  aiContext?.kind === 'selection' &&
+                  aiContext.filePath &&
+                  aiContext.side &&
+                  aiContext.startLine != null &&
+                  aiContext.endLine != null && (
+                    <button
+                      type="button"
+                      className="btn btn-sm comment-form-suggest-btn ai-comment-btn"
+                      disabled={aiRunning}
+                      onClick={() =>
+                        onAddToAsk({
+                          filePath: aiContext.filePath!,
+                          side: aiContext.side!,
+                          startLine: aiContext.startLine!,
+                          endLine: aiContext.endLine!,
+                          selectedText: aiContext.selectedText ?? lineContent ?? '',
+                        })
+                      }
+                    >
+                      <Sparkles size={13} /> Add to Ask
+                    </button>
+                  )}
+                {aiUndoBody !== null && (
+                  <button
+                    type="button"
+                    className="btn btn-sm comment-form-suggest-btn"
+                    onClick={() => {
+                      setBody(aiUndoBody)
+                      setAiUndoBody(null)
+                    }}
+                  >
+                    Undo AI edit
+                  </button>
+                )}
               </div>
             )}
             {savedReplies.length > 0 && (
@@ -610,7 +676,11 @@ export function CommentForm({
               </button>
             ) : null}
           </div>
-          {aiError && <div className="comment-form-ai-error" role="alert">{aiError}</div>}
+          {aiError && (
+            <div className="comment-form-ai-error" role="alert">
+              {aiError}
+            </div>
+          )}
           <div className="comment-form-editor">
             <textarea
               id="comment-write-panel"
@@ -619,6 +689,7 @@ export function CommentForm({
                 mention.setTextareaRef(el)
               }}
               value={body}
+              readOnly={submitting}
               onChange={(e) => setBody(e.target.value)}
               onKeyDown={handleKeyDown}
               onPaste={handlePaste}
@@ -701,6 +772,11 @@ export function CommentForm({
         </div>
       )}
 
+      {submitError && (
+        <p role="alert" className="comment-form-error">
+          {submitError}
+        </p>
+      )}
       <div className="comment-form-actions">
         {showSeverity && (
           <div className="comment-form-severity" data-severity={severity}>
@@ -709,16 +785,21 @@ export function CommentForm({
           </div>
         )}
         <div className="comment-form-actions-right">
-          <button type="button" className="btn btn-secondary btn-sm" onClick={onCancel}>
+          <button
+            type="button"
+            className="btn btn-secondary btn-sm"
+            onClick={onCancel}
+            disabled={submitting}
+          >
             Cancel
           </button>
           <button
             type="button"
             className="btn btn-primary btn-sm"
             onClick={handleSubmit}
-            disabled={!body.trim()}
+            disabled={!body.trim() || submitting}
           >
-            {initialBody ? 'Save' : 'Comment'}
+            {submitting ? 'Saving…' : initialBody ? 'Save' : 'Comment'}
           </button>
         </div>
       </div>

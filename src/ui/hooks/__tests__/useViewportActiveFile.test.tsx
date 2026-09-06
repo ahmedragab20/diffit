@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { useState } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 import type { FileDiffMetadata } from '@pierre/diffs'
 import { useViewportActiveFileTracking } from '../useViewportActiveFile'
@@ -130,6 +130,35 @@ describe('useViewportActiveFileTracking', () => {
     })
     await flushRaf()
     expect(screen.getByTestId('active').textContent).toBe('c.ts')
+  })
+
+  it('does not change active file or steal textarea focus while typing', async () => {
+    document.body.innerHTML = '<div id="file-a.ts"></div><div id="file-b.ts"></div><div id="file-c.ts"></div>'
+    mockRect('file-a.ts', 0, 100)
+    mockRect('file-b.ts', 50, 550)
+    mockRect('file-c.ts', 2000, 2100)
+
+    const suppressRef = { current: 0 }
+    render(<Harness suppressRef={suppressRef} />)
+    await flushRaf()
+    expect(screen.getByTestId('active').textContent).toBe('b.ts')
+
+    const textarea = document.createElement('textarea')
+    document.body.appendChild(textarea)
+    textarea.focus()
+    expect(document.activeElement).toBe(textarea)
+
+    const child = document.createElement('span')
+    document.getElementById('file-c.ts')!.appendChild(child)
+    act(() => {
+      mockRect('file-a.ts', 0, 900)
+      window.dispatchEvent(new Event('scroll'))
+      child.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }))
+    })
+    await flushRaf()
+
+    expect(screen.getByTestId('active').textContent).toBe('b.ts')
+    expect(document.activeElement).toBe(textarea)
   })
 
   it('ignores scroll-derived detection during the explicit-selection suppression window', async () => {

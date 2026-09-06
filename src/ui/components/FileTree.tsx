@@ -1,20 +1,10 @@
 import { useState, useMemo, useEffect, useRef, useCallback, memo } from 'react'
-import {
-  Search,
-  Filter,
-  X,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Check,
-} from 'lucide-react'
+import { Search, Filter, X, PanelLeftClose, PanelLeftOpen, Check } from 'lucide-react'
 import type { FileDiffMetadata } from '@pierre/diffs'
 import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
 import type { FileTreeRowDecorationRenderer, GitStatusEntry, GitStatus } from '@pierre/trees'
 import { Tooltip } from '../primitives/Tooltip'
-import {
-  sanitizePaths,
-  buildExpandedPaths,
-} from '../lib/treePathSanitize'
+import { sanitizePaths, buildExpandedPaths } from '../lib/treePathSanitize'
 import {
   matchesExtensionFilter,
   formatExtensionFilter,
@@ -87,10 +77,7 @@ export const FileTree = memo(function FileTree({
   }, [files])
 
   const needsApply = extensionFilterNeedsApply(files.length, totalChangedLines)
-  const availableExtensions = useMemo(
-    () => collectExtensions(files.map((f) => f.name)),
-    [files],
-  )
+  const availableExtensions = useMemo(() => collectExtensions(files.map((f) => f.name)), [files])
 
   const commitExtensions = useCallback(
     (next: string[]) => {
@@ -154,22 +141,22 @@ export const FileTree = memo(function FileTree({
     return filteredFiles
       .filter((file) => pathsSet.has(file.name))
       .map((file) => {
-      let status: GitStatus = 'modified'
-      if (untrackedFiles.has(file.name)) {
-        status = 'untracked'
-      } else if (file.prevName) {
-        status = 'renamed'
-      } else {
-        const prev = file.prevObjectId
-        const next = file.newObjectId
-        if (prev === '0000000' || prev === '0000000000000000000000000000000000000000') {
-          status = 'added'
-        } else if (next === '0000000' || next === '0000000000000000000000000000000000000000') {
-          status = 'deleted'
+        let status: GitStatus = 'modified'
+        if (untrackedFiles.has(file.name)) {
+          status = 'untracked'
+        } else if (file.prevName) {
+          status = 'renamed'
+        } else {
+          const prev = file.prevObjectId
+          const next = file.newObjectId
+          if (prev === '0000000' || prev === '0000000000000000000000000000000000000000') {
+            status = 'added'
+          } else if (next === '0000000' || next === '0000000000000000000000000000000000000000') {
+            status = 'deleted'
+          }
         }
-      }
-      return { path: file.name, status }
-    })
+        return { path: file.name, status }
+      })
   }, [filteredFiles, untrackedFiles, pathsSet])
 
   // Keep a ref of viewedFiles and commentCounts to avoid recreating renderRowDecoration
@@ -217,16 +204,20 @@ export const FileTree = memo(function FileTree({
     }
   }, [])
 
+  const syncingSelection = useRef(false)
   const { model } = useFileTree({
     paths,
     fileTreeSearchMode: 'hide-non-matches',
     gitStatus,
     renderRowDecoration,
-    initialSelectedPaths:
-      activeFile && pathsSet.has(activeFile) ? [activeFile] : [],
+    initialSelectedPaths: activeFile && pathsSet.has(activeFile) ? [activeFile] : [],
     initialExpandedPaths: expandedPaths,
     onSelectionChange: (selectedPaths) => {
-      if (selectedPaths.length > 0 && selectedPaths[0] !== activeFile) {
+      if (
+        !syncingSelection.current &&
+        selectedPaths.length > 0 &&
+        selectedPaths[0] !== activeFile
+      ) {
         onFileClick(selectedPaths[0])
       }
     },
@@ -246,10 +237,16 @@ export const FileTree = memo(function FileTree({
   useEffect(() => {
     if (!activeFile || !pathsSet.has(activeFile)) return
     try {
-      model.focusPath(activeFile)
-      model.scrollToPath(activeFile, { focus: true, offset: 'nearest' })
+      syncingSelection.current = true
+      for (const path of model.getSelectedPaths()) {
+        if (path !== activeFile) model.getItem(path)?.deselect()
+      }
+      model.getItem(activeFile)?.select()
+      model.scrollToPath(activeFile, { focus: false, offset: 'nearest' })
     } catch (err) {
       console.error('Failed to scroll to active file:', err)
+    } finally {
+      syncingSelection.current = false
     }
   }, [activeFile, model, pathsSet])
 
@@ -320,9 +317,7 @@ export const FileTree = memo(function FileTree({
                   {appliedExtensions.length} applied
                 </span>
               )}
-              {dirty && needsApply && (
-                <span className="ft-ext-pending">unsaved</span>
-              )}
+              {dirty && needsApply && <span className="ft-ext-pending">unsaved</span>}
             </div>
             <div className="ft-ext-chips" role="group" aria-label="File extensions">
               {availableExtensions.map((ext) => {
@@ -384,9 +379,7 @@ export const FileTree = memo(function FileTree({
                 { id: 'all' as const, label: 'All' },
                 { id: 'unviewed' as const, label: 'Unviewed' },
                 { id: 'has-comments' as const, label: 'Comments' },
-                ...(sinceLastAvailable
-                  ? [{ id: 'since-last' as const, label: 'Since last' }]
-                  : []),
+                ...(sinceLastAvailable ? [{ id: 'since-last' as const, label: 'Since last' }] : []),
               ] as const
             ).map((chip) => (
               <button
