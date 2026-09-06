@@ -20,7 +20,8 @@ vi.mock("node:child_process", async (importOriginal) => {
 	return {
 		...actual,
 		spawn: (...args: unknown[]) => {
-			if (!harness.spawnImpl) throw new Error("unexpected spawn in test: " + String(args[0]));
+			if (!harness.spawnImpl)
+				throw new Error("unexpected spawn in test: " + String(args[0]));
 			return harness.spawnImpl(...args);
 		},
 	};
@@ -38,7 +39,9 @@ function fakeSecrets(): SecretStore {
 }
 
 function codexAdapter() {
-	const adapter = createDefaultAdapters(fakeSecrets()).find((item) => item.id === "codex");
+	const adapter = createDefaultAdapters(fakeSecrets()).find(
+		(item) => item.id === "codex",
+	);
 	if (!adapter) throw new Error("Codex adapter is missing");
 	return adapter;
 }
@@ -79,16 +82,34 @@ function createFakeChild(onTurnStart: (input: unknown) => void): FakeChild {
 			newline = buffer.indexOf("\n");
 			if (!line) continue;
 			let message: { id?: number; method?: string; params?: { input?: unknown } };
-			try { message = JSON.parse(line); } catch { continue; }
+			try {
+				message = JSON.parse(line);
+			} catch {
+				continue;
+			}
 			if (!message.id) continue; // ignore the "initialized" notification
 			if (message.id === 1) {
-				queueMicrotask(() => child.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`));
+				queueMicrotask(() =>
+					child.stdout.write(`${JSON.stringify({ id: 1, result: {} })}\n`),
+				);
 			} else if (message.id === 2) {
-				queueMicrotask(() => child.stdout.write(`${JSON.stringify({ id: 2, result: { thread: { id: "test-thread" } } })}\n`));
+				queueMicrotask(() =>
+					child.stdout.write(
+						`${JSON.stringify({ id: 2, result: { thread: { id: "test-thread" } } })}\n`,
+					),
+				);
 			} else if (message.id === 3) {
 				onTurnStart(message.params?.input);
-				queueMicrotask(() => child.stdout.write(`${JSON.stringify({ method: "item/agentMessage/delta", params: { delta: "checked" } })}\n`));
-				queueMicrotask(() => child.stdout.write(`${JSON.stringify({ method: "turn/completed", params: {} })}\n`));
+				queueMicrotask(() =>
+					child.stdout.write(
+						`${JSON.stringify({ method: "item/agentMessage/delta", params: { delta: "checked" } })}\n`,
+					),
+				);
+				queueMicrotask(() =>
+					child.stdout.write(
+						`${JSON.stringify({ method: "turn/completed", params: {} })}\n`,
+					),
+				);
 			}
 		}
 	});
@@ -99,18 +120,28 @@ function createFakeChild(onTurnStart: (input: unknown) => void): FakeChild {
 describe("Codex app-server image handling", () => {
 	it("sends captured image data URLs and never local image paths", async () => {
 		let turnInput: unknown;
-		const child = createFakeChild((input) => { turnInput = input; });
+		const child = createFakeChild((input) => {
+			turnInput = input;
+		});
 		const adapter = codexAdapter();
 		const controller = new AbortController();
 		try {
-			await expect(adapter.run(request([{
-				url: "/api/attachments/pasted_image_a.png",
-				name: "a.png",
-				mimeType: "image/png",
-				size: 8,
-				absolutePath: ABSOLUTE_PATH,
-				dataUrl: DATA_URL,
-			}]), controller.signal, async () => {})).resolves.toBe("checked");
+			await expect(
+				adapter.run(
+					request([
+						{
+							url: "/api/attachments/pasted_image_a.png",
+							name: "a.png",
+							mimeType: "image/png",
+							size: 8,
+							absolutePath: ABSOLUTE_PATH,
+							dataUrl: DATA_URL,
+						},
+					]),
+					controller.signal,
+					async () => {},
+				),
+			).resolves.toBe("checked");
 		} finally {
 			controller.abort();
 			child.stdin.destroy();
@@ -130,11 +161,15 @@ describe("Codex app-server image handling", () => {
 
 	it("sends text only when no images are resolved", async () => {
 		let turnInput: unknown;
-		const child = createFakeChild((input) => { turnInput = input; });
+		const child = createFakeChild((input) => {
+			turnInput = input;
+		});
 		const adapter = codexAdapter();
 		const controller = new AbortController();
 		try {
-			await expect(adapter.run(request(), controller.signal, async () => {})).resolves.toBe("checked");
+			await expect(
+				adapter.run(request(), controller.signal, async () => {}),
+			).resolves.toBe("checked");
 		} finally {
 			controller.abort();
 			child.stdin.destroy();
@@ -143,7 +178,9 @@ describe("Codex app-server image handling", () => {
 		}
 
 		const items = (turnInput ?? []) as Array<Record<string, unknown>>;
-		expect(items).toEqual([expect.objectContaining({ type: "text", text: "Check image" })]);
+		expect(items).toEqual([
+			expect.objectContaining({ type: "text", text: "Check image" }),
+		]);
 		expect(JSON.stringify(items)).not.toContain("localImage");
 		expect(JSON.stringify(items)).not.toContain(ABSOLUTE_PATH);
 		expect(child.kill).toHaveBeenCalledWith("SIGTERM");

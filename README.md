@@ -45,7 +45,7 @@ TTY opens the interactive UI. Pipe or redirect prints a unified patch like `git 
 ## What you get
 
 | Area | Highlights |
-|------|------------|
+| ------ | ------------ |
 | **Review UI** | Split/unified diffs, inline comments + severity, suggestions, image diffs, themes (52), search |
 | **Agents** | `await-review`, reply/resolve, progress, MCP (**55** tools), skills via `npx skills add ahmedragab20/diffing` |
 | **Plan review** | Submit markdown → human verdict → approved / changes-requested / rejected |
@@ -90,15 +90,15 @@ pnpm build
 ## Documentation
 
 | | |
-|--|--|
-| Getting started | https://ahmedragab20.github.io/diffing/docs/getting-started/ |
-| Agent handoff | https://ahmedragab20.github.io/diffing/docs/guides/agent-handoff/ |
-| Plan review | https://ahmedragab20.github.io/diffing/docs/guides/plan-review/ |
-| CLI reference | https://ahmedragab20.github.io/diffing/docs/reference/cli/ |
-| MCP tools | https://ahmedragab20.github.io/diffing/docs/reference/mcp/ |
-| Keyboard | https://ahmedragab20.github.io/diffing/docs/reference/keyboard/ |
-| Design (Gridline) | https://ahmedragab20.github.io/diffing/docs/design/gridline/ |
-| llms.txt | https://ahmedragab20.github.io/diffing/llms.txt |
+| -- | -- |
+| Getting started | <https://ahmedragab20.github.io/diffing/docs/getting-started/> |
+| Agent handoff | <https://ahmedragab20.github.io/diffing/docs/guides/agent-handoff/> |
+| Plan review | <https://ahmedragab20.github.io/diffing/docs/guides/plan-review/> |
+| CLI reference | <https://ahmedragab20.github.io/diffing/docs/reference/cli/> |
+| MCP tools | <https://ahmedragab20.github.io/diffing/docs/reference/mcp/> |
+| Keyboard | <https://ahmedragab20.github.io/diffing/docs/reference/keyboard/> |
+| Design (Gridline) | <https://ahmedragab20.github.io/diffing/docs/design/gridline/> |
+| llms.txt | <https://ahmedragab20.github.io/diffing/llms.txt> |
 
 Local site preview (contributors):
 
@@ -111,9 +111,9 @@ pnpm docs:dev
 
 ## Links
 
-- **npm:** https://www.npmjs.com/package/diffing
-- **GitHub:** https://github.com/ahmedragab20/diffing
-- **Docs:** https://ahmedragab20.github.io/diffing/
+- **npm:** <https://www.npmjs.com/package/diffing>
+- **GitHub:** <https://github.com/ahmedragab20/diffing>
+- **Docs:** <https://ahmedragab20.github.io/diffing/>
 
 ## License
 
