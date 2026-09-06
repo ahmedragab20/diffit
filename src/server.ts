@@ -109,7 +109,7 @@ import {
 	injectSessionTokenIntoHtml,
 	type ServerAuthConfig,
 } from "./lib/server-auth.js";
-import { FilePrSessionStore } from "./lib/pr-session.js";
+import { FilePrSessionStore, samePrIdentity } from "./lib/pr-session.js";
 import type {
 	PrSessionStore,
 	PrDecision,
@@ -142,10 +142,14 @@ import {
 	submitReview as githubSubmitReview,
 	fetchExistingCommentsViaGh,
 	fetchExistingReviewsViaGh,
+	submitPendingReviewViaGh,
+	deletePendingReviewViaGh,
 	updatePrReviewComment,
 	deletePrReviewComment,
 	setPrReviewThreadResolved,
 	fetchPrFileContentViaGh,
+	parsePrRef,
+	detectCwdRepo,
 } from "./lib/github.js";
 import { AiService } from "./lib/ai/service.js";
 import { ByteLruCache } from "./lib/ai/cache.js";
@@ -320,6 +324,15 @@ export function createApp(
 	const mockups = mockupStore ?? new FileMockupStore();
 	const designSystems = designSystemStore ?? new FileDesignSystemStore();
 	const prStore = prSessionStore ?? new FilePrSessionStore();
+	let submitInFlight: Promise<{
+		ok: boolean;
+		reviewId?: number;
+		reviewUrl?: string;
+		failedComments: number;
+		authSource: string;
+		error?: string;
+		dryRun: boolean;
+	}> | null = null;
 	const agentDiffCache = new AgentDiffIndexCache();
 	const uiStateStore = new FileUiStateStore();
 	const viewedFiles = new Set<string>();
@@ -618,6 +631,7 @@ export function createApp(
 					prHeadSha: prSession.headSha,
 					prBaseSha: prSession.baseSha,
 					overview: prOverview,
+					diffCompleteness: prSession.diffCompleteness,
 				});
 			}
 		}
@@ -802,7 +816,10 @@ export function createApp(
 		if (!prMode) return getFileContent(path, version);
 		const session = await prStore.get();
 		if (!session) return null;
-		const sha = version === "old" ? session.baseSha : session.headSha;
+		const sha =
+			version === "old"
+				? session.mergeBaseSha || session.baseSha
+				: session.headSha;
 		return fetchPrFileContentViaGh(resolvedFromSession(session), path, sha);
 	};
 	const aiAttachmentCache = new ByteLruCache<Buffer>(4 * 1024 * 1024, 64);
@@ -1893,6 +1910,9 @@ export function createApp(
 			pullNumber: session.pullNumber,
 			baseSha: session.baseSha,
 			headSha: session.headSha,
+			baseRefName: session.baseRefName,
+			headRefName: session.headRefName,
+			mergeBaseSha: session.mergeBaseSha,
 			title: session.title,
 			url: session.url,
 			author: session.author,
@@ -1905,6 +1925,41 @@ export function createApp(
 			submittedReviewId: session.submittedReviewId,
 			submittedReviewUrl: session.submittedReviewUrl,
 			authSource: session.authSource,
+			diffCompleteness: session.diffCompleteness,
+			reviewBody: session.reviewBody,
+			reviewDecision: session.reviewDecision,
+			publication: session.publication,
+		});
+	});
+
+	app.put("/api/gh/pr-session/review-draft", async (c) => {
+		if (!prMode) return notInPrMode(c);
+		const body = (await c.req.json().catch(() => ({}))) as Record<
+			string,
+			unknown
+		>;
+		const reviewBody = typeof body.body === "string" ? body.body : undefined;
+		const decision = body.decision;
+		const reviewDecision =
+			decision === "approve" ||
+			decision === "comment" ||
+			decision === "request-changes" ||
+			decision === "draft"
+				? decision
+				: undefined;
+		const session = await prStore.apply((latest) => {
+			if (!latest) return null;
+			return {
+				...latest,
+				...(reviewBody !== undefined ? { reviewBody } : {}),
+				...(reviewDecision !== undefined ? { reviewDecision } : {}),
+			};
+		});
+		if (!session) return notInPrMode(c);
+		return c.json({
+			ok: true,
+			reviewBody: session.reviewBody ?? "",
+			reviewDecision: session.reviewDecision ?? null,
 		});
 	});
 
@@ -2017,6 +2072,93 @@ export function createApp(
 			return c.body(formatPrReviews(session, page.reviews, page));
 		}
 		return c.json(page);
+	});
+
+	app.post("/api/gh/reviews/:id/submit", async (c) => {
+		if (!prMode) return notInPrMode(c);
+		const session = await prStore.get();
+		if (!session) return notInPrMode(c);
+		const reviewId = Number(c.req.param("id"));
+		if (!Number.isFinite(reviewId))
+			return c.json({ error: "Invalid review id" }, 400);
+		const pending = (session.existingReviews ?? []).find(
+			(review) => review.id === reviewId && review.state === "PENDING",
+		);
+		if (!pending) return c.json({ error: "No pending review with that id" }, 404);
+		const body = (await c.req.json().catch(() => ({}))) as Record<
+			string,
+			unknown
+		>;
+		const event =
+			body.event === "APPROVE" ||
+			body.event === "REQUEST_CHANGES" ||
+			body.event === "COMMENT"
+				? body.event
+				: null;
+		if (!event) {
+			return c.json(
+				{ error: "event must be APPROVE, REQUEST_CHANGES, or COMMENT" },
+				400,
+			);
+		}
+		const note = typeof body.body === "string" ? body.body : undefined;
+		const result = await submitPendingReviewViaGh(
+			resolvedFromSession(session),
+			reviewId,
+			event,
+			note,
+		);
+		if (!result.ok)
+			return c.json({ error: result.error ?? "Submit failed" }, 502);
+		const existingReviews = (session.existingReviews ?? []).map((review) =>
+			review.id === reviewId
+				? {
+						...review,
+						state:
+							event === "APPROVE"
+								? ("APPROVED" as const)
+								: event === "REQUEST_CHANGES"
+									? ("CHANGES_REQUESTED" as const)
+									: ("COMMENTED" as const),
+						body: note ?? review.body,
+						submittedAt: new Date().toISOString(),
+						htmlUrl: result.htmlUrl ?? review.htmlUrl,
+					}
+				: review,
+		);
+		await prStore.apply((latest) =>
+			latest ? { ...latest, existingReviews } : null,
+		);
+		return c.json({ ok: true, reviewId, htmlUrl: result.htmlUrl });
+	});
+
+	app.delete("/api/gh/reviews/:id", async (c) => {
+		if (!prMode) return notInPrMode(c);
+		const session = await prStore.get();
+		if (!session) return notInPrMode(c);
+		const reviewId = Number(c.req.param("id"));
+		if (!Number.isFinite(reviewId))
+			return c.json({ error: "Invalid review id" }, 400);
+		const pending = (session.existingReviews ?? []).find(
+			(review) => review.id === reviewId && review.state === "PENDING",
+		);
+		if (!pending) return c.json({ error: "No pending review with that id" }, 404);
+		const result = await deletePendingReviewViaGh(
+			resolvedFromSession(session),
+			reviewId,
+		);
+		if (!result.ok)
+			return c.json({ error: result.error ?? "Discard failed" }, 502);
+		await prStore.apply((latest) => {
+			if (!latest) return null;
+			return {
+				...latest,
+				existingReviews: (latest.existingReviews ?? []).filter(
+					(review) => review.id !== reviewId,
+				),
+			};
+		});
+		return c.json({ ok: true, reviewId });
 	});
 
 	/**
@@ -2143,13 +2285,14 @@ export function createApp(
 		if (!session) return notInPrMode(c);
 		try {
 			const refreshed = await refreshPrSession(session);
-			const comments = refreshed.submittedAt
-				? (refreshed.comments ?? []).filter(
-						(comment) => comment.createdAt > refreshed.submittedAt!,
-					)
-				: refreshed.comments;
-			await prStore.set({ ...refreshed, comments });
-			return c.json({ ok: true, headSha: refreshed.headSha });
+			const next = await prStore.apply((current) => {
+				const drafts = current?.comments ?? refreshed.comments;
+				const comments = refreshed.submittedAt
+					? drafts.filter((comment) => comment.createdAt > refreshed.submittedAt!)
+					: drafts;
+				return { ...refreshed, comments };
+			});
+			return c.json({ ok: true, headSha: next?.headSha ?? refreshed.headSha });
 		} catch (err: any) {
 			return c.json({ error: err?.message ?? "Refresh failed" }, 500);
 		}
@@ -2369,11 +2512,14 @@ export function createApp(
 			replies: [],
 			...(severity ? { severity } : {}),
 		};
-		const next = {
-			...session,
-			comments: [...(session.comments ?? []), comment],
-		};
-		await prStore.set(next);
+		const next = await prStore.apply((current) => {
+			if (!current) return null;
+			return {
+				...current,
+				comments: [...(current.comments ?? []), comment],
+			};
+		});
+		if (!next) return notInPrMode(c);
 		return c.json(comment, 201);
 	});
 
@@ -2483,6 +2629,7 @@ export function createApp(
 					...c,
 					body: commentBodies[i] ?? c.body,
 				})),
+				commitId: session.headSha,
 			});
 			return c.json({
 				ok: true,
@@ -2494,72 +2641,128 @@ export function createApp(
 			});
 		}
 
-		const result = await githubSubmitReview({
-			resolved: resolvedFromSession(session),
-			decision: decision as PrDecision,
-			body: generalBody,
-			comments: session.comments ?? [],
-		});
-
-		if (result.ok) {
-			let existingComments = session.existingComments;
-			let existingReviews = session.existingReviews ?? [];
-			try {
-				const resolved = resolvedFromSession(session);
-				existingReviews = await fetchExistingReviewsViaGh(resolved);
-				existingComments = await fetchExistingCommentsViaGh(
-					resolved,
-					existingReviews,
+		if (!submitInFlight) {
+			submitInFlight = (async () => {
+				const current = (await prStore.get()) ?? session;
+				const submittedIds = new Set(
+					(current.comments ?? []).map((comment) => comment.id),
 				);
-			} catch {
-				// Submission succeeded; a later refresh/background sync can hydrate it.
-			}
-			if (
-				result.reviewId != null &&
-				!existingReviews.some((review) => review.id === result.reviewId)
-			) {
-				const stateByDecision: Record<PrDecision, PrExistingReview["state"]> = {
-					approve: "APPROVED",
-					"request-changes": "CHANGES_REQUESTED",
-					comment: "COMMENTED",
-					draft: "PENDING",
-				};
-				existingReviews = [
-					{
-						id: result.reviewId,
-						author: null,
-						body: generalBody,
-						state: stateByDecision[decision as PrDecision],
-						submittedAt: new Date().toISOString(),
-						htmlUrl: result.reviewUrl,
-						commitId: session.headSha,
-					},
-					...existingReviews,
-				];
-			}
-			const next = {
-				...session,
-				comments: [],
-				existingComments,
-				existingReviews,
-				submittedAt: Date.now(),
-				submittedReviewId: result.reviewId,
-				submittedReviewUrl: result.reviewUrl,
-				authSource: result.authSource === "none" ? undefined : result.authSource,
-			};
-			await prStore.set(next);
-		}
+				const publicationDecision = decision as PrDecision;
+				await prStore.apply((latest) => {
+					if (!latest) return null;
+					return {
+						...latest,
+						reviewBody: generalBody,
+						reviewDecision: publicationDecision,
+						publication: {
+							state: "sending",
+							decision: publicationDecision,
+							body: generalBody,
+							updatedAt: Date.now(),
+							headSha: latest.headSha,
+						},
+					};
+				});
+				const result = await githubSubmitReview({
+					resolved: resolvedFromSession(current),
+					decision: publicationDecision,
+					body: generalBody,
+					comments: current.comments ?? [],
+					commitId: current.headSha,
+				});
 
-		const responseBody = {
-			ok: result.ok,
-			reviewId: result.reviewId,
-			reviewUrl: result.reviewUrl,
-			failedComments: result.failedComments ?? 0,
-			authSource: result.authSource,
-			error: result.error,
-			dryRun: false,
-		};
-		return result.ok ? c.json(responseBody) : c.json(responseBody, 502);
+				if (result.ok) {
+					let existingComments = current.existingComments;
+					let existingReviews = current.existingReviews ?? [];
+					try {
+						const resolved = resolvedFromSession(current);
+						existingReviews = await fetchExistingReviewsViaGh(resolved);
+						existingComments = await fetchExistingCommentsViaGh(
+							resolved,
+							existingReviews,
+						);
+					} catch {
+						// Submission succeeded; a later refresh/background sync can hydrate it.
+					}
+					if (
+						result.reviewId != null &&
+						!existingReviews.some((review) => review.id === result.reviewId)
+					) {
+						const stateByDecision: Record<PrDecision, PrExistingReview["state"]> = {
+							approve: "APPROVED",
+							"request-changes": "CHANGES_REQUESTED",
+							comment: "COMMENTED",
+							draft: "PENDING",
+						};
+						existingReviews = [
+							{
+								id: result.reviewId,
+								author: null,
+								body: generalBody,
+								state: stateByDecision[decision as PrDecision],
+								submittedAt: new Date().toISOString(),
+								htmlUrl: result.reviewUrl,
+								commitId: current.headSha,
+							},
+							...existingReviews,
+						];
+					}
+					await prStore.apply((latest) => {
+						if (!latest) return null;
+						return {
+							...latest,
+							comments: (latest.comments ?? []).filter(
+								(comment) => !submittedIds.has(comment.id),
+							),
+							existingComments,
+							existingReviews,
+							submittedAt: Date.now(),
+							submittedReviewId: result.reviewId,
+							submittedReviewUrl: result.reviewUrl,
+							authSource: result.authSource === "none" ? undefined : result.authSource,
+							publication: {
+								state: result.reviewId != null ? "confirmed" : "unknown",
+								decision: publicationDecision,
+								body: generalBody,
+								updatedAt: Date.now(),
+								reviewId: result.reviewId,
+								reviewUrl: result.reviewUrl,
+								headSha: latest.headSha,
+							},
+						};
+					});
+				} else {
+					await prStore.apply((latest) => {
+						if (!latest) return null;
+						return {
+							...latest,
+							publication: {
+								state: "failed",
+								decision: publicationDecision,
+								body: generalBody,
+								updatedAt: Date.now(),
+								error: result.error,
+								headSha: latest.headSha,
+							},
+						};
+					});
+				}
+
+				return {
+					ok: result.ok,
+					reviewId: result.reviewId,
+					reviewUrl: result.reviewUrl,
+					failedComments: result.failedComments ?? 0,
+					authSource: result.authSource,
+					error: result.error,
+					dryRun: false as const,
+				};
+			})().finally(() => {
+				submitInFlight = null;
+			});
+		}
+		const responseBody = await submitInFlight;
+		return responseBody.ok ? c.json(responseBody) : c.json(responseBody, 502);
 	});
 
 	// ── Agent handoff: "agent waits, human releases" ──────────────────────────
@@ -4312,12 +4515,16 @@ export async function startServer(options: {
 	// then hits `/api/diff` before the session lands in the store, falls
 	// through to the local diff, and shows nothing.
 	let prMode = false;
+	let prStoreForApp: FilePrSessionStore | undefined;
 	if (options.prRef) {
 		console.error(`Building PR session for ${options.prRef}...`);
 		try {
 			const store = new FilePrSessionStore();
+			prStoreForApp = store;
+			const cwdRepo = await detectCwdRepo();
+			const resolved = parsePrRef(options.prRef, cwdRepo ?? undefined);
 			const existing = await store.get();
-			if (!existing || existing.ref !== options.prRef) {
+			if (!existing || !samePrIdentity(existing, resolved)) {
 				const session = await buildPrSession(options.prRef);
 				await store.set(session);
 			}
@@ -4337,7 +4544,7 @@ export async function startServer(options: {
 		options.diffOpts,
 		undefined,
 		undefined,
-		undefined,
+		prStoreForApp,
 		prMode,
 		options.security,
 	);

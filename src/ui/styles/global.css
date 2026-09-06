@@ -12574,6 +12574,40 @@ button.toolbar-last-send-btn:hover {
   font-size: 12px;
 }
 
+.pr-conversation-inbox {
+  border-bottom: 1px solid var(--border-weak);
+  background: rgba(var(--warning-rgb, 210, 153, 34), 0.06);
+}
+
+.pr-conversation-inbox-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 24px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.pr-conversation-inbox-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 24px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.pr-conversation-inbox-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pr-conversation-inbox-path {
+  font-size: 11px;
+  color: var(--text-tertiary, var(--text-secondary));
+}
+
 .pr-error {
   padding: 12px 24px;
   background: rgba(248, 81, 73, 0.12);
