@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { GitMerge, Pencil, XCircle } from "lucide-react";
+import { AlignLeft, GitMerge, Pencil, XCircle } from "lucide-react";
 import type { PrSession } from "../../lib/pr-session";
 import { mergeBlockedReason } from "../../lib/pr-timeline";
 import { ConfirmDialog } from "../primitives/ConfirmDialog";
@@ -14,8 +14,9 @@ export function PrAuthorActions({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirm, setConfirm] = useState<"close" | "reopen" | "merge" | null>(null);
-  const [editingTitle, setEditingTitle] = useState(false);
+  const [editing, setEditing] = useState<null | "title" | "body">(null);
   const [title, setTitle] = useState(session.title);
+  const [body, setBody] = useState(session.body ?? "");
   const blocked = mergeBlockedReason(session);
 
   const run = async (action: () => Promise<void>) => {
@@ -42,29 +43,39 @@ export function PrAuthorActions({
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
   };
 
+  const patchPr = async (fields: { title?: string; body?: string }) => {
+    const res = await fetch("/api/gh/pr", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(fields),
+    });
+    const data = (await res.json()) as { error?: string };
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    setEditing(null);
+  };
+
   const saveTitle = async () => {
     const next = title.trim();
     if (!next || next === session.title) {
-      setEditingTitle(false);
+      setEditing(null);
       return;
     }
-    await run(async () => {
-      const res = await fetch("/api/gh/pr", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: next }),
-      });
-      const data = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-      setEditingTitle(false);
-    });
+    await run(() => patchPr({ title: next }));
+  };
+
+  const saveBody = async () => {
+    if (body === (session.body ?? "")) {
+      setEditing(null);
+      return;
+    }
+    await run(() => patchPr({ body }));
   };
 
   if (session.state === "merged") return null;
 
   return (
     <div className="pr-author-actions">
-      {editingTitle ? (
+      {editing === "title" ? (
         <form
           className="pr-author-title-form"
           onSubmit={(event) => {
@@ -87,7 +98,7 @@ export function PrAuthorActions({
             disabled={busy}
             onClick={() => {
               setTitle(session.title);
-              setEditingTitle(false);
+              setEditing(null);
             }}
           >
             Cancel
@@ -98,9 +109,49 @@ export function PrAuthorActions({
           type="button"
           className="btn btn-sm"
           title="Edit title on GitHub"
-          onClick={() => setEditingTitle(true)}
+          onClick={() => setEditing("title")}
         >
           <Pencil size={12} /> <span className="btn-label">Title</span>
+        </button>
+      )}
+      {editing === "body" ? (
+        <form
+          className="pr-author-title-form is-body"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void saveBody();
+          }}
+        >
+          <textarea
+            value={body}
+            onChange={(event) => setBody(event.target.value)}
+            aria-label="Pull request description"
+            disabled={busy}
+            rows={4}
+          />
+          <button type="submit" className="btn btn-sm btn-primary" disabled={busy}>
+            Save
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            disabled={busy}
+            onClick={() => {
+              setBody(session.body ?? "");
+              setEditing(null);
+            }}
+          >
+            Cancel
+          </button>
+        </form>
+      ) : (
+        <button
+          type="button"
+          className="btn btn-sm"
+          title="Edit description on GitHub"
+          onClick={() => setEditing("body")}
+        >
+          <AlignLeft size={12} /> <span className="btn-label">Description</span>
         </button>
       )}
       {session.state === "closed" ? (

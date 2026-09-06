@@ -13154,14 +13154,29 @@ button.toolbar-last-send-btn:hover {
   gap: 6px;
 }
 
-.pr-author-title-form input {
+.pr-author-title-form input,
+.pr-author-title-form textarea {
   min-width: 180px;
-  height: 26px;
   padding: 0 8px;
   border: 1px solid var(--border-normal);
   border-radius: var(--radius-sm);
   background: var(--bg-primary);
   color: var(--text-primary);
+}
+
+.pr-author-title-form input {
+  height: 26px;
+}
+
+.pr-author-title-form.is-body {
+  align-items: flex-start;
+}
+
+.pr-author-title-form textarea {
+  min-width: 240px;
+  min-height: 64px;
+  padding: 6px 8px;
+  resize: vertical;
 }
 
 .srp-pending-hint {

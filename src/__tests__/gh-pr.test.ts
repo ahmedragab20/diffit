@@ -1651,4 +1651,171 @@ index 111..222 100644
         expect(ok.status).toBe(200);
         expect(githubMocks.applyPrSuggestion).toHaveBeenCalled();
     });
+
+    it("POST /api/gh/reviews/:id/submit 404s when the review is not pending", async () => {
+        await prStore.set({
+            ...baseSession,
+            existingReviews: [{
+                id: 88,
+                author: { login: "octocat" },
+                body: "done",
+                state: "COMMENTED",
+                submittedAt: "2026-01-01T00:00:00.000Z",
+            }],
+        });
+        const res = await app.fetch(
+            new Request("http://localhost/api/gh/reviews/88/submit", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ event: "APPROVE" }),
+            }),
+        );
+        expect(res.status).toBe(404);
+        expect(githubMocks.submitPendingReview).not.toHaveBeenCalled();
+    });
+
+    it("POST /api/gh/reviews/:id/submit keeps drafts when attach fails", async () => {
+        await prStore.set({
+            ...baseSession,
+            existingReviews: [{
+                id: 88,
+                author: { login: "octocat" },
+                body: "still drafting",
+                state: "PENDING",
+                submittedAt: null,
+            }],
+            comments: [{
+                id: "c1",
+                filePath: "src/x.ts",
+                side: "additions",
+                lineNumber: 1,
+                lineContent: "+ x",
+                body: "nit",
+                status: "open",
+                createdAt: 1,
+                replies: [],
+            }],
+        });
+        githubMocks.addCommentsToPendingReview.mockResolvedValue({
+            ok: false,
+            attached: 0,
+            failed: 1,
+            error: "boom",
+        });
+        const res = await app.fetch(
+            new Request("http://localhost/api/gh/reviews/88/submit", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ event: "COMMENT", body: "later" }),
+            }),
+        );
+        expect(res.status).toBe(502);
+        expect(githubMocks.submitPendingReview).not.toHaveBeenCalled();
+        expect((await prStore.get())?.comments).toHaveLength(1);
+    });
+
+    it("POST /api/gh/pr/close and reopen persist state", async () => {
+        await prStore.set(baseSession);
+        const closed = await app.fetch(
+            new Request("http://localhost/api/gh/pr/close", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+            }),
+        );
+        expect(closed.status).toBe(200);
+        expect((await prStore.get())?.state).toBe("closed");
+        const reopened = await app.fetch(
+            new Request("http://localhost/api/gh/pr/reopen", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({}),
+            }),
+        );
+        expect(reopened.status).toBe(200);
+        expect((await prStore.get())?.state).toBe("open");
+    });
+
+    it("PATCH /api/gh/pr persists the description body", async () => {
+        await prStore.set(baseSession);
+        await app.fetch(
+            new Request("http://localhost/api/gh/pr", {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ title: "New title", body: "New body" }),
+            }),
+        );
+        expect((await prStore.get())?.body).toBe("New body");
+    });
+
+    it("refuses applying a suggestion on a fork when maintainerCanModify is false", async () => {
+        await prStore.set({
+            ...baseSession,
+            headRefName: "topic",
+            headOwner: "forker",
+            headRepo: "widget",
+            maintainerCanModify: false,
+            existingComments: [{
+                ...baseSession.existingComments[0],
+                body: "```suggestion\nfixed\n```",
+                line: 4,
+                side: "RIGHT",
+            }],
+        });
+        const res = await app.fetch(
+            new Request(
+                "http://localhost/api/gh/existing-comments/999/apply-suggestion",
+                {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ expectedHeadSha: "head" }),
+                },
+            ),
+        );
+        expect(res.status).toBe(403);
+        expect(githubMocks.applyPrSuggestion).not.toHaveBeenCalled();
+    });
+
+    it("unviews changed files after a PR head refresh", async () => {
+        const { rmSync } = await import("node:fs");
+        rmSync("/tmp/test-project-storage/viewed.json", { force: true });
+        const patch1 = `diff --git a/a.ts b/a.ts
+index 111..222 100644
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1,2 @@
+ line
++added
+`;
+        const patch2 = `diff --git a/a.ts b/a.ts
+index 111..333 100644
+--- a/a.ts
++++ b/a.ts
+@@ -1 +1,2 @@
+ line
++changed
+`;
+        await prStore.set({ ...baseSession, diff: patch1, headSha: "aaa" });
+        const put = await app.fetch(
+            new Request("http://localhost/api/viewed", {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ filePath: "a.ts", viewed: true }),
+            }),
+        );
+        expect(put.status).toBe(200);
+        const before = await app.fetch(new Request("http://localhost/api/viewed"));
+        expect(await before.json()).toEqual(["a.ts"]);
+        githubMocks.refreshPrSession.mockResolvedValue({
+            ...baseSession,
+            diff: patch2,
+            headSha: "bbb",
+        });
+        const refresh = await app.fetch(
+            new Request("http://localhost/api/gh/pr/refresh", { method: "POST" }),
+        );
+        expect(refresh.status).toBe(200);
+        const after = await app.fetch(new Request("http://localhost/api/viewed"));
+        expect(await after.json()).toEqual([]);
+    });
 });

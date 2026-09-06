@@ -2635,6 +2635,15 @@ export function createApp(
 		if (!session.headRefName) {
 			return c.json({ error: "PR head branch is unknown" }, 400);
 		}
+		const forkHead =
+			(session.headOwner != null && session.headOwner !== session.owner) ||
+			(session.headRepo != null && session.headRepo !== session.repo);
+		if (forkHead && session.maintainerCanModify === false) {
+			return c.json(
+				{ error: "Maintainer cannot push to the head branch" },
+				403,
+			);
+		}
 		if (body.dryRun === true) {
 			return c.json({
 				ok: true,
