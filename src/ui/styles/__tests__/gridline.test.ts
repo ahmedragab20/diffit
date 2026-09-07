@@ -155,6 +155,7 @@ describe('Gridline Web design-system contract', () => {
       '.pr-existing-bubble',
       '.pr-existing-suggestion',
       '.pr-review-activity',
+      '.pr-conversation-timeline',
       '.pr-checks-panel',
       '.merge-conflict-card',
     ]

@@ -6,6 +6,7 @@ import type {
   PrExistingComment,
   PrExistingReview,
   PrDecision,
+  PrPublication,
 } from "../../lib/pr-session";
 import type { ReviewComment } from "../../lib/types";
 
@@ -33,6 +34,9 @@ interface PrSessionResponse {
   submittedReviewId?: number;
   submittedReviewUrl?: string;
   authSource?: "gh" | "token";
+  reviewBody?: string;
+  reviewDecision?: PrDecision;
+  publication?: PrPublication;
 }
 
 /**
@@ -152,7 +156,12 @@ export function usePrComments(enabled: boolean) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(params),
       });
-      return res.json() as Promise<ReviewComment>;
+      const data = (await res.json().catch(() => ({}))) as ReviewComment & {
+        error?: string;
+      };
+      if (!res.ok || !data.id)
+        throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
     },
     onSuccess: (comment) => {
       queryClient.setQueryData<ReviewComment[]>(
@@ -164,7 +173,13 @@ export function usePrComments(enabled: boolean) {
 
   const removeMutation = useMutation({
     mutationFn: async (id: string) => {
-      await fetch(`/api/gh/pr-session/comments/${id}`, { method: "DELETE" });
+      const res = await fetch(`/api/gh/pr-session/comments/${id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
       return id;
     },
     onSuccess: (id) => {
@@ -189,7 +204,12 @@ export function usePrComments(enabled: boolean) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body, status }),
       });
-      return res.json() as Promise<ReviewComment>;
+      const data = (await res.json().catch(() => ({}))) as ReviewComment & {
+        error?: string;
+      };
+      if (!res.ok || !data.id)
+        throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
     },
     onSuccess: (updated) => {
       queryClient.setQueryData<ReviewComment[]>(PR_COMMENTS_KEY, (prev = []) =>
@@ -294,6 +314,7 @@ export interface SubmitPrReviewInput {
   decision: PrDecision;
   body: string;
   dryRun?: boolean;
+  pendingReviewId?: number;
 }
 
 export interface SubmitPrReviewResult {
@@ -321,6 +342,7 @@ export function useSubmitPrReview() {
             decision: input.decision,
             body: input.body,
             dryRun: input.dryRun,
+            pendingReviewId: input.pendingReviewId,
           }),
         });
         const data = (await res.json()) as SubmitPrReviewResult;

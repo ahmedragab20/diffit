@@ -7,6 +7,7 @@ import { navigate } from '../router'
 import { BrandMark } from './BrandMark'
 import { ReviewSettingsPopover, type ReviewSettingsPopoverProps } from './ReviewSettingsPopover'
 import { SubmitToGitHubPopover } from './SubmitToGitHubPopover'
+import { PrAuthorActions } from './PrAuthorActions'
 import { AiModelPicker } from '../ai/AiModelPicker'
 
 interface PrReviewToolbarProps {
@@ -22,6 +23,7 @@ interface PrReviewToolbarProps {
   onDeleteComment: (id: string) => void
   onSubmitted?: (result: SubmitPrReviewResult) => void
   onOpenAiAssistant?: () => void
+  onAuthorChanged?: () => void
 }
 
 export function PrReviewToolbar({
@@ -37,6 +39,7 @@ export function PrReviewToolbar({
   onDeleteComment,
   onSubmitted,
   onOpenAiAssistant,
+  onAuthorChanged,
 }: PrReviewToolbarProps) {
   return (
     <header className="toolbar diff-app-toolbar pr-review-toolbar" role="banner">
@@ -97,6 +100,7 @@ export function PrReviewToolbar({
         <a className="btn btn-sm pr-header-link" href={session.url} target="_blank" rel="noreferrer" title="Open pull request on GitHub">
           <ExternalLink size={13} /> <span className="btn-label">GitHub</span>
         </a>
+        <PrAuthorActions session={session} onChanged={onAuthorChanged} />
         <ReviewSettingsPopover {...settingsProps} />
         <SubmitToGitHubPopover session={session} comments={comments} onEditComment={onEditComment} onDeleteComment={onDeleteComment} onSubmitted={onSubmitted} />
       </div>

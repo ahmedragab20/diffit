@@ -70,6 +70,7 @@ vi.mock('lucide-react', () => {
   const proxy: Record<string, unknown> = {}
   const keys = [
     'GitPullRequest', 'ArrowLeft', 'ExternalLink', 'RefreshCw', 'MessageCircle', 'Copy',
+    'GitMerge',
     'Pencil', 'Trash2', 'Check', 'X', 'MessageSquareWarning', 'AlertCircle',
     'CheckCircle2', 'Loader2', 'Eye', 'EyeOff', 'Search', 'XCircle', 'Clock',
     'ChevronDown', 'ChevronUp', 'ChevronLeft', 'ChevronRight', 'CornerUpLeft',

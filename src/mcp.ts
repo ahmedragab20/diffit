@@ -1234,6 +1234,8 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 				author: z.string().optional(),
 				cursor: z.number().int().nonnegative().optional(),
 				limit: z.number().int().positive().max(200).optional(),
+				replyCursor: z.number().int().nonnegative().optional(),
+				replyLimit: z.number().int().positive().max(100).optional(),
 				bodyMaxChars: z.number().int().positive().max(50_000).optional(),
 				fullBody: z.boolean().optional(),
 				format: z.enum(["json", "xml"]).optional(),
@@ -1247,6 +1249,8 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 			author,
 			cursor = 0,
 			limit = 50,
+			replyCursor,
+			replyLimit,
 			bodyMaxChars = 500,
 			fullBody,
 			format = "json",
@@ -1258,6 +1262,8 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 				bodyMaxChars: String(bodyMaxChars),
 				format,
 			});
+			if (replyCursor != null) params.set("replyCursor", String(replyCursor));
+			if (replyLimit != null) params.set("replyLimit", String(replyLimit));
 			if (unresolvedOnly) params.set("unresolvedOnly", "true");
 			if (path) params.set("path", path);
 			if (author) params.set("author", author);
@@ -1447,11 +1453,12 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 				decision: z.enum(["approve", "comment", "request-changes", "draft"]),
 				body: z.string().optional(),
 				dryRun: z.boolean().optional(),
+				pendingReviewId: z.number().int().positive().optional(),
 			},
 			outputSchema: { result: z.unknown() },
 			annotations: { ...MUTATING, openWorldHint: true, destructiveHint: false },
 		},
-		async ({ decision, body, dryRun }) => {
+		async ({ decision, body, dryRun, pendingReviewId }) => {
 			const session = requireGhPrSession();
 			const result = await requestSessionJson<Record<string, unknown>>(
 				session,
@@ -1462,6 +1469,152 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 					body: JSON.stringify({
 						decision,
 						body: body ?? "",
+						dryRun: dryRun === true,
+						pendingReviewId,
+					}),
+				},
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
+		"gh_submit_pending_review",
+		{
+			title: "Submit a pending GitHub review",
+			description:
+				"Finish an existing PENDING GitHub review (APPROVE, REQUEST_CHANGES, or COMMENT). " +
+				"REQUIRES explicit user authorization — this mutates the remote pull request.",
+			inputSchema: {
+				reviewId: z.number().int().positive(),
+				event: z.enum(["APPROVE", "REQUEST_CHANGES", "COMMENT"]),
+				body: z.string().optional(),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: { ...MUTATING, openWorldHint: true, destructiveHint: false },
+		},
+		async ({ reviewId, event, body }) => {
+			const session = requireGhPrSession();
+			const result = await requestSessionJson<Record<string, unknown>>(
+				session,
+				`/api/gh/reviews/${reviewId}/submit`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ event, body }),
+				},
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
+		"gh_discard_pending_review",
+		{
+			title: "Discard a pending GitHub review",
+			description:
+				"Delete an unpublished PENDING GitHub review. REQUIRES explicit user authorization.",
+			inputSchema: {
+				reviewId: z.number().int().positive(),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: { ...MUTATING, openWorldHint: true, destructiveHint: true },
+		},
+		async ({ reviewId }) => {
+			const session = requireGhPrSession();
+			const result = await requestSessionJson<Record<string, unknown>>(
+				session,
+				`/api/gh/reviews/${reviewId}`,
+				{ method: "DELETE" },
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
+		"gh_update_pr",
+		{
+			title: "Update pull request title or body",
+			description:
+				"PATCH the PR title and/or description on GitHub. REQUIRES explicit user authorization. Prefer dryRun first.",
+			inputSchema: {
+				title: z.string().optional(),
+				body: z.string().optional(),
+				dryRun: z.boolean().optional(),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: { ...MUTATING, openWorldHint: true },
+		},
+		async ({ title, body, dryRun }) => {
+			const session = requireGhPrSession();
+			const result = await requestSessionJson<Record<string, unknown>>(
+				session,
+				"/api/gh/pr",
+				{
+					method: "PATCH",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ title, body, dryRun: dryRun === true }),
+				},
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
+		"gh_set_pr_state",
+		{
+			title: "Close or reopen the pull request",
+			description:
+				"Close or reopen the active pull request on GitHub. REQUIRES explicit user authorization. Prefer dryRun first.",
+			inputSchema: {
+				state: z.enum(["open", "closed"]),
+				dryRun: z.boolean().optional(),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: { ...MUTATING, openWorldHint: true, destructiveHint: true },
+		},
+		async ({ state, dryRun }) => {
+			const session = requireGhPrSession();
+			const path = state === "closed" ? "/api/gh/pr/close" : "/api/gh/pr/reopen";
+			const result = await requestSessionJson<Record<string, unknown>>(
+				session,
+				path,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ dryRun: dryRun === true }),
+				},
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
+		"gh_merge_pr",
+		{
+			title: "Merge the pull request",
+			description:
+				"Merge the active pull request on GitHub with an expected-head check. " +
+				"REQUIRES explicit user authorization. Prefer dryRun first. Does not bypass branch protection.",
+			inputSchema: {
+				method: z.enum(["merge", "squash", "rebase"]).optional(),
+				expectedHeadSha: z.string().optional(),
+				dryRun: z.boolean().optional(),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: { ...MUTATING, openWorldHint: true, destructiveHint: true },
+		},
+		async ({ method, expectedHeadSha, dryRun }) => {
+			const session = requireGhPrSession();
+			const result = await requestSessionJson<Record<string, unknown>>(
+				session,
+				"/api/gh/pr/merge",
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						method: method ?? "merge",
+						expectedHeadSha,
 						dryRun: dryRun === true,
 					}),
 				},
