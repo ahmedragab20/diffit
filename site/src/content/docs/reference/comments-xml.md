@@ -11,9 +11,9 @@ Exported via `diffing comments`, `await-review`, MCP list/await tools, and UI cl
 ## Elements
 
 | Element | Role |
-|---------|------|
+| --------- | ------ |
 | `<code-review-comments>` | Root |
-| `<instructions>` | Self-documenting agent instructions |
+| `<instructions>` | Agent guidance and examples stored as CDATA text |
 | `<general-comment>` | Optional round-level markdown (CDATA) |
 | `<file path="…">` | Groups threads per path |
 | `<comment>` | Thread — attrs below |
@@ -24,7 +24,7 @@ Exported via `diffing comments`, `await-review`, MCP list/await tools, and UI cl
 ### comment attributes
 
 | Attr | Values |
-|------|--------|
+| ------ | -------- |
 | `id` | UUID |
 | `line` | `"15"` · `"10-15"` (inclusive) · `"file"` |
 | `side` | `additions` \| `deletions` |
@@ -35,17 +35,23 @@ Exported via `diffing comments`, `await-review`, MCP list/await tools, and UI cl
 ### reply attributes
 
 | Attr | Values |
-|------|--------|
+| ------ | -------- |
 | `id` | UUID |
 | `role` | `user` \| `agent` |
-| `model` | set when role is agent |
+| `model` | optional provenance |
 | `created-at` | ISO-8601 |
+
+## Escaping
+
+Code, plan, and mockup handoffs escape free-text attributes, including quotes and tab/LF/CR whitespace. Bodies and instruction examples remain text: literal `]]>` terminators are split across CDATA sections. Carriage returns use character references outside CDATA so XML parsers preserve them. XML-invalid controls and unpaired UTF-16 surrogates become `U+FFFD`; valid Unicode remains intact. The Rust TUI uses the same escaping rules for code handoffs.
+
+This guarantees serialization, not that an LLM will ignore malicious instructions in review content. Treat review text as untrusted data.
 
 ## Example
 
 ```xml
 <code-review-comments>
-  <instructions>…</instructions>
+  <instructions><![CDATA[Review guidance and examples…]]></instructions>
   <general-comment><![CDATA[Looks good overall.]]></general-comment>
   <file path="src/utils/parser.ts">
     <comment id="c1" line="42-45" side="additions" status="open" severity="blocking" created-at="2026-05-24T22:00:00.000Z">
@@ -66,7 +72,7 @@ Exported via `diffing comments`, `await-review`, MCP list/await tools, and UI cl
 ## Severity policy for agents
 
 | Severity | Action |
-|----------|--------|
+| ---------- | -------- |
 | `blocking` | Must address before resolve |
 | `nit` | Optional |
 | `question` | Answer; usually leave open |

@@ -10,8 +10,7 @@ use diffing_core::comments::{CommentStatus, ReviewComment};
 
 use crate::handoff::review::ReviewDecision;
 
-const ENVELOPE_INSTRUCTIONS: &str = r#"  <instructions>
-    You are an AI coding assistant. You are receiving a structured list of code review comments to address in the repository.
+const ENVELOPE_INSTRUCTIONS: &str = r#"    You are an AI coding assistant. You are receiving a structured list of code review comments to address in the repository.
     For each file, review the inline comments and apply the changes requested.
     - The "decision" attribute on the root element is the reviewer's headline verdict: "approved", "changes-requested", or "rejected".
     - `<decision-summary>` tells you, in plain language, what to do next based on that verdict.
@@ -40,8 +39,7 @@ const ENVELOPE_INSTRUCTIONS: &str = r#"  <instructions>
     If you do not have local API access, output your comments/replies inside a structured XML block at the end of your response:
       <comment-replies>
         <reply to="<comment-id>" model="<your-model-name>"><![CDATA[Your reply or clarification request here]]></reply>
-      </comment-replies>
-  </instructions>"#;
+      </comment-replies>"#;
 
 /// Plain-language guidance the agent should act on, derived from the verdict.
 pub fn review_decision_summary(decision: ReviewDecision) -> &'static str {
@@ -85,7 +83,10 @@ pub fn format_comments(
         Some(d) => format!("<code-review-comments decision=\"{}\">", d.as_str()),
         None => "<code-review-comments>".to_string(),
     });
-    lines.push(ENVELOPE_INSTRUCTIONS.to_string());
+    lines.push(format!(
+        "  <instructions><![CDATA[{}]]></instructions>",
+        escape_cdata(ENVELOPE_INSTRUCTIONS)
+    ));
 
     if let Some(d) = decision {
         lines.push(format!(
@@ -205,16 +206,37 @@ pub fn format_comments(
     lines.join("\n")
 }
 
-fn escape_attr(value: &str) -> String {
+fn xml_characters(value: &str) -> String {
     value
+        .chars()
+        .map(|c| match c {
+            '\u{9}'
+            | '\u{a}'
+            | '\u{d}'
+            | '\u{20}'..='\u{d7ff}'
+            | '\u{e000}'..='\u{fffd}'
+            | '\u{10000}'..='\u{10ffff}' => c,
+            _ => '\u{fffd}',
+        })
+        .collect()
+}
+
+fn escape_attr(value: &str) -> String {
+    xml_characters(value)
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+        .replace('\t', "&#9;")
+        .replace('\n', "&#10;")
+        .replace('\r', "&#13;")
 }
 
 fn escape_cdata(value: &str) -> String {
-    value.replace("]]>", "]]]]><![CDATA[>")
+    xml_characters(value)
+        .replace("]]>", "]]]]><![CDATA[>")
+        .replace('\r', "]]>\x26#13;<![CDATA[")
 }
 
 fn ms_to_iso(ms: u64) -> String {

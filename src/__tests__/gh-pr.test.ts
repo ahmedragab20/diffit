@@ -78,7 +78,15 @@ vi.mock("../lib/settings.js", () => ({
     saveSettings: vi.fn((s: any) => s),
 }));
 
-vi.mock("../lib/path.js", () => ({ isSafePath: vi.fn(() => true) }));
+// Partial node:fs mock: keep every real export; only `watch` is stubbed so the
+// server never opens a real watcher against the /tmp/test-repo fake roots.
+vi.mock("node:fs", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("node:fs")>();
+    return {
+        ...actual,
+        watch: vi.fn(() => ({ unref() {}, close() {} })),
+    };
+});
 
 class MockCommentStore implements CommentStore {
     async getAll() {
@@ -102,7 +110,7 @@ class MockCommentStore implements CommentStore {
     async updateReply() {
         return null;
     }
-    async resolveAllOpen() {
+    async resolveAllOpen(): Promise<number> {
         return 0;
     }
 }
@@ -317,6 +325,8 @@ describe("gh-pr endpoints (integration)", () => {
             ),
         );
 
+        expect(oldRes.status).toBe(200);
+        expect(newRes.status).toBe(200);
         expect(await oldRes.json()).toEqual({
             content: "old vue source",
             missing: false,

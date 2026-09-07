@@ -7,15 +7,11 @@ import type {
 } from "./mockup-types.js";
 import { commentViewport } from "./mockup-types.js";
 import { decisionSummary } from "./plan-format.js";
-
-function escapeAttr(value: string): string {
-	return value
-		.replace(/&/g, "&amp;")
-		.replace(/</g, "&lt;")
-		.replace(/>/g, "&gt;")
-		.replace(/"/g, "&quot;");
-}
-
+import {
+	escapeXmlAttribute as escapeAttr,
+	escapeCdataText,
+	joinReviewXml,
+} from "./xml.js";
 function mockupDecisionSummary(decision: MockupDecision): string {
 	return decisionSummary(decision)
 		.replaceAll("plan", "mockup")
@@ -146,13 +142,13 @@ export function formatMockupReview(
 		`  <mockup id="${escapeAttr(mockup.id)}" title="${escapeAttr(titleToRender)}" version="${mockup.version}" screens="${escapeAttr(screenIds)}" decision="${mockup.decision}"${decidedAttr}${viewingAttr}${modeAttr}${screenAttr}${viewportAttr}>`,
 	);
 	lines.push(
-		`    <decision-summary><![CDATA[${mockupDecisionSummary(mockup.decision)}]]></decision-summary>`,
+		`    <decision-summary><![CDATA[${escapeCdataText(mockupDecisionSummary(mockup.decision))}]]></decision-summary>`,
 	);
 
 	const trimmedDecisionComment = mockup.decisionComment?.trim();
 	if (trimmedDecisionComment) {
 		lines.push(
-			`    <decision-comment><![CDATA[${trimmedDecisionComment}]]></decision-comment>`,
+			`    <decision-comment><![CDATA[${escapeCdataText(trimmedDecisionComment)}]]></decision-comment>`,
 		);
 	}
 
@@ -166,7 +162,7 @@ export function formatMockupReview(
 
 	lines.push("  </mockup>");
 	lines.push("</mockup-review>");
-	return lines.join("\n");
+	return joinReviewXml(lines);
 }
 
 function formatComment(
@@ -208,31 +204,35 @@ function formatComment(
 	) {
 		parts.push("        <location>");
 		if (comment.html?.trim()) {
-			parts.push(`          <html><![CDATA[${comment.html.trim()}]]></html>`);
+			parts.push(
+				`          <html><![CDATA[${escapeCdataText(comment.html.trim())}]]></html>`,
+			);
 		}
 		if (comment.contextHtml?.trim()) {
 			parts.push(
-				`          <context-html><![CDATA[${comment.contextHtml.trim()}]]></context-html>`,
+				`          <context-html><![CDATA[${escapeCdataText(comment.contextHtml.trim())}]]></context-html>`,
 			);
 		}
 		if (comment.snapshot?.trim()) {
 			parts.push(
-				`          <snapshot><![CDATA[${comment.snapshot.trim()}]]></snapshot>`,
+				`          <snapshot><![CDATA[${escapeCdataText(comment.snapshot.trim())}]]></snapshot>`,
 			);
 		}
 		parts.push("        </location>");
 	}
-	parts.push(`        <body><![CDATA[${comment.body}]]></body>`);
+	parts.push(`        <body><![CDATA[${escapeCdataText(comment.body)}]]></body>`);
 	if (comment.replies && comment.replies.length > 0) {
 		parts.push("        <replies>");
 		for (const reply of comment.replies) {
 			const replyIsoDate = new Date(reply.createdAt).toISOString();
-			const roleAttr = reply.role ? ` role="${reply.role}"` : ' role="agent"';
+			const roleAttr = reply.role
+				? ` role="${escapeAttr(reply.role)}"`
+				: ' role="agent"';
 			const modelAttr = reply.model ? ` model="${escapeAttr(reply.model)}"` : "";
 			parts.push(
 				`          <reply id="${escapeAttr(reply.id)}" created-at="${replyIsoDate}"${roleAttr}${modelAttr}>`,
 			);
-			parts.push(`            <![CDATA[${reply.body}]]>`);
+			parts.push(`            <![CDATA[${escapeCdataText(reply.body)}]]>`);
 			parts.push("          </reply>");
 		}
 		parts.push("        </replies>");

@@ -12,6 +12,8 @@
 pub mod comments;
 pub mod diff;
 pub mod index;
+/// Capability-confined repository file access shared by native consumers.
+pub mod repo_fs;
 pub mod storage;
 
 use std::path::{Path, PathBuf};

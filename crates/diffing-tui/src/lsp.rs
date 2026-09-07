@@ -322,9 +322,9 @@ impl LspSession {
         Ok(())
     }
 
-    fn sync_document(&mut self, path: &Path) -> Result<bool> {
+    fn sync_document(&mut self, path: &Path, content: Result<String>) -> Result<bool> {
         self.ensure_running()?;
-        let text = match std::fs::read_to_string(path) {
+        let text = match content {
             Ok(text) => text,
             Err(error) => {
                 tracing::warn!(
@@ -590,7 +590,8 @@ impl LspManager {
         let Some(session) = self.sessions.get_mut(spec.key) else {
             return Ok(ServerState::Error);
         };
-        match session.sync_document(&absolute) {
+        let content = path_safety::read_text_within_repo(&self.repo_root, relative_path);
+        match session.sync_document(&absolute, content) {
             Ok(true) => {
                 self.sync_warning = None;
                 Ok(ServerState::Ready)

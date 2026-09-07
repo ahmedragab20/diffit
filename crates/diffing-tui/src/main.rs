@@ -16,7 +16,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use diffing_tui::{app, diff_context, search, server_lock, tui};
+use diffing_tui::{app, diff_context, fs_rpc, search, server_lock, tui};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -35,6 +35,10 @@ struct Args {
     /// Open the focused read-only diff browser instead of the review surface.
     #[arg(long)]
     view_only: bool,
+
+    /// Serve bounded file-access RPC on stdin/stdout without starting a TUI.
+    #[arg(long, conflicts_with = "view_only")]
+    fs_rpc: bool,
 
     /// All other arguments are forwarded verbatim to `git diff` (e.g.
     /// `--staged`, `-- <pathspec>`, `--diff-algorithm=patience`).
@@ -55,6 +59,13 @@ fn main() -> ExitCode {
 
 fn real_main() -> Result<()> {
     let args = Args::parse();
+    if args.fs_rpc {
+        anyhow::ensure!(
+            args.git_diff_args.is_empty(),
+            "filesystem RPC does not accept diff arguments"
+        );
+        return fs_rpc::run(std::path::Path::new(&args.repo));
+    }
     let repo_root = std::fs::canonicalize(&args.repo)
         .with_context(|| format!("resolving --repo {}", args.repo))?;
     let repo_root_str = repo_root

@@ -14,7 +14,9 @@ Open your changes in a GitHub-like web UI (or an experimental native TUI), leave
 
 ## Quick start
 
-**Requirements:** Node.js 20+, `git` on your PATH.
+**Requirements:** Node.js 20+, `git` on your PATH. Local working-tree previews, edits and uploaded-image operations also require the compiled native file helper, bundled on supported platforms; no Rust toolchain is needed for a packaged install. Missing/incompatible helpers deny those operations rather than falling back to Node file access. Basic Git diffs and comments remain available.
+
+This is **not a complete repository sandbox**. See the [implemented guarantees, known limits and deferred-work handoff](./docs/hardening-status.md).
 
 ```bash
 npm install -g diffing
@@ -43,9 +45,9 @@ TTY opens the interactive UI. Pipe or redirect prints a unified patch like `git 
 ## What you get
 
 | Area | Highlights |
-|------|------------|
+| ------ | ------------ |
 | **Review UI** | Split/unified diffs, inline comments + severity, suggestions, image diffs, themes (52), search |
-| **Agents** | `await-review`, reply/resolve, progress, MCP (**37** tools), skills via `npx skills add ahmedragab20/diffing` |
+| **Agents** | `await-review`, reply/resolve, progress, MCP (**55** tools), skills via `npx skills add ahmedragab20/diffing` |
 | **Plan review** | Submit markdown → human verdict → approved / changes-requested / rejected |
 | **GitHub PR** | Local PR sessions (`--gh-pr`), bounded inspect, optional authorized publish |
 | **Sessions** | Concurrent web/TUI/PR reviews; `diffing sessions` task manager |
@@ -72,18 +74,31 @@ Full agent protocol, exit codes, and MCP catalog: **[Documentation](https://ahme
 
 ---
 
+## Development checks
+
+Source contributors need Rust for the file helper. Build it before running the TypeScript suite, which includes real-helper integration tests:
+
+```bash
+pnpm build:tui:debug
+pnpm test:ts
+cargo test --workspace
+pnpm build
+```
+
+`pnpm exec tsc --noEmit` is a separate check; its remaining known failures are tracked in [the handoff](./docs/hardening-status.md). No passing-test claim implies a clean typecheck.
+
 ## Documentation
 
 | | |
-|--|--|
-| Getting started | https://ahmedragab20.github.io/diffing/docs/getting-started/ |
-| Agent handoff | https://ahmedragab20.github.io/diffing/docs/guides/agent-handoff/ |
-| Plan review | https://ahmedragab20.github.io/diffing/docs/guides/plan-review/ |
-| CLI reference | https://ahmedragab20.github.io/diffing/docs/reference/cli/ |
-| MCP tools | https://ahmedragab20.github.io/diffing/docs/reference/mcp/ |
-| Keyboard | https://ahmedragab20.github.io/diffing/docs/reference/keyboard/ |
-| Design (Gridline) | https://ahmedragab20.github.io/diffing/docs/design/gridline/ |
-| llms.txt | https://ahmedragab20.github.io/diffing/llms.txt |
+| -- | -- |
+| Getting started | <https://ahmedragab20.github.io/diffing/docs/getting-started/> |
+| Agent handoff | <https://ahmedragab20.github.io/diffing/docs/guides/agent-handoff/> |
+| Plan review | <https://ahmedragab20.github.io/diffing/docs/guides/plan-review/> |
+| CLI reference | <https://ahmedragab20.github.io/diffing/docs/reference/cli/> |
+| MCP tools | <https://ahmedragab20.github.io/diffing/docs/reference/mcp/> |
+| Keyboard | <https://ahmedragab20.github.io/diffing/docs/reference/keyboard/> |
+| Design (Gridline) | <https://ahmedragab20.github.io/diffing/docs/design/gridline/> |
+| llms.txt | <https://ahmedragab20.github.io/diffing/llms.txt> |
 
 Local site preview (contributors):
 
@@ -96,9 +111,9 @@ pnpm docs:dev
 
 ## Links
 
-- **npm:** https://www.npmjs.com/package/diffing
-- **GitHub:** https://github.com/ahmedragab20/diffing
-- **Docs:** https://ahmedragab20.github.io/diffing/
+- **npm:** <https://www.npmjs.com/package/diffing>
+- **GitHub:** <https://github.com/ahmedragab20/diffing>
+- **Docs:** <https://ahmedragab20.github.io/diffing/>
 
 ## License
 

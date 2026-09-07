@@ -114,7 +114,7 @@ diffing [options] [<revision>...] [-- <path>...]
 
 - `--port <port>`: The port to bind a new server to. If omitted, the OS assigns an available port atomically. A compatible live session is reused before any bind is attempted.
 - `--host <host>`: Host address to bind the server to (default: `127.0.0.1`). Loopback binds generate a per-session API token stored in the server lockfile; the web UI authenticates via an HttpOnly cookie (set when HTML is served) and optional `x-diffing-token` header on fetch. CLI and MCP read the token from the lockfile and send the header. Browseable URLs never include `?token=`. To expose the dashboard on your LAN, pass `0.0.0.0` together with `--insecure-no-auth` (disables API authentication).
-- `--insecure-no-auth`: Required when binding to `0.0.0.0` or `::`. Allows LAN clients to reach the API without a token. Ignored on loopback binds.
+- `--insecure-no-auth`: Required when binding to a wildcard address (`0.0.0.0` or `::`). Disables API authentication entirely when supplied — including on loopback binds, where tokens are otherwise issued. This is an explicit, unsafe opt-out for trusted networks only.
 - `--no-open`: Prevents the CLI from automatically launching your browser when the server starts.
 - `--reuse-session`: Open the active session (print URL / launch browser), regardless of its scope.
 - `--replace-session`: Stop the active session and start a replacement with the current arguments.
@@ -122,6 +122,14 @@ diffing [options] [<revision>...] [-- <path>...]
 - `--gh-pr <ref>`: Open a GitHub PR review session instead of a working-tree diff. The `<ref>` accepts the same forms as `gh pr <ref>` (bare number, `owner/repo#N`, or full GitHub URL). Equivalent to the quoted form `diffing "gh pr <ref>"`. See [§4c. GitHub PR Review Subcommands](#4c-github-pr-review-subcommands) for the full flow.
 - `--view`: Open the focused, read-only native diff viewer. Equivalent to `diffing view`.
 - `--tui`: Open the opt-in native-Rust terminal UI instead of the web server when a compatible `diffing-tui` executable has been installed or built. The same review flow (diff render, file tree, comments, agent handoff) runs in your terminal — no browser. You can also make it the interactive default with `diffing mode tui`. See [§4d. TUI Subcommands (Native Terminal UI)](#4d-tui-subcommands-native-terminal-ui) for installation, fallback, and the full flow.
+
+#### Server security
+
+- Loopback binds reject non-loopback `Host` headers on HTML and API routes. Any supplied `Origin` must match the request origin; mismatches return `403`, including on reads and bootstrap pages.
+- Responses use `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`, and `Referrer-Policy: no-referrer`.
+- With authentication enabled on a non-loopback bind, HTML and deep links require the session header or cookie. Unauthenticated requests return `401` without a credential in the body or cookies. There is no automatic unauthenticated LAN bootstrap.
+- Loopback browser bootstrap is unchanged. The browser fetch wrapper adds `x-diffing-token` only to same-origin `/api/` requests and preserves existing request headers.
+- `--insecure-no-auth` disables authentication, not Host/Origin checks. Use loopback unless you explicitly intend to expose an unauthenticated review server.
 
 #### Concurrent session lifecycle
 
@@ -1757,14 +1765,20 @@ When review comments are exported (either via copying from the UI clipboard or r
    - **`role`**: The poster's identity. Either `"user"` (human developer) or `"agent"` (AI coding assistant).
    - **`model`**: If the reply was posted by an agent, this attribute records the name of the LLM that made the reply.
 
+### XML escaping and serialization
+
+Code, plan, and mockup handoffs keep instruction examples in CDATA text rather than creating XML elements. Free-text attributes escape quotes, markup, and tab/LF/CR whitespace. Literal CDATA terminators (`]]>`) are split safely; carriage returns use character references outside CDATA so parsers preserve them. XML-invalid controls and unpaired UTF-16 surrogates become `U+FFFD`; valid Unicode remains intact. The Rust TUI uses the same escaping rules for code handoffs.
+
+These are serialization guarantees, not protection against an LLM following malicious review text. Treat review content as untrusted data.
+
 ### Comprehensive XML Structure Example
 
 ```xml
 <code-review-comments>
-  <instructions>
+  <instructions><![CDATA[
     You are an AI coding assistant. You are receiving a structured list of code review comments to address in the repository.
     ...
-  </instructions>
+  ]]></instructions>
   <general-comment>
     <![CDATA[Overall, excellent improvements. Please ensure to fix the multi-line parsing edge cases mentioned in the parser file.]]>
   </general-comment>
@@ -1874,19 +1888,20 @@ Releases all waiting agent processes (blocked in `/api/review/await`) by increme
 A long-poll endpoint used by CLI subcommands and MCP tools to block until a review is released.
 
 - **Query Parameters**:
-  - `sinceRound` (number, required): The last round processed by the client.
+  - `sinceRound` (number, optional): The last round processed by the client. A lower round replays the latest cached handoff; omission waits for a future send.
   - `timeoutMs` (number, default: `25000`): Maximum server hold time. Server caps this to `50000`ms to prevent intermediate proxy dropouts.
 - **Response Schema (on release)**:
 
   ```json
   {
     "status": "released",
-    "round": 4,
     "payload": {
+      "round": 4,
       "sentAt": 1782782782782,
       "commentXml": "<code-review-comments>...</code-review-comments>",
-      "openCount": 2,
-      "comments": [...]
+      "openCount": 0,
+      "comments": [],
+      "mode": "standard"
     }
   }
   ```
@@ -1901,9 +1916,13 @@ Queries a snapshot of the current review session state.
   {
     "round": 4,
     "waiters": 0,
-    "lastPayload": { ... }
+    "lastSentAt": 1782782782782,
+    "lastOpenCount": 2,
+    "hasSinceLastBaseline": false
   }
   ```
+
+Review rounds and `GET /api/review/history` are in-memory: history and replay state reset when the server restarts.
 
 ---
 
@@ -1917,7 +1936,11 @@ Fetches a list of all current code review comment threads.
 
 #### `POST /api/comments`
 
-Opens a new inline comment thread on a line of code (or multi-line range).
+Opens an inline, inclusive-range, or file-level comment thread.
+
+Required fields: nonempty string `filePath` (at most 4096 UTF-16 code units, no NUL), `side` (`additions` or `deletions`), nonnegative integer `lineNumber`, and nonblank string `body`. `lineNumber: 0` denotes a file-level comment. Optional `startLineNumber` must be positive, no greater than `lineNumber`, and absent for file-level comments. Missing `lineContent` defaults to `""`; supplied context must be a string. Optional `severity` must be `blocking`, `nit`, `question`, `praise`, or `none`.
+
+Body limit: 65,536 UTF-16 code units; context limit: 262,144. Requests under `/api/comments` and its child routes are capped at 1,048,576 bytes. Invalid fields or malformed JSON return `400`; oversized requests return `413`. Rejected requests do not mutate the comment store.
 
 - **Payload Schema**:
 
@@ -1937,7 +1960,7 @@ Opens a new inline comment thread on a line of code (or multi-line range).
 
 #### `PUT /api/comments/:id`
 
-Updates an existing comment thread body or toggles its status.
+Updates an existing comment thread body or toggles its status. At least one of `body` (nonblank string within the body limit) or `status` (`open` or `resolved`) is required; invalid updates return `400` without changing the thread.
 
 - **Payload Schema**:
 
@@ -1958,7 +1981,7 @@ Marks every open comment as `resolved` in one request. Used by the web **Resolve
 
 #### `POST /api/comments/:id/replies`
 
-Appends a conversation reply to an existing comment thread.
+Appends a conversation reply to an existing comment thread. `body` must be a nonblank string within the body limit. Optional `role` is `user` or `agent`; optional `model` is a nonempty string of at most 256 UTF-16 code units. If role is omitted, a supplied model implies `agent`; otherwise role is `user`. Invalid replies return `400` without adding a reply.
 
 - **Payload Schema**:
 
@@ -1966,13 +1989,13 @@ Appends a conversation reply to an existing comment thread.
   {
     "body": "Reply message body",
     "role": "user | agent",
-    "model": "claude-3-5-sonnet"       // Required if role is agent
+    "model": "claude-3-5-sonnet"       // Optional provenance
   }
   ```
 
 #### `PUT /api/comments/:id/replies/:replyId`
 
-Updates the body text of a comment reply.
+Updates the body text of a comment reply. `body` must be a nonblank string within the body limit; invalid edits return `400` and preserve the original reply.
 
 #### `DELETE /api/comments/:id/replies/:replyId`
 
@@ -1981,6 +2004,8 @@ Deletes a comment reply.
 #### `POST /api/comments/:id/apply-suggestion`
 
 Parses a Markdown ```suggestion code block inside the comment body, applies the proposed lines of code to the physical working tree file (including multi-line suggestions), and marks the comment thread as `resolved`.
+
+The route reads through the native file helper and passes that read's SHA-256 into the write as an optimistic precondition. This is not cross-process CAS. PR/custom comparison scopes reject the operation with `403`. If the write succeeds but the comment store reports a resolution failure, the response is `500` with `fileSaved: true`; reconcile the comment separately rather than reapply the file change.
 
 #### `POST /api/agent/progress`
 
@@ -2024,7 +2049,7 @@ Uploads a pasted image file from the clipboard or file picker.
   }
   ```
 
-  Only PNG, JPEG, WebP, and GIF are accepted (≤ 10 MB). Non-image uploads and
+  Only PNG, JPEG, WebP, and GIF are accepted (≤ 10 MiB). Non-image uploads and
   mismatched magic bytes are rejected. Draft comments and Ask AI keep this
   **loopback** URL so the local UI can preview the image. On GitHub publish
   (review submit, reply, or edit), diffing rewrites these to repo-scoped raw
@@ -2032,7 +2057,9 @@ Uploads a pasted image file from the clipboard or file picker.
 
 #### `GET /api/attachments/:filename`
 
-Serves an uploaded attachment file. Uploads are strictly isolated and stored inside `~/.diffing/<repo-name>-<hash>/attachments/`.
+Serves uploaded PNG/JPEG/WebP/GIF images from `~/.diffing/<repo-name>-<hash>/attachments/` through the storage-root native capability. Images are limited to 10 MiB; multipart upload requests to 11 MiB. Upload type/signature mismatch returns `415`. GET serves only regular files with an allowed image signature: traversal returns `403`, missing/invalid images `404`, and native denial/unavailability `403`/`503` rather than a false missing result. Only creation of the trusted storage root uses ambient filesystem access.
+
+For AI requests, Codex receives the validated captured image as a data URL, not a local-image pathname to reopen.
 
 #### GitHub publish rewrite (private / GHE safe)
 
@@ -2113,7 +2140,7 @@ Persisted under `~/.diffing/<repo>-<hash>/ai-conversations.json` (capped count
 and age). Surfaces: `diff` | `pr-diff` | `plan`.
 
 | Method | Path | Role |
-|--------|------|------|
+| -------- | ------ | ------ |
 | `GET` | `/api/ai/conversations?surface&scopeKey` | List summaries |
 | `POST` | `/api/ai/conversations` | Create (`surface`, `scopeKey`, optional `title` / `modelId`) |
 | `GET` | `/api/ai/conversations/:id` | Full conversation |
@@ -2145,7 +2172,7 @@ Required body fields:
   `improve-comment`, `review-map`, `explain-hunk`, `draft-review-summary`,
   `critique-plan`, `find-plan-gaps`, and related comment/plan helpers.
 - Context limits: ≤ 8 `@` attachment paths / 64 KB total text; ≤ 8 explicit
-  line ranges / 64 KB; ≤ 4 images (PNG/JPEG/WebP/GIF, ≤ 10 MB each) resolved
+  line ranges / 64 KB; ≤ 4 images (PNG/JPEG/WebP/GIF, ≤ 10 MiB each) resolved
   from `/api/attachments/…`.
 - SSE event types: `start`, `text-delta`, `warning`, `error`, `complete`
   (payload JSON matches each event).
@@ -2193,19 +2220,54 @@ Gathers context regarding deleted lines. Retrieves `git blame` annotations for t
   - `deletionStart` (number, required): Line number index where the deleted block started.
   - `deletionCount` (number, required): Total count of deleted lines.
 
+#### Native file access contract
+
+Selected local working-tree previews, saves, edits, suggestions and uploaded-image operations use a pinned native directory capability. Descendant symlinks and `.git` components are denied. Already-decoded API paths are not URL-decoded again. Native files are limited to 50 MiB; save/edit JSON bodies to 70 MiB.
+
+The internal `--fs-rpc` helper is discovered only in verified installation/source locations, never on PATH. It receives no application environment variables except Windows `SystemRoot` where required. Source contributors must run `pnpm build:tui:debug` before the native integration tests. Missing/incompatible helpers deny affected operations with `503`; no Node file-access fallback is used. Transport failures stay failed until explicit reset/restart. Basic Git diffs and comments remain available.
+
+Native filesystem errors use `{ "error": "...", "code": "...", "outcomeUnknown": false }`: invalid-path/invalid-request/not-file `400`, denied `403`, not-found `404`, conflict `409`, too-large `413`, protocol `502`, unavailable/busy `503`, timeout `504`, io `500`. Validation and other endpoints can return simpler error bodies. `outcomeUnknown: true` means inspect current file state before retrying; never blindly replay the write.
+
+This is **not full repository containment**. Untracked/EditorConfig reads and trusted external Git/editor/LSP/search tools remain outside this guarantee. See [hardening-status.md](./hardening-status.md) for deferred work and verification limits.
+
+#### `GET /api/file-content`
+
+Requires `path` and `version=old|new`; malformed/missing query values return `400`. Returns bytes with an extension-derived Content-Type and `Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:`. Missing content returns `404`.
+
+Local `new` reads the current working tree through the helper; local `old` reads `HEAD` through Git. Exact staged/revision/commit-series preview sides are not yet implemented. PR previews use the session base/head SHAs. Some legacy Git failures still appear as missing content; this limitation is tracked in A03/A07.
+
+#### `POST /api/edit-save`
+
+Replaces the whole file through a same-parent native temporary file and rename:
+
+```json
+{
+  "filePath": "src/file.ts",
+  "content": "Full updated contents...",
+  "baseHash": "<sha256 from file-text>",
+  "anchorUpdates": [{ "id": "<comment-id>", "side": "additions", "lineNumber": 12, "startLineNumber": 10 }]
+}
+```
+
+`baseHash` and `anchorUpdates` are optional. A supplied hash must be 64 lowercase hex characters; mismatch returns `409` with `conflict: true`. This is an optimistic pre-write check, **not cross-process compare-and-swap**. Up to 1024 anchors are accepted, with nonempty IDs, nonnegative integer end lines and optional positive starts no greater than the end; file-level line zero cannot have a range start. Invalid payloads return `400` before writing.
+
+Success returns `{ "ok": true, "hash": "<saved sha256>" }`. File bytes and comment metadata are not one transaction. If the file is saved but the store reports an anchor-update failure, return `500` with `{ "error": "...", "fileSaved": true, "hash": "<saved sha256>" }`; reconcile metadata rather than replay the write.
+
+PR/custom comparisons (revisions, pathspecs or show mode) reject this route and save-file/apply-suggestion with `403`.
+
 #### `POST /api/save-file`
 
-Writes updated code to disk and optionally stages it in git.
+Writes UTF-8 text through the native helper and optionally stages it in Git. `filePath` is a nonempty string of at most 4096 UTF-16 code units without NUL, normalized within the repo. Prefer repo-relative paths.
 
-- **Payload Schema**:
+```json
+{
+  "filePath": "src/lib/git.ts",
+  "content": "Full source file contents...",
+  "gitAdd": true
+}
+```
 
-  ```json
-  {
-    "filePath": "src/lib/git.ts",
-    "content": "Full source file contents...",
-    "gitAdd": true                     // Automatically runs git add on the file
-  }
-  ```
+This route has **no hash precondition**. If optional staging fails after the native write succeeds, the response remains `200` with `{ "ok": true, "gitAddError": "File saved, but staging failed" }`.
 
 #### `GET /api/merge-status`
 
@@ -2226,7 +2288,7 @@ Returns a sorted list of all active files under the repository working tree (tra
 
 #### `GET /api/file-text`
 
-Retrieves a file version as text. Includes a `missing` indicator in the JSON output if the requested revision version is missing (such as deleted files or new files).
+Returns `{ content, missing, hash }`, where the SHA-256 hash covers the exact returned bytes (not necessarily working-tree bytes). Native working-tree not-found returns `{ content: "", missing: true }`; other native errors propagate. A NUL byte within the first 8192 bytes returns `415` (`Binary file`). The local/PR side-selection and legacy Git-error limitations described under file-content also apply here.
 
 - **Query Parameters**:
   - `path` (string, required)
