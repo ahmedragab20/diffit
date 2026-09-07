@@ -1,3 +1,9 @@
+## 0.20.1
+
+### Patch Changes
+
+- 854499b: Stabilize PR wheel scrolling (#10)
+
 ## 0.20.0
 
 ### Minor Changes
