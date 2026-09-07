@@ -12641,12 +12641,6 @@ button.toolbar-last-send-btn:hover {
   padding: 24px;
 }
 
-.pr-file-block {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
 .pr-existing-strip {
   background: var(--bg-secondary);
   border: 1px solid var(--border-weak);
@@ -13326,14 +13320,6 @@ button.toolbar-last-send-btn:hover {
 .pr-diff-surface {
   gap: 12px;
   padding: 0;
-}
-
-.pr-file-block {
-  gap: 8px;
-}
-
-.pr-file-block > .diff-viewer {
-  gap: 0;
 }
 
 .pr-existing-strip {
