@@ -1,10 +1,21 @@
-import { useState, useMemo, useEffect, useRef, useCallback, memo } from 'react'
-import { Search, Filter, X, PanelLeftClose, PanelLeftOpen, Check } from 'lucide-react'
-import type { FileDiffMetadata } from '@pierre/diffs'
-import { FileTree as PierreFileTree, useFileTree } from '@pierre/trees/react'
-import type { FileTreeRowDecorationRenderer, GitStatusEntry, GitStatus } from '@pierre/trees'
-import { Tooltip } from '../primitives/Tooltip'
-import { sanitizePaths, buildExpandedPaths } from '../lib/treePathSanitize'
+import { useState, useMemo, useEffect, useRef, useCallback, memo } from "react";
+import {
+  Search,
+  Filter,
+  X,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Check,
+} from "lucide-react";
+import type { FileDiffMetadata } from "@pierre/diffs";
+import { FileTree as PierreFileTree, useFileTree } from "@pierre/trees/react";
+import type {
+  FileTreeRowDecorationRenderer,
+  GitStatusEntry,
+  GitStatus,
+} from "@pierre/trees";
+import { Tooltip } from "../primitives/Tooltip";
+import { sanitizePaths, buildExpandedPaths } from "../lib/treePathSanitize";
 import {
   matchesExtensionFilter,
   formatExtensionFilter,
@@ -12,34 +23,38 @@ import {
   normalizeExtensions,
   sameExtensionSet,
   extensionFilterNeedsApply,
-} from '../lib/extensionFilter'
-import { FileTreeErrorBoundary } from './FileTreeErrorBoundary'
+} from "../lib/extensionFilter";
+import { FileTreeErrorBoundary } from "./FileTreeErrorBoundary";
 
-export type FileTreeChipFilter = 'all' | 'unviewed' | 'has-comments' | 'since-last'
+export type FileTreeChipFilter =
+  | "all"
+  | "unviewed"
+  | "has-comments"
+  | "since-last";
 
 interface FileTreeProps {
-  files: FileDiffMetadata[]
-  activeFile: string | null
-  commentCounts: Record<string, number>
-  viewedFiles: Set<string>
-  untrackedFiles: Set<string>
-  onFileClick: (filePath: string) => void
-  collapsed?: boolean
-  onToggleCollapse?: () => void
+  files: FileDiffMetadata[];
+  activeFile: string | null;
+  commentCounts: Record<string, number>;
+  viewedFiles: Set<string>;
+  untrackedFiles: Set<string>;
+  onFileClick: (filePath: string) => void;
+  collapsed?: boolean;
+  onToggleCollapse?: () => void;
   /** Applied extension multi-select (normalized, no dots). Empty = all. */
-  appliedExtensions?: string[]
+  appliedExtensions?: string[];
   /** Commit a new applied extension set (from multi-select Apply / live toggle). */
-  onApplyExtensions?: (extensions: string[]) => void
+  onApplyExtensions?: (extensions: string[]) => void;
   /** Smart filter chips (AND-combined with extension + name search). */
-  chipFilter?: FileTreeChipFilter
-  onChipFilterChange?: (value: FileTreeChipFilter) => void
+  chipFilter?: FileTreeChipFilter;
+  onChipFilterChange?: (value: FileTreeChipFilter) => void;
   /**
    * Files that differ from the last handoff baseline. Used by the
    * "Since last" chip and row decoration.
    */
-  sinceLastFiles?: Set<string>
+  sinceLastFiles?: Set<string>;
   /** Hide "Since last" when there is no handoff baseline yet. */
-  sinceLastAvailable?: boolean
+  sinceLastAvailable?: boolean;
 }
 
 export const FileTree = memo(function FileTree({
@@ -53,76 +68,88 @@ export const FileTree = memo(function FileTree({
   onToggleCollapse,
   appliedExtensions = [],
   onApplyExtensions,
-  chipFilter = 'all',
+  chipFilter = "all",
   onChipFilterChange,
   sinceLastFiles,
   sinceLastAvailable = false,
 }: FileTreeProps) {
-  const [filter, setFilter] = useState('')
+  const [filter, setFilter] = useState("");
   // Draft selection for multi-select; only committed via Apply (or live when small).
   const [draftExtensions, setDraftExtensions] = useState<string[]>(() =>
     normalizeExtensions(appliedExtensions),
-  )
+  );
 
   useEffect(() => {
-    setDraftExtensions(normalizeExtensions(appliedExtensions))
-  }, [appliedExtensions])
+    setDraftExtensions(normalizeExtensions(appliedExtensions));
+  }, [appliedExtensions]);
 
   const totalChangedLines = useMemo(() => {
-    let n = 0
+    let n = 0;
     for (const f of files) {
-      n += f.additionLines.length + f.deletionLines.length
+      n += f.additionLines.length + f.deletionLines.length;
     }
-    return n
-  }, [files])
+    return n;
+  }, [files]);
 
-  const needsApply = extensionFilterNeedsApply(files.length, totalChangedLines)
-  const availableExtensions = useMemo(() => collectExtensions(files.map((f) => f.name)), [files])
+  const needsApply = extensionFilterNeedsApply(files.length, totalChangedLines);
+  const availableExtensions = useMemo(
+    () => collectExtensions(files.map((f) => f.name)),
+    [files],
+  );
 
   const commitExtensions = useCallback(
     (next: string[]) => {
-      const normalized = normalizeExtensions(next)
-      setDraftExtensions(normalized)
-      onApplyExtensions?.(normalized)
+      const normalized = normalizeExtensions(next);
+      setDraftExtensions(normalized);
+      onApplyExtensions?.(normalized);
     },
     [onApplyExtensions],
-  )
+  );
 
   const toggleDraftExtension = useCallback(
     (ext: string) => {
       setDraftExtensions((prev) => {
-        const set = new Set(prev)
-        if (set.has(ext)) set.delete(ext)
-        else set.add(ext)
-        const next = normalizeExtensions([...set])
+        const set = new Set(prev);
+        if (set.has(ext)) set.delete(ext);
+        else set.add(ext);
+        const next = normalizeExtensions([...set]);
         // Small diffs: apply live so multi-select still feels instant.
         if (!needsApply) {
-          onApplyExtensions?.(next)
+          onApplyExtensions?.(next);
         }
-        return next
-      })
+        return next;
+      });
     },
     [needsApply, onApplyExtensions],
-  )
+  );
 
-  const dirty = !sameExtensionSet(draftExtensions, appliedExtensions)
+  const dirty = !sameExtensionSet(draftExtensions, appliedExtensions);
 
   const filteredFiles = useMemo(() => {
-    let list = files
+    let list = files;
     // Tree always shows the *applied* set so it matches the main DiffViewer.
     if (appliedExtensions.length > 0) {
-      list = list.filter((f) => matchesExtensionFilter(f.name, appliedExtensions))
+      list = list.filter((f) =>
+        matchesExtensionFilter(f.name, appliedExtensions),
+      );
     }
-    if (chipFilter === 'unviewed') {
-      list = list.filter((f) => !viewedFiles.has(f.name))
-    } else if (chipFilter === 'has-comments') {
-      list = list.filter((f) => (commentCounts[f.name] ?? 0) > 0)
-    } else if (chipFilter === 'since-last') {
-      const set = sinceLastFiles ?? new Set<string>()
-      list = list.filter((f) => set.has(f.name))
+    if (chipFilter === "unviewed") {
+      list = list.filter((f) => !viewedFiles.has(f.name));
+    } else if (chipFilter === "has-comments") {
+      list = list.filter((f) => (commentCounts[f.name] ?? 0) > 0);
+    } else if (chipFilter === "since-last") {
+      const set = sinceLastFiles ?? new Set<string>();
+      list = list.filter((f) => set.has(f.name));
     }
-    return list
-  }, [files, appliedExtensions, chipFilter, viewedFiles, commentCounts, sinceLastFiles])
+    return list;
+  }, [
+    files,
+    appliedExtensions,
+    chipFilter,
+    viewedFiles,
+    commentCounts,
+    sinceLastFiles,
+  ]);
 
   // Map files to paths required by @pierre/trees, deduping and resolving
   // file↔directory collisions so the underlying tree model never sees a
@@ -130,34 +157,40 @@ export const FileTree = memo(function FileTree({
   const { paths, dropped } = useMemo(
     () => sanitizePaths(filteredFiles.map((f) => f.name)),
     [filteredFiles],
-  )
+  );
 
-  const pathsSet = useMemo(() => new Set(paths), [paths])
+  const pathsSet = useMemo(() => new Set(paths), [paths]);
 
-  const expandedPaths = useMemo(() => buildExpandedPaths(paths), [paths])
+  const expandedPaths = useMemo(() => buildExpandedPaths(paths), [paths]);
 
   // Map file change type to GitStatusEntry
   const gitStatus = useMemo<GitStatusEntry[]>(() => {
     return filteredFiles
       .filter((file) => pathsSet.has(file.name))
       .map((file) => {
-        let status: GitStatus = 'modified'
+        let status: GitStatus = "modified";
         if (untrackedFiles.has(file.name)) {
-          status = 'untracked'
+          status = "untracked";
         } else if (file.prevName) {
-          status = 'renamed'
+          status = "renamed";
         } else {
-          const prev = file.prevObjectId
-          const next = file.newObjectId
-          if (prev === '0000000' || prev === '0000000000000000000000000000000000000000') {
-            status = 'added'
-          } else if (next === '0000000' || next === '0000000000000000000000000000000000000000') {
-            status = 'deleted'
+          const prev = file.prevObjectId;
+          const next = file.newObjectId;
+          if (
+            prev === "0000000" ||
+            prev === "0000000000000000000000000000000000000000"
+          ) {
+            status = "added";
+          } else if (
+            next === "0000000" ||
+            next === "0000000000000000000000000000000000000000"
+          ) {
+            status = "deleted";
           }
         }
-        return { path: file.name, status }
-      })
-  }, [filteredFiles, untrackedFiles, pathsSet])
+        return { path: file.name, status };
+      });
+  }, [filteredFiles, untrackedFiles, pathsSet]);
 
   // Keep a ref of viewedFiles and commentCounts to avoid recreating renderRowDecoration
   // and maintain absolute freshness on virtualized list updates.
@@ -165,52 +198,56 @@ export const FileTree = memo(function FileTree({
     commentCounts,
     viewedFiles,
     sinceLastFiles: sinceLastFiles ?? new Set<string>(),
-  })
+  });
   decorationStateRef.current = {
     commentCounts,
     viewedFiles,
     sinceLastFiles: sinceLastFiles ?? new Set<string>(),
-  }
+  };
 
-  const renderRowDecoration = useCallback<FileTreeRowDecorationRenderer>((context) => {
-    const path = context.item.path
-    const {
-      commentCounts: latestComments,
-      viewedFiles: latestViewed,
-      sinceLastFiles: latestSince,
-    } = decorationStateRef.current
-    const isViewed = latestViewed.has(path)
-    const count = latestComments[path] ?? 0
-    const sinceLast = latestSince.has(path)
+  const renderRowDecoration = useCallback<FileTreeRowDecorationRenderer>(
+    (context) => {
+      const path = context.item.path;
+      const {
+        commentCounts: latestComments,
+        viewedFiles: latestViewed,
+        sinceLastFiles: latestSince,
+      } = decorationStateRef.current;
+      const isViewed = latestViewed.has(path);
+      const count = latestComments[path] ?? 0;
+      const sinceLast = latestSince.has(path);
 
-    const parts: string[] = []
-    const titles: string[] = []
-    if (sinceLast) {
-      parts.push('Δ')
-      titles.push('Changed since last review handoff')
-    }
-    if (isViewed) {
-      parts.push('✓')
-      titles.push('Viewed')
-    }
-    if (count > 0) {
-      parts.push(`💬 ${count}`)
-      titles.push(`${count} comment${count > 1 ? 's' : ''}`)
-    }
-    if (parts.length === 0) return null
-    return {
-      text: parts.join(' '),
-      title: titles.join(' · '),
-    }
-  }, [])
+      const parts: string[] = [];
+      const titles: string[] = [];
+      if (sinceLast) {
+        parts.push("Δ");
+        titles.push("Changed since last review handoff");
+      }
+      if (isViewed) {
+        parts.push("✓");
+        titles.push("Viewed");
+      }
+      if (count > 0) {
+        parts.push(`💬 ${count}`);
+        titles.push(`${count} comment${count > 1 ? "s" : ""}`);
+      }
+      if (parts.length === 0) return null;
+      return {
+        text: parts.join(" "),
+        title: titles.join(" · "),
+      };
+    },
+    [],
+  );
 
-  const syncingSelection = useRef(false)
+  const syncingSelection = useRef(false);
   const { model } = useFileTree({
     paths,
-    fileTreeSearchMode: 'hide-non-matches',
+    fileTreeSearchMode: "hide-non-matches",
     gitStatus,
     renderRowDecoration,
-    initialSelectedPaths: activeFile && pathsSet.has(activeFile) ? [activeFile] : [],
+    initialSelectedPaths:
+      activeFile && pathsSet.has(activeFile) ? [activeFile] : [],
     initialExpandedPaths: expandedPaths,
     onSelectionChange: (selectedPaths) => {
       if (
@@ -218,42 +255,42 @@ export const FileTree = memo(function FileTree({
         selectedPaths.length > 0 &&
         selectedPaths[0] !== activeFile
       ) {
-        onFileClick(selectedPaths[0])
+        onFileClick(selectedPaths[0]);
       }
     },
-  })
+  });
 
   // Synchronize paths update on model
   useEffect(() => {
-    model.resetPaths(paths, { initialExpandedPaths: expandedPaths })
-  }, [paths, expandedPaths, model])
+    model.resetPaths(paths, { initialExpandedPaths: expandedPaths });
+  }, [paths, expandedPaths, model]);
 
   // Synchronize git status and force redraw of decorations when comments/viewed states change
   useEffect(() => {
-    model.setGitStatus(gitStatus)
-  }, [gitStatus, commentCounts, viewedFiles, model])
+    model.setGitStatus(gitStatus);
+  }, [gitStatus, commentCounts, viewedFiles, model]);
 
   // Synchronize activeFile selection and viewport scroll
   useEffect(() => {
-    if (!activeFile || !pathsSet.has(activeFile)) return
+    if (!activeFile || !pathsSet.has(activeFile)) return;
     try {
-      syncingSelection.current = true
+      syncingSelection.current = true;
       for (const path of model.getSelectedPaths()) {
-        if (path !== activeFile) model.getItem(path)?.deselect()
+        if (path !== activeFile) model.getItem(path)?.deselect();
       }
-      model.getItem(activeFile)?.select()
-      model.scrollToPath(activeFile, { focus: false, offset: 'nearest' })
+      model.getItem(activeFile)?.select();
+      model.scrollToPath(activeFile, { focus: false, offset: "nearest" });
     } catch (err) {
-      console.error('Failed to scroll to active file:', err)
+      console.error("Failed to scroll to active file:", err);
     } finally {
-      syncingSelection.current = false
+      syncingSelection.current = false;
     }
-  }, [activeFile, model, pathsSet])
+  }, [activeFile, model, pathsSet]);
 
   // Synchronize custom filter search input with @pierre/trees search engine
   useEffect(() => {
-    model.setSearch(filter || null)
-  }, [filter, model])
+    model.setSearch(filter || null);
+  }, [filter, model]);
 
   if (collapsed) {
     return (
@@ -270,17 +307,21 @@ export const FileTree = memo(function FileTree({
           </Tooltip>
         )}
       </div>
-    )
+    );
   }
 
-  const filterLabel = formatExtensionFilter(appliedExtensions)
-  const totalFiles = files.length
-  const shownFiles = filteredFiles.length
-  const hiddenFiles = totalFiles - shownFiles
-  const showExtensionPicker = availableExtensions.length > 0 && !!onApplyExtensions
+  const filterLabel = formatExtensionFilter(appliedExtensions);
+  const totalFiles = files.length;
+  const shownFiles = filteredFiles.length;
+  const hiddenFiles = totalFiles - shownFiles;
+  const showExtensionPicker =
+    availableExtensions.length > 0 && !!onApplyExtensions;
 
   return (
-    <div className="ft" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div
+      className="ft"
+      style={{ display: "flex", flexDirection: "column", height: "100%" }}
+    >
       <div className="ft-chrome">
         <div className="ft-search-row">
           {onToggleCollapse && (
@@ -317,23 +358,29 @@ export const FileTree = memo(function FileTree({
                   {appliedExtensions.length} applied
                 </span>
               )}
-              {dirty && needsApply && <span className="ft-ext-pending">unsaved</span>}
+              {dirty && needsApply && (
+                <span className="ft-ext-pending">unsaved</span>
+              )}
             </div>
-            <div className="ft-ext-chips" role="group" aria-label="File extensions">
+            <div
+              className="ft-ext-chips"
+              role="group"
+              aria-label="File extensions"
+            >
               {availableExtensions.map((ext) => {
-                const selected = draftExtensions.includes(ext)
+                const selected = draftExtensions.includes(ext);
                 return (
                   <button
                     key={ext}
                     type="button"
-                    className={`ft-ext-chip ${selected ? 'ft-ext-chip-active' : ''}`}
+                    className={`ft-ext-chip ${selected ? "ft-ext-chip-active" : ""}`}
                     aria-pressed={selected}
                     title={selected ? `Remove .${ext}` : `Include .${ext}`}
                     onClick={() => toggleDraftExtension(ext)}
                   >
                     .{ext}
                   </button>
-                )
+                );
               })}
             </div>
             <div className="ft-ext-actions">
@@ -350,8 +397,8 @@ export const FileTree = memo(function FileTree({
                   {dirty && draftExtensions.length > 0
                     ? ` (${draftExtensions.length})`
                     : dirty
-                      ? ' (all)'
-                      : ''}
+                      ? " (all)"
+                      : ""}
                 </button>
               ) : (
                 <span className="ft-ext-hint">Live filter</span>
@@ -373,23 +420,29 @@ export const FileTree = memo(function FileTree({
         )}
 
         {onChipFilterChange && (
-          <div className="ft-chips" role="group" aria-label="Smart file filters">
+          <div
+            className="ft-chips"
+            role="group"
+            aria-label="Smart file filters"
+          >
             {(
               [
-                { id: 'all' as const, label: 'All' },
-                { id: 'unviewed' as const, label: 'Unviewed' },
-                { id: 'has-comments' as const, label: 'Comments' },
-                ...(sinceLastAvailable ? [{ id: 'since-last' as const, label: 'Since last' }] : []),
+                { id: "all" as const, label: "All" },
+                { id: "unviewed" as const, label: "Unviewed" },
+                { id: "has-comments" as const, label: "Comments" },
+                ...(sinceLastAvailable
+                  ? [{ id: "since-last" as const, label: "Since last" }]
+                  : []),
               ] as const
             ).map((chip) => (
               <button
                 key={chip.id}
                 type="button"
-                className={`ft-chip ${chipFilter === chip.id ? 'ft-chip-active' : ''}`}
+                className={`ft-chip ${chipFilter === chip.id ? "ft-chip-active" : ""}`}
                 aria-pressed={chipFilter === chip.id}
                 title={
-                  chip.id === 'since-last'
-                    ? 'Files added or modified since the last Send to agent'
+                  chip.id === "since-last"
+                    ? "Files added or modified since the last Send to agent"
                     : undefined
                 }
                 onClick={() => onChipFilterChange(chip.id)}
@@ -410,22 +463,23 @@ export const FileTree = memo(function FileTree({
       {dropped.length > 0 && (
         <div
           className="ft-collision-warning"
-          title={dropped.join('\n')}
+          title={dropped.join("\n")}
           style={{
-            fontSize: '0.75rem',
-            padding: '4px 8px',
-            background: 'var(--bg-warning, #fff3cd)',
-            color: 'var(--text-warning, #856404)',
+            fontSize: "0.75rem",
+            padding: "4px 8px",
+            background: "var(--bg-warning, #fff3cd)",
+            color: "var(--text-warning, #856404)",
           }}
         >
-          ⚠ {dropped.length} file(s) hidden due to path collision (hover for details)
+          ⚠ {dropped.length} file(s) hidden due to path collision (hover for
+          details)
         </div>
       )}
-      <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         <FileTreeErrorBoundary>
           <PierreFileTree model={model} className="ft-pierre-tree" />
         </FileTreeErrorBoundary>
       </div>
     </div>
-  )
-})
+  );
+});

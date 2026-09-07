@@ -1248,7 +1248,7 @@ export const FileDiffCard = memo(function FileDiffCard({
               (previewHunk.additionStart !== undefined &&
               previewHunk.additionLines !== undefined
                 ? previewHunk.additionLines
-                : previewHunk.additionCount ?? 0),
+                : (previewHunk.additionCount ?? 0)),
           );
           return (
             <Modal
