@@ -113,6 +113,11 @@ describe('diffing MCP', () => {
           'gh_create_draft_comment',
           'gh_refresh',
           'gh_submit_review',
+          'gh_submit_pending_review',
+          'gh_discard_pending_review',
+          'gh_update_pr',
+          'gh_set_pr_state',
+          'gh_merge_pr',
         ]),
       )
       expect(

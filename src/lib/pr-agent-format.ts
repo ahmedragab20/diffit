@@ -34,6 +34,9 @@ export interface PrOverviewPayload {
     resolvedThreads: number
     outdatedThreads: number
     reviews: number
+    pendingReviews: number
+    issueComments: number
+    timelineEvents: number
     localDrafts: number
     openDrafts: number
   }
@@ -42,6 +45,10 @@ export interface PrOverviewPayload {
   submittedReviewUrl?: string | null
   authSource?: 'gh' | 'token'
   patchBytes: number
+  state?: PrSession['state']
+  isDraft?: boolean
+  hasBody: boolean
+  syncedAt?: number | null
 }
 
 export function buildPrOverviewPayload(session: PrSession): PrOverviewPayload {
@@ -79,6 +86,9 @@ export function buildPrOverviewPayload(session: PrSession): PrOverviewPayload {
       resolvedThreads: resolved,
       outdatedThreads: outdated,
       reviews: reviews.length,
+      pendingReviews: reviews.filter((r) => r.state === 'PENDING').length,
+      issueComments: (session.issueComments ?? []).length,
+      timelineEvents: (session.timelineEvents ?? []).length,
       localDrafts: drafts.length,
       openDrafts: drafts.filter((d) => d.status === 'open').length,
     },
@@ -87,6 +97,10 @@ export function buildPrOverviewPayload(session: PrSession): PrOverviewPayload {
     submittedReviewUrl: session.submittedReviewUrl ?? null,
     authSource: session.authSource,
     patchBytes: Buffer.byteLength(session.diff ?? '', 'utf8'),
+    state: session.state,
+    isDraft: session.isDraft,
+    hasBody: Boolean(session.body?.trim()),
+    syncedAt: session.syncedAt ?? null,
   }
 }
 
@@ -98,6 +112,10 @@ export interface ThreadListOptions {
   limit?: number
   bodyMaxChars?: number
   fullBody?: boolean
+  /** Offset into each thread's replies. Default 0. */
+  replyCursor?: number
+  /** Max replies returned per thread. Default 20; a giant thread must not dump every reply. */
+  replyLimit?: number
 }
 
 export interface ThreadListItem {
@@ -117,6 +135,8 @@ export interface ThreadListItem {
   body: string
   bodyTruncated: boolean
   replyCount: number
+  repliesReturned: number
+  repliesNextCursor: number | null
   replies: Array<{
     id: number
     author: string | null
@@ -130,6 +150,8 @@ export interface ThreadListPage {
   returned: number
   total: number
   nextCursor: number | null
+  headSha: string
+  syncedAt?: number | null
   threads: ThreadListItem[]
 }
 
@@ -153,6 +175,8 @@ export function paginatePrThreads(
   const cursor = Math.max(0, opts.cursor ?? 0)
   const limit = Math.min(200, Math.max(1, opts.limit ?? 50))
   const bodyMax = Math.min(50_000, Math.max(0, opts.bodyMaxChars ?? 500))
+  const replyCursor = Math.max(0, opts.replyCursor ?? 0)
+  const replyLimit = Math.min(100, Math.max(1, opts.replyLimit ?? 20))
   const pathFilter = opts.path?.toLowerCase()
   const authorFilter = opts.author?.toLowerCase()
 
@@ -173,7 +197,9 @@ export function paginatePrThreads(
   const slice = filtered.slice(cursor, cursor + limit)
   const threads: ThreadListItem[] = slice.map((t) => {
     const root = truncateBody(t.body ?? '', bodyMax, opts.fullBody)
-    const replies = (t.replies ?? []).map((r) => {
+    const allReplies = t.replies ?? []
+    const replySlice = allReplies.slice(replyCursor, replyCursor + replyLimit)
+    const replies = replySlice.map((r) => {
       const rb = truncateBody(r.body ?? '', bodyMax, opts.fullBody)
       return {
         id: r.id,
@@ -183,6 +209,7 @@ export function paginatePrThreads(
         createdAt: r.createdAt,
       }
     })
+    const repliesEnd = replyCursor + replySlice.length
     return {
       id: t.id,
       threadId: t.threadId,
@@ -199,7 +226,9 @@ export function paginatePrThreads(
       updatedAt: t.updatedAt,
       body: root.text,
       bodyTruncated: root.truncated,
-      replyCount: replies.length,
+      replyCount: allReplies.length,
+      repliesReturned: replies.length,
+      repliesNextCursor: repliesEnd < allReplies.length ? repliesEnd : null,
       replies,
     }
   })
@@ -209,6 +238,8 @@ export function paginatePrThreads(
     returned: threads.length,
     total,
     nextCursor: end < total ? end : null,
+    headSha: session.headSha,
+    syncedAt: session.syncedAt ?? null,
     threads,
   }
 }
@@ -225,6 +256,8 @@ export interface ReviewListPage {
   returned: number
   total: number
   nextCursor: number | null
+  headSha: string
+  syncedAt?: number | null
   reviews: Array<{
     id: number
     author: string | null
@@ -269,6 +302,8 @@ export function paginatePrReviews(
     returned: mapped.length,
     total,
     nextCursor: end < total ? end : null,
+    headSha: session.headSha,
+    syncedAt: session.syncedAt ?? null,
     reviews: mapped,
   }
 }
@@ -327,7 +362,7 @@ export function formatPrReviewThreads(
     const threadIdAttr = t.threadId ? ` threadId="${escapeAttr(t.threadId)}"` : ''
     const stateAttr = t.state ? ` state="${t.state}"` : ''
     lines.push(
-      `  <thread id="${t.id}"${threadIdAttr}${pathAttr}${sideAttr}${lineAttr}${stateAttr} resolved="${t.resolved}" outdated="${t.outdated}" replyCount="${t.replyCount}"${authorAttr}>`,
+      `  <thread id="${t.id}"${threadIdAttr}${pathAttr}${sideAttr}${lineAttr}${stateAttr} resolved="${t.resolved}" outdated="${t.outdated}" replyCount="${t.replyCount}" repliesReturned="${t.repliesReturned}"${t.repliesNextCursor == null ? '' : ` repliesNextCursor="${t.repliesNextCursor}"`}${authorAttr}>`,
     )
     lines.push(`    <body${t.bodyTruncated ? ' truncated="true"' : ''}><![CDATA[${cdata(t.body)}]]></body>`)
     if (t.replies.length > 0) {

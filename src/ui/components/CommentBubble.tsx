@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from "react";
 import {
   CheckCircle2,
   Bot,
@@ -9,37 +9,47 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
-} from 'lucide-react'
-import type { ReviewComment } from '../../lib/types'
-import { timeAgo } from '../utils'
-import { Markdown } from './Markdown'
-import { SeverityBadge } from './SeverityBadge'
-import { useComments } from '../hooks/useComments'
-import { CommentForm } from './CommentForm'
-import { NoticeDialog } from '../primitives/NoticeDialog'
+} from "lucide-react";
+import type { ReviewComment } from "../../lib/types";
+import { timeAgo } from "../utils";
+import { Markdown } from "./Markdown";
+import { SeverityBadge } from "./SeverityBadge";
+import { useComments } from "../hooks/useComments";
+import { CommentForm } from "./CommentForm";
+import { NoticeDialog } from "../primitives/NoticeDialog";
 
 interface CommentBubbleProps {
-  comment: ReviewComment
-  onDelete: (id: string) => void
+  comment: ReviewComment;
+  onDelete: (id: string) => void;
 }
 
-function AvatarIcon({ role, size = 16 }: { role: 'user' | 'agent'; size?: number }) {
-  if (role === 'agent') {
+function AvatarIcon({
+  role,
+  size = 16,
+}: {
+  role: "user" | "agent";
+  size?: number;
+}) {
+  if (role === "agent") {
     return (
-      <div className={`comment-avatar-circle comment-avatar-agent comment-avatar-size-${size}`}>
+      <div
+        className={`comment-avatar-circle comment-avatar-agent comment-avatar-size-${size}`}
+      >
         <Bot size={size} aria-hidden="true" />
       </div>
-    )
+    );
   }
   return (
-    <div className={`comment-avatar-circle comment-avatar-user comment-avatar-size-${size}`}>
+    <div
+      className={`comment-avatar-circle comment-avatar-user comment-avatar-size-${size}`}
+    >
       <User size={size} aria-hidden="true" />
     </div>
-  )
+  );
 }
 
 export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
-  const [, setTick] = useState(0)
+  const [, setTick] = useState(0);
   const {
     resolveComment,
     unresolveComment,
@@ -48,47 +58,51 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
     editReply,
     applySuggestion,
     editComment,
-  } = useComments()
-  const isResolved = comment.status === 'resolved'
+  } = useComments();
+  const isResolved = comment.status === "resolved";
   /** Open threads start expanded; resolved start collapsed. User can toggle either. */
-  const [collapsed, setCollapsed] = useState(isResolved)
-  const [isReplying, setIsReplying] = useState(false)
-  const [isEditing, setIsEditing] = useState(false)
-  const [deleteConfirming, setDeleteConfirming] = useState(false)
-  const [editingReplyId, setEditingReplyId] = useState<string | null>(null)
-  const [applyingSuggestion, setApplyingSuggestion] = useState(false)
-  const [suggestionError, setSuggestionError] = useState<string | null>(null)
+  const [collapsed, setCollapsed] = useState(isResolved);
+  const [isReplying, setIsReplying] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [deleteConfirming, setDeleteConfirming] = useState(false);
+  const [editingReplyId, setEditingReplyId] = useState<string | null>(null);
+  const [applyingSuggestion, setApplyingSuggestion] = useState(false);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
 
-  const firstActionBtnRef = useRef<HTMLButtonElement>(null)
+  const firstActionBtnRef = useRef<HTMLButtonElement>(null);
 
-  const remainingBody = comment.body.replace(/```suggestion\n([\s\S]*?)```/g, '').trim()
-  const hasBodyContent = remainingBody.length > 0
-  const bodyPreview = comment.body.replace(/\s+/g, ' ').trim().slice(0, 72)
-  const replyCount = comment.replies?.length ?? 0
-
-  useEffect(() => {
-    if (comment.status === 'resolved') setCollapsed(true)
-  }, [comment.status])
+  const remainingBody = comment.body
+    .replace(/```suggestion\n([\s\S]*?)```/g, "")
+    .trim();
+  const hasBodyContent = remainingBody.length > 0;
+  const bodyPreview = comment.body.replace(/\s+/g, " ").trim().slice(0, 72);
+  const replyCount = comment.replies?.length ?? 0;
 
   useEffect(() => {
-    const timer = setInterval(() => setTick((t) => t + 1), 30000)
-    return () => clearInterval(timer)
-  }, [])
+    if (comment.status === "resolved") setCollapsed(true);
+  }, [comment.status]);
 
-  const handleResolve = () => resolveComment(comment.id)
-  const handleUnresolve = () => unresolveComment(comment.id)
+  useEffect(() => {
+    const timer = setInterval(() => setTick((t) => t + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const handleResolve = () => resolveComment(comment.id);
+  const handleUnresolve = () => unresolveComment(comment.id);
 
   const handleStartEditReply = (replyId: string) => {
-    setEditingReplyId(replyId)
-  }
+    setEditingReplyId(replyId);
+  };
 
   const handleDeleteReply = (replyId: string) => {
-    removeReply(comment.id, replyId)
-  }
+    removeReply(comment.id, replyId);
+  };
 
   const locationBits = (
     <>
-      {comment.lineNumber === 0 && <span className="comment-file-chip">File</span>}
+      {comment.lineNumber === 0 && (
+        <span className="comment-file-chip">File</span>
+      )}
       {comment.outdated && (
         <span
           className="comment-outdated-badge"
@@ -97,25 +111,27 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
           <AlertTriangle size={10} /> outdated
         </span>
       )}
-      {comment.severity && comment.severity !== 'none' && (
+      {comment.severity && comment.severity !== "none" && (
         <SeverityBadge severity={comment.severity} />
       )}
-      {comment.startLineNumber && comment.startLineNumber !== comment.lineNumber && (
-        <span className="comment-range-chip">
-          L{comment.startLineNumber}–{comment.lineNumber}
-        </span>
-      )}
-      {comment.lineNumber > 0 &&
-        !(comment.startLineNumber && comment.startLineNumber !== comment.lineNumber) && (
-          <span className="comment-range-chip">L{comment.lineNumber}</span>
+      {comment.startLineNumber &&
+        comment.startLineNumber !== comment.lineNumber && (
+          <span className="comment-range-chip">
+            L{comment.startLineNumber}–{comment.lineNumber}
+          </span>
         )}
+      {comment.lineNumber > 0 &&
+        !(
+          comment.startLineNumber &&
+          comment.startLineNumber !== comment.lineNumber
+        ) && <span className="comment-range-chip">L{comment.lineNumber}</span>}
     </>
-  )
+  );
 
   if (collapsed && !isEditing) {
     return (
       <div
-        className={`comment-collapsed-bar ${isResolved ? 'comment-collapsed-bar-resolved' : ''}`}
+        className={`comment-collapsed-bar ${isResolved ? "comment-collapsed-bar-resolved" : ""}`}
         id={`comment-${comment.id}`}
         role="article"
       >
@@ -124,13 +140,15 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
           className="comment-collapsed-toggle"
           onClick={() => setCollapsed(false)}
           onKeyDown={(e) => {
-            if (e.key === 'Enter' || e.key === ' ') {
-              e.preventDefault()
-              setCollapsed(false)
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              setCollapsed(false);
             }
           }}
           aria-expanded={false}
-          aria-label={isResolved ? 'Show resolved conversation' : 'Expand comment thread'}
+          aria-label={
+            isResolved ? "Show resolved conversation" : "Expand comment thread"
+          }
           title="Expand"
         >
           <ChevronRight size={14} aria-hidden="true" />
@@ -145,26 +163,30 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
           ) : (
             <AvatarIcon role="user" size={11} />
           )}
-          <span className="comment-collapsed-label">{isResolved ? 'Resolved' : 'User'}</span>
+          <span className="comment-collapsed-label">
+            {isResolved ? "Resolved" : "User"}
+          </span>
           {locationBits}
           <span className="comment-collapsed-preview" title={comment.body}>
             {bodyPreview}
-            {comment.body.length > 72 ? '…' : ''}
+            {comment.body.length > 72 ? "…" : ""}
           </span>
           <span className="comment-collapsed-meta">
-            {replyCount > 0 ? `${replyCount + 1} comments` : '1 comment'}
+            {replyCount > 0 ? `${replyCount + 1} comments` : "1 comment"}
           </span>
         </div>
         <button
           type="button"
           className="comment-collapsed-expand-btn"
           onClick={() => setCollapsed(false)}
-          aria-label={isResolved ? 'Show resolved conversation' : 'Expand comment thread'}
+          aria-label={
+            isResolved ? "Show resolved conversation" : "Expand comment thread"
+          }
         >
           Expand
         </button>
       </div>
-    )
+    );
   }
 
   if (isEditing) {
@@ -182,7 +204,9 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
           <div className="comment-content-col">
             <div className="comment-node-header">
               <span className="comment-node-author">User</span>
-              <span className="comment-node-badge comment-node-badge-user">User</span>
+              <span className="comment-node-badge comment-node-badge-user">
+                User
+              </span>
               <span className="comment-node-time comment-node-meta">
                 {timeAgo(comment.createdAt)}
                 {comment.lineNumber === 0 && (
@@ -196,14 +220,15 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                     <AlertTriangle size={10} /> outdated
                   </span>
                 )}
-                {comment.severity && comment.severity !== 'none' && (
+                {comment.severity && comment.severity !== "none" && (
                   <SeverityBadge severity={comment.severity} />
                 )}
-                {comment.startLineNumber && comment.startLineNumber !== comment.lineNumber && (
-                  <span className="comment-range-chip">
-                    L{comment.startLineNumber}–{comment.lineNumber}
-                  </span>
-                )}
+                {comment.startLineNumber &&
+                  comment.startLineNumber !== comment.lineNumber && (
+                    <span className="comment-range-chip">
+                      L{comment.startLineNumber}–{comment.lineNumber}
+                    </span>
+                  )}
               </span>
             </div>
             <div className="comment-edit-form-wrap">
@@ -211,9 +236,9 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                 draftKey={`edit:${comment.id}`}
                 initialBody={comment.body}
                 lineContent={comment.lineContent}
-                onSubmit={(newBody) => {
-                  editComment(comment.id, newBody)
-                  setIsEditing(false)
+                onSubmit={async (newBody) => {
+                  await editComment(comment.id, newBody);
+                  setIsEditing(false);
                 }}
                 onCancel={() => setIsEditing(false)}
               />
@@ -221,22 +246,24 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
           </div>
         </div>
       </div>
-    )
+    );
   }
 
   return (
     <div
-      className={`comment-bubble-canvas ${isResolved ? 'comment-bubble-canvas-resolved' : ''}`}
+      className={`comment-bubble-canvas ${isResolved ? "comment-bubble-canvas-resolved" : ""}`}
       id={`comment-${comment.id}`}
       role="article"
       aria-label={
         comment.lineNumber === 0
-          ? 'File-level comment'
+          ? "File-level comment"
           : `Comment by user on line ${comment.lineNumber}`
       }
     >
       {/* Parent Comment Node */}
-      <div className={`comment-node ${isResolved ? 'comment-node-resolved' : ''}`}>
+      <div
+        className={`comment-node ${isResolved ? "comment-node-resolved" : ""}`}
+      >
         <div className="comment-avatar-col">
           <AvatarIcon role="user" size={16} />
         </div>
@@ -253,15 +280,20 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
               <ChevronDown size={14} aria-hidden="true" />
             </button>
             <span className="comment-node-author">User</span>
-            <span className="comment-node-badge comment-node-badge-user">User</span>
+            <span className="comment-node-badge comment-node-badge-user">
+              User
+            </span>
             <span className="comment-node-time comment-node-meta">
               {timeAgo(comment.createdAt)}
-              {comment.lineNumber === 0 && <span className="comment-file-chip">File Comment</span>}
-              {comment.startLineNumber && comment.startLineNumber !== comment.lineNumber && (
-                <span className="comment-range-chip">
-                  L{comment.startLineNumber}–{comment.lineNumber}
-                </span>
+              {comment.lineNumber === 0 && (
+                <span className="comment-file-chip">File Comment</span>
               )}
+              {comment.startLineNumber &&
+                comment.startLineNumber !== comment.lineNumber && (
+                  <span className="comment-range-chip">
+                    L{comment.startLineNumber}–{comment.lineNumber}
+                  </span>
+                )}
             </span>
 
             {isResolved && (
@@ -278,9 +310,9 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                   className="comment-node-btn"
                   onClick={() => setIsEditing(true)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      setIsEditing(true)
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      setIsEditing(true);
                     }
                   }}
                   title="Edit comment"
@@ -304,9 +336,9 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                       className="comment-node-btn comment-delete-confirm-cancel"
                       onClick={() => setDeleteConfirming(false)}
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault()
-                          setDeleteConfirming(false)
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          setDeleteConfirming(false);
                         }
                       }}
                       title="Cancel delete"
@@ -320,9 +352,9 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                     className="comment-node-btn comment-node-btn-delete"
                     onClick={() => setDeleteConfirming(true)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.preventDefault()
-                        setDeleteConfirming(true)
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        setDeleteConfirming(true);
                       }
                     }}
                     title="Delete comment"
@@ -338,21 +370,28 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
           {hasBodyContent && (
             <Markdown
               content={comment.body}
-              className={`comment-node-body markdown-body ${isResolved ? 'comment-resolved-line' : ''}`}
+              className={`comment-node-body markdown-body ${isResolved ? "comment-resolved-line" : ""}`}
             />
           )}
 
           {/* Suggestion Card */}
           {(() => {
-            const suggestionMatch = comment.body.match(/```suggestion\n([\s\S]*?)```/)
-            const hasSuggestion = !!suggestionMatch && comment.side === 'additions'
-            const suggestionCode = suggestionMatch ? suggestionMatch[1].trimEnd() : ''
-            if (!hasSuggestion) return null
+            const suggestionMatch = comment.body.match(
+              /```suggestion\n([\s\S]*?)```/,
+            );
+            const hasSuggestion =
+              !!suggestionMatch && comment.side === "additions";
+            const suggestionCode = suggestionMatch
+              ? suggestionMatch[1].trimEnd()
+              : "";
+            if (!hasSuggestion) return null;
 
             return (
               <div className="suggestion-card comment-suggestion-card">
                 <div className="suggestion-header">
-                  <span className="suggestion-header-label">Suggested Change</span>
+                  <span className="suggestion-header-label">
+                    Suggested Change
+                  </span>
                   {isResolved ? (
                     <span className="suggestion-applied">
                       <CheckCircle2 size={12} /> Applied
@@ -363,36 +402,40 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                       className="btn btn-primary btn-sm"
                       disabled={applyingSuggestion}
                       onClick={async () => {
-                        setApplyingSuggestion(true)
+                        setApplyingSuggestion(true);
                         try {
-                          await applySuggestion(comment.id)
+                          await applySuggestion(comment.id);
                         } catch (err) {
                           setSuggestionError(
                             err instanceof Error
                               ? err.message
-                              : 'The suggestion could not be applied.',
-                          )
+                              : "The suggestion could not be applied.",
+                          );
                         } finally {
-                          setApplyingSuggestion(false)
+                          setApplyingSuggestion(false);
                         }
                       }}
                     >
-                      {applyingSuggestion ? 'Applying…' : 'Apply Suggestion'}
+                      {applyingSuggestion ? "Applying…" : "Apply Suggestion"}
                     </button>
                   )}
                 </div>
                 <div className="suggestion-diff">
                   <div className="suggestion-diff-line suggestion-diff-line-deletion">
                     <span className="suggestion-diff-sign">-</span>
-                    <span className="suggestion-diff-code">{comment.lineContent}</span>
+                    <span className="suggestion-diff-code">
+                      {comment.lineContent}
+                    </span>
                   </div>
                   <div className="suggestion-diff-line suggestion-diff-line-addition">
                     <span className="suggestion-diff-sign">+</span>
-                    <span className="suggestion-diff-code">{suggestionCode}</span>
+                    <span className="suggestion-diff-code">
+                      {suggestionCode}
+                    </span>
                   </div>
                 </div>
               </div>
-            )
+            );
           })()}
         </div>
       </div>
@@ -401,30 +444,34 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
       {comment.replies?.length > 0 && (
         <div className="comment-replies" role="list" aria-label="Replies">
           {comment.replies.map((reply, idx) => {
-            const isAgent = reply.role === 'agent'
-            const isEditingThis = editingReplyId === reply.id
+            const isAgent = reply.role === "agent";
+            const isEditingThis = editingReplyId === reply.id;
             return (
               <div
                 key={reply.id}
-                className={`comment-node ${isAgent ? 'comment-node-agent' : 'comment-node-user'} ${isResolved ? 'comment-node-resolved' : ''}`}
+                className={`comment-node ${isAgent ? "comment-node-agent" : "comment-node-user"} ${isResolved ? "comment-node-resolved" : ""}`}
                 role="listitem"
-                aria-label={`${isAgent ? 'Agent' : 'User'} reply ${idx + 1}`}
+                aria-label={`${isAgent ? "Agent" : "User"} reply ${idx + 1}`}
               >
                 <div className="comment-avatar-col">
-                  <AvatarIcon role={isAgent ? 'agent' : 'user'} size={14} />
+                  <AvatarIcon role={isAgent ? "agent" : "user"} size={14} />
                 </div>
                 <div className="comment-content-col">
                   <div className="comment-node-header">
-                    <span className="comment-node-author">{isAgent ? 'Agent' : 'User'}</span>
+                    <span className="comment-node-author">
+                      {isAgent ? "Agent" : "User"}
+                    </span>
                     <span
-                      className={`comment-node-badge ${isAgent ? 'comment-node-badge-agent' : 'comment-node-badge-user'}`}
+                      className={`comment-node-badge ${isAgent ? "comment-node-badge-agent" : "comment-node-badge-user"}`}
                     >
-                      {isAgent ? 'Agent' : 'User'}
+                      {isAgent ? "Agent" : "User"}
                     </span>
                     {isAgent && reply.model && (
                       <span className="comment-model-chip">{reply.model}</span>
                     )}
-                    <span className="comment-node-time">{timeAgo(reply.createdAt)}</span>
+                    <span className="comment-node-time">
+                      {timeAgo(reply.createdAt)}
+                    </span>
 
                     {!isResolved && (
                       <div className="comment-node-actions">
@@ -432,9 +479,9 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                           className="comment-node-btn"
                           onClick={() => handleStartEditReply(reply.id)}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault()
-                              handleStartEditReply(reply.id)
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              handleStartEditReply(reply.id);
                             }
                           }}
                           title="Edit reply"
@@ -447,9 +494,9 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                           className="comment-node-btn comment-node-btn-delete"
                           onClick={() => handleDeleteReply(reply.id)}
                           onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault()
-                              handleDeleteReply(reply.id)
+                            if (e.key === "Enter" || e.key === " ") {
+                              e.preventDefault();
+                              handleDeleteReply(reply.id);
                             }
                           }}
                           title="Delete reply"
@@ -467,19 +514,22 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                       <CommentForm
                         draftKey={`reply-edit:${comment.id}:${reply.id}`}
                         initialBody={reply.body}
-                        onSubmit={(body) => {
-                          editReply(comment.id, reply.id, body)
-                          setEditingReplyId(null)
+                        onSubmit={async (body) => {
+                          await editReply(comment.id, reply.id, body);
+                          setEditingReplyId(null);
                         }}
                         onCancel={() => setEditingReplyId(null)}
                       />
                     </div>
                   ) : (
-                    <Markdown content={reply.body} className="comment-node-body markdown-body" />
+                    <Markdown
+                      content={reply.body}
+                      className="comment-node-body markdown-body"
+                    />
                   )}
                 </div>
               </div>
-            )
+            );
           })}
         </div>
       )}
@@ -487,31 +537,32 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
       {/* Footer (Reply trigger and Resolve toggle) */}
       <div className="comment-canvas-footer">
         {!isReplying &&
-          ((comment.severity && comment.severity !== 'none') || comment.outdated) && (
-          <div className="comment-canvas-footer-meta">
-            {comment.severity && comment.severity !== 'none' && (
-              <SeverityBadge severity={comment.severity} />
-            )}
-            {comment.outdated && (
-              <span
-                className="comment-outdated-badge"
-                title="Anchored code no longer matches the current diff"
-              >
-                <AlertTriangle size={10} aria-hidden="true" />
-                outdated
-              </span>
-            )}
-          </div>
-        )}
+          ((comment.severity && comment.severity !== "none") ||
+            comment.outdated) && (
+            <div className="comment-canvas-footer-meta">
+              {comment.severity && comment.severity !== "none" && (
+                <SeverityBadge severity={comment.severity} />
+              )}
+              {comment.outdated && (
+                <span
+                  className="comment-outdated-badge"
+                  title="Anchored code no longer matches the current diff"
+                >
+                  <AlertTriangle size={10} aria-hidden="true" />
+                  outdated
+                </span>
+              )}
+            </div>
+          )}
 
         {!isReplying && (
           <div className="comment-canvas-footer-row">
             <button
               onClick={() => setIsReplying(true)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  setIsReplying(true)
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setIsReplying(true);
                 }
               }}
               className="comment-reply-trigger"
@@ -555,13 +606,13 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
           <div className="comment-reply-composer">
             <CommentForm
               draftKey={`reply:${comment.id}`}
-              onSubmit={(body) => {
-                addReply(comment.id, body)
-                setIsReplying(false)
+              onSubmit={async (body) => {
+                await addReply(comment.id, body);
+                setIsReplying(false);
               }}
               onCancel={() => {
-                setIsReplying(false)
-                firstActionBtnRef.current?.focus()
+                setIsReplying(false);
+                firstActionBtnRef.current?.focus();
               }}
             />
           </div>
@@ -570,10 +621,10 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
       <NoticeDialog
         open={suggestionError !== null}
         title="Could not apply suggestion"
-        description={suggestionError ?? 'The suggestion could not be applied.'}
+        description={suggestionError ?? "The suggestion could not be applied."}
         closeLabel="Return to review"
         onClose={() => setSuggestionError(null)}
       />
     </div>
-  )
+  );
 }

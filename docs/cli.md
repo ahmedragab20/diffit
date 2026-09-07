@@ -918,7 +918,7 @@ diffing gh threads [--unresolved] [--path P] [--author A]
   [--format xml|json] [--json]
 ```
 
-XML is the token-efficient default. Bodies are truncated unless `--full-body` is explicit; use the returned cursor in JSON mode to continue large result sets.
+XML is the token-efficient default. Bodies are truncated unless `--full-body` is explicit; use the returned cursor in JSON mode to continue large result sets. `--reply-cursor` / `--reply-limit` page replies inside each returned thread so a giant conversation cannot bypass the output budget.
 
 ### `gh reviews`
 
@@ -929,7 +929,7 @@ diffing gh reviews [--state STATE] [--cursor N] [--limit N]
   [--body-max N] [--full-body] [--format xml|json] [--json]
 ```
 
-This list is separate from inline threads so agents can fetch `CHANGES_REQUESTED` context without loading all conversations.
+This list is separate from inline threads so agents can fetch `CHANGES_REQUESTED` context without loading all conversations. `state=PENDING` lists unpublished reviews that can be resumed, submitted, or discarded with `diffing gh pending`.
 
 ### `gh pr-fetch`
 
@@ -1529,7 +1529,7 @@ declared explicitly.
 | Comment lifecycle | `edit_comment`, `delete_comment`, `edit_reply`, `delete_reply`, `apply_suggestion`, `resolve_all_comments` | Edit/delete threads and replies; apply ```suggestion fences; bulk-resolve |
 | Progress / history | `report_progress`, `get_review_history` | Live agent progress toast; multi-round handoff history |
 | Plan review | `submit_plan`, `await_plan_review`, `list_plans`, `get_plan`, `get_plan_versions`, `get_plan_version`, `reply_to_plan_comment`, `resolve_plan_comment` | Gate implementation on a versioned human-reviewed plan |
-| GitHub PR | `gh_overview`, `gh_list_threads`, `gh_list_reviews`, `gh_list_draft_comments`, `gh_create_draft_comment`, `gh_refresh`, `gh_submit_review` | Slim PR reads, local drafts, refresh, and explicitly authorized review publication |
+| GitHub PR | `gh_overview`, `gh_list_threads`, `gh_list_reviews`, `gh_list_draft_comments`, `gh_create_draft_comment`, `gh_refresh`, `gh_submit_review`, `gh_submit_pending_review`, `gh_discard_pending_review`, `gh_update_pr`, `gh_set_pr_state`, `gh_merge_pr` | Slim PR reads, local drafts, pending-review resume, refresh, and explicitly authorized publication / author actions |
 
 `start_review_session` accepts an optional array of safe git-diff scope,
 filtering, whitespace, context, and rename-detection arguments. Output files,
@@ -1562,6 +1562,8 @@ CLI mirrors for the expanded tool surface:
 | `report_progress` | `diffing progress --message "..."` |
 | `diff_*` (bounded) | `diffing inspect <summary\|files\|hunks\|slice\|search>` |
 | `gh_overview` / `gh_list_threads` / `gh_list_reviews` | `diffing gh overview` / `gh threads` / `gh reviews` |
+| `gh_submit_pending_review` / `gh_discard_pending_review` | `diffing gh pending submit\|discard\|resume` |
+| `gh_update_pr` / `gh_set_pr_state` / `gh_merge_pr` | `diffing gh pr-update` / `pr-close` / `pr-reopen` / `pr-merge` |
 | Plan tools | `diffing plan …` |
 
 ### MCP Prompts and Resource
@@ -2413,13 +2415,48 @@ embeds the patch or conversation bodies.
 
 Returns a page of published inline threads. Query parameters:
 `unresolvedOnly=true`, `path`, `author`, numeric `cursor` / `limit`,
-`bodyMaxChars`, `fullBody=true`, and `format=json|xml`. JSON includes
-`nextCursor`; XML emits `<pr-review-threads>` agent handoff data.
+`replyCursor` / `replyLimit` (default 20 replies per thread), `bodyMaxChars`,
+`fullBody=true`, and `format=json|xml`. JSON includes `nextCursor`,
+`repliesNextCursor`, `headSha`, and `syncedAt`. XML emits `<pr-review-threads>`
+agent handoff data. Reads are store-backed; call `POST /api/gh/pr/refresh` or
+`gh pr-fetch` for GitHub freshness.
 
 #### `GET /api/gh/reviews`
 
 Returns a page of submitted review events. Supports numeric `cursor` / `limit`,
 `state`, `bodyMaxChars`, `fullBody=true`, and `format=json|xml`.
+
+#### `GET /api/gh/timeline`
+
+Paged conversation timeline (description, issue comments, review notes, and
+selected events) from the session store.
+
+#### `POST /api/gh/reviews/:id/submit`
+
+Submit an existing PENDING review (`event`: `APPROVE` | `REQUEST_CHANGES` |
+`COMMENT`). Attaches local draft comments onto that review first unless
+`attachDrafts` is `false`.
+
+#### `POST /api/gh/reviews/:id/comments`
+
+Resume: attach current local draft comments onto PENDING review `:id`.
+
+#### `DELETE /api/gh/reviews/:id`
+
+Discard a PENDING review.
+
+#### `PATCH /api/gh/pr`
+
+Update PR `title` and/or `body`. `dryRun: true` validates without writing.
+
+#### `POST /api/gh/pr/close` / `POST /api/gh/pr/reopen` / `POST /api/gh/pr/merge`
+
+Author actions. Merge requires `expectedHeadSha` matching the reviewed head and
+refuses blocked/dirty/draft PRs (`409`). All accept `dryRun: true`.
+
+#### `POST /api/gh/existing-comments/:id/apply-suggestion`
+
+Commit a ```suggestion fence onto the PR head with an expected-head check.
 
 #### `GET /api/gh/session`
 

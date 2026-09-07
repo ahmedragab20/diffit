@@ -20,6 +20,8 @@ import { useDiffReviewKeymaps } from "./hooks/useDiffReviewKeymaps";
 import { useSearchSession } from "./hooks/useSearchSession";
 import { buildChangedLineKeys, buildDiffFileSet } from "./lib/diffIndex";
 import { countDiffChanges } from "./lib/diffStats";
+import { reconcileDiffFiles } from "./lib/reconcileDiffFiles";
+import { navigateToFile, cancelDiffNavigation } from "./lib/diffNavigation";
 import { SHIKI_THEME_MAP } from "./utils";
 import type { ReviewComment } from "../lib/types";
 import { useDiff } from "./hooks/useDiff";
@@ -579,21 +581,10 @@ export function App() {
 				return true;
 			});
 
-			// Optimize rendering by keeping exact object references for unchanged files
-			const cachedFiles = dedupedParsedFiles.map((newFile) => {
-				const prevFile = prevFilesRef.current.find((f) => f.name === newFile.name);
-				if (
-					prevFile &&
-					prevFile.type === newFile.type &&
-					prevFile.isPartial === newFile.isPartial &&
-					prevFile.deletionLines.length === newFile.deletionLines.length &&
-					prevFile.additionLines.length === newFile.additionLines.length &&
-					JSON.stringify(prevFile.hunks) === JSON.stringify(newFile.hunks)
-				) {
-					return prevFile;
-				}
-				return newFile;
-			});
+			const cachedFiles = reconcileDiffFiles(
+				prevFilesRef.current,
+				dedupedParsedFiles,
+			);
 
 			prevFilesRef.current = cachedFiles;
 			return cachedFiles;
@@ -696,7 +687,7 @@ export function App() {
 		(path: string) => {
 			fileSearch.open(path);
 		},
-		[fileSearch],
+		[fileSearch.open],
 	);
 
 	const searchNavContext = useMemo(
@@ -777,10 +768,7 @@ export function App() {
 	const handleFileClick = useCallback((filePath: string) => {
 		explicitActiveFileRef.current = Date.now();
 		setActiveFile(filePath);
-		const el = document.getElementById(`file-${filePath}`);
-		if (el) {
-			el.scrollIntoView({ block: "start" });
-		}
+		navigateToFile(filePath);
 	}, []);
 
 	const handleApplyExtensions = useCallback((extensions: string[]) => {
@@ -1039,10 +1027,7 @@ export function App() {
 			if (!nextFile) return;
 			explicitActiveFileRef.current = Date.now();
 			setActiveFile(nextFile);
-			const el = document.getElementById(`file-${nextFile}`);
-			if (el) {
-				el.scrollIntoView({ block: "start" });
-			}
+			navigateToFile(nextFile);
 		},
 		[sortedFiles, activeFile, setActiveFile],
 	);
@@ -1064,14 +1049,9 @@ export function App() {
 		if (!isCurrentlyViewed) scrollToNextFile(activeFile);
 	}, [activeFile, viewedFiles, setViewed, scrollToNextFile]);
 
-	const handleCardToggleCollapse = useCallback(
-		(filePath: string, willCollapse: boolean) => {
-			if (willCollapse) {
-				explicitActiveFileRef.current = Date.now();
-				scrollToNextFile(filePath);
-			}
-		},
-		[scrollToNextFile],
+	useEffect(
+		() => cancelDiffNavigation,
+		[settings.staged, settings.untracked, commitWalkIndex],
 	);
 
 	const toggleDiffStyle = useCallback(() => {
@@ -1624,7 +1604,6 @@ export function App() {
 								onAddComment={addComment}
 								onDeleteComment={removeComment}
 								onAddSelectionToAsk={addSelectionToAsk}
-								onCardToggleCollapse={handleCardToggleCollapse}
 								canEdit={canEditScope}
 								editSessions={editSessions}
 								onRequestEdit={enterEdit}

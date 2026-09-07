@@ -12,7 +12,7 @@ const MockEditor = vi.hoisted(() =>
   },
 )
 
-vi.mock('../lib/editModule', () => ({
+vi.mock('../../lib/editModule', () => ({
   ensureEditModuleLoaded: vi.fn(async () => {}),
   getEditorClass: () => MockEditor,
 }))
@@ -150,35 +150,21 @@ describe('useEditSessions', () => {
     expect(result.current.sessions.get('a/b.ts')?.dirty).toBe(false)
   })
 
-  it('handleEditChange bumps annotationsVersion only for NEW annotation references', async () => {
+  it('observes the latest remapped annotations without a version bump', async () => {
     mockApi({ content: 'const x = 1', hash: 'h1' })
     const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(false) })
     await act(async () => {
       await result.current.enterEdit('a/b.ts')
     })
 
-    const A = [{ side: 'additions', lineNumber: 10, metadata: reviewComment }]
+    const first = [{ side: 'additions', lineNumber: 10, metadata: reviewComment }]
+    const latest = [{ side: 'additions', lineNumber: 11, metadata: reviewComment }]
+    act(() => {
+      result.current.handleEditChange('a/b.ts', { contents: 'aaa' } as any, first as any)
+      result.current.handleEditChange('a/b.ts', { contents: 'aab' } as any, latest as any)
+    })
+    expect(result.current.sessions.get('a/b.ts')?.annotations).toEqual(latest)
     expect(result.current.sessions.get('a/b.ts')?.annotationsVersion).toBe(0)
-
-    act(() => {
-      result.current.handleEditChange('a/b.ts', { contents: 'aaa' } as any, A as any)
-    })
-    expect(result.current.sessions.get('a/b.ts')?.annotationsVersion).toBe(1)
-    expect(result.current.sessions.get('a/b.ts')?.annotations).toEqual(A)
-
-    // Same reference → no bump.
-    act(() => {
-      result.current.handleEditChange('a/b.ts', { contents: 'aab' } as any, A as any)
-    })
-    expect(result.current.sessions.get('a/b.ts')?.annotationsVersion).toBe(1)
-
-    // New reference → bump.
-    const B = [{ side: 'additions', lineNumber: 11, metadata: reviewComment }]
-    act(() => {
-      result.current.handleEditChange('a/b.ts', { contents: 'aac' } as any, B as any)
-    })
-    expect(result.current.sessions.get('a/b.ts')?.annotationsVersion).toBe(2)
-    expect(result.current.sessions.get('a/b.ts')?.annotations).toEqual(B)
   })
 
   it('saveEdit POSTs draft + baseHash + published anchors only (ReviewComment metadata, positive lines)', async () => {
@@ -269,6 +255,32 @@ describe('useEditSessions', () => {
     expect(session?.baseHash).toBe('saved123')
     expect(session?.saving).toBe(false)
     expect(session?.error).toBe(null)
+  })
+
+  it('typing while save is pending preserves the later draft as dirty', async () => {
+    let resolveSave!: () => void
+    const saveDone = new Promise<void>((resolve) => { resolveSave = resolve })
+    mockApi({
+      content: 'seed',
+      hash: 'base-hash',
+      saveResponse: async () => {
+        await saveDone
+        return { ok: true, json: () => Promise.resolve({ ok: true, hash: 'saved123' }) }
+      },
+    })
+    const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(false) })
+    await act(async () => { await result.current.enterEdit('a/b.ts') })
+    act(() => { result.current.handleEditChange('a/b.ts', { contents: 'sent snapshot' } as any) })
+    let save!: Promise<void>
+    act(() => { save = result.current.saveEdit('a/b.ts') })
+    await waitFor(() => expect(result.current.sessions.get('a/b.ts')?.saving).toBe(true))
+    act(() => { result.current.handleEditChange('a/b.ts', { contents: 'typed while saving' } as any) })
+    resolveSave()
+    await act(async () => { await save })
+    const session = result.current.sessions.get('a/b.ts')
+    expect(session?.seedContent).toBe('sent snapshot')
+    expect(session?.draft).toBe('typed while saving')
+    expect(session?.dirty).toBe(true)
   })
 
   it('discardEdit restores seed, clears dirty, bumps sessionKey, nulls annotations', async () => {
