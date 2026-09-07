@@ -1,3 +1,15 @@
+## 0.20.0
+
+### Minor Changes
+
+- 0fbb3dd: Update review toolbar and skill docs
+- cd4c101: Contain untracked reads honestly (#9)
+- fe55635: Prevent server imports from crashing browser startup
+- 0a062c6: Harden file access and review boundaries
+- 04aefa8: Merge main into PR review stability fixes
+- 969507f: Stabilize diff focus, navigation, and comments
+- 6ce4370: Harden PR sessions and add conversation inbox (#7)
+
 ## 0.19.6
 
 ### Patch Changes
