@@ -1,8 +1,10 @@
-import { useState } from "react";
-import { AlignLeft, GitMerge, Pencil, XCircle } from "lucide-react";
+import { useRef, useState } from "react";
+import { ChevronDown, GitMerge, Pencil, XCircle } from "lucide-react";
 import type { PrSession } from "../../lib/pr-session";
 import { mergeBlockedReason } from "../../lib/pr-timeline";
 import { ConfirmDialog } from "../primitives/ConfirmDialog";
+import { Popover } from "../primitives/Popover";
+import { PrDetailsEditor } from "./PrDetailsEditor";
 
 export function PrAuthorActions({
   session,
@@ -13,218 +15,126 @@ export function PrAuthorActions({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [confirm, setConfirm] = useState<"close" | "reopen" | "merge" | null>(null);
-  const [editing, setEditing] = useState<null | "title" | "body">(null);
-  const [title, setTitle] = useState(session.title);
-  const [body, setBody] = useState(session.body ?? "");
+  const [confirm, setConfirm] = useState<"close" | "reopen" | "merge" | null>(
+    null,
+  );
+  const [editing, setEditing] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const editRef = useRef<HTMLButtonElement>(null);
   const blocked = mergeBlockedReason(session);
-
-  const run = async (action: () => Promise<void>) => {
+  const run = async () => {
+    if (busy || !confirm) return;
     setBusy(true);
     setError(null);
     try {
-      await action();
+      const res = await fetch(`/api/gh/pr/${confirm}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          confirm === "merge"
+            ? { method: "merge", expectedHeadSha: session.headSha }
+            : {},
+        ),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
       onChanged?.();
+      setConfirm(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "GitHub update failed");
     } finally {
       setBusy(false);
-      setConfirm(null);
     }
   };
-
-  const post = async (path: string, body: unknown) => {
-    const res = await fetch(path, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    const data = (await res.json()) as { error?: string };
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  const choose = (action: "close" | "reopen" | "merge") => {
+    setActionsOpen(false);
+    setError(null);
+    setConfirm(action);
   };
-
-  const patchPr = async (fields: { title?: string; body?: string }) => {
-    const res = await fetch("/api/gh/pr", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(fields),
-    });
-    const data = (await res.json()) as { error?: string };
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    setEditing(null);
-  };
-
-  const saveTitle = async () => {
-    const next = title.trim();
-    if (!next || next === session.title) {
-      setEditing(null);
-      return;
-    }
-    await run(() => patchPr({ title: next }));
-  };
-
-  const saveBody = async () => {
-    if (body === (session.body ?? "")) {
-      setEditing(null);
-      return;
-    }
-    await run(() => patchPr({ body }));
-  };
-
   if (session.state === "merged") return null;
-
   return (
     <div className="pr-author-actions">
-      {editing === "title" ? (
-        <form
-          className="pr-author-title-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void saveTitle();
-          }}
-        >
-          <input
-            value={title}
-            onChange={(event) => setTitle(event.target.value)}
-            aria-label="Pull request title"
-            disabled={busy}
-          />
-          <button type="submit" className="btn btn-sm btn-primary" disabled={busy}>
-            Save
-          </button>
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={busy}
-            onClick={() => {
-              setTitle(session.title);
-              setEditing(null);
-            }}
-          >
-            Cancel
-          </button>
-        </form>
-      ) : (
-        <button
-          type="button"
-          className="btn btn-sm"
-          title="Edit title on GitHub"
-          onClick={() => setEditing("title")}
-        >
-          <Pencil size={12} /> <span className="btn-label">Title</span>
-        </button>
-      )}
-      {editing === "body" ? (
-        <form
-          className="pr-author-title-form is-body"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void saveBody();
-          }}
-        >
-          <textarea
-            value={body}
-            onChange={(event) => setBody(event.target.value)}
-            aria-label="Pull request description"
-            disabled={busy}
-            rows={4}
-          />
-          <button type="submit" className="btn btn-sm btn-primary" disabled={busy}>
-            Save
-          </button>
-          <button
-            type="button"
-            className="btn btn-sm"
-            disabled={busy}
-            onClick={() => {
-              setBody(session.body ?? "");
-              setEditing(null);
-            }}
-          >
-            Cancel
-          </button>
-        </form>
-      ) : (
-        <button
-          type="button"
-          className="btn btn-sm"
-          title="Edit description on GitHub"
-          onClick={() => setEditing("body")}
-        >
-          <AlignLeft size={12} /> <span className="btn-label">Description</span>
-        </button>
-      )}
-      {session.state === "closed" ? (
-        <button
-          type="button"
-          className="btn btn-sm"
-          disabled={busy}
-          onClick={() => setConfirm("reopen")}
-        >
-          Reopen
-        </button>
-      ) : (
-        <button
-          type="button"
-          className="btn btn-sm"
-          disabled={busy}
-          onClick={() => setConfirm("close")}
-        >
-          <XCircle size={12} /> <span className="btn-label">Close</span>
-        </button>
-      )}
       <button
+        ref={editRef}
         type="button"
-        className="btn btn-sm btn-primary"
-        disabled={busy || Boolean(blocked)}
-        title={blocked ?? "Merge this pull request on GitHub"}
-        onClick={() => setConfirm("merge")}
+        className="btn btn-sm"
+        onClick={() => setEditing(true)}
       >
-        <GitMerge size={12} /> <span className="btn-label">Merge</span>
+        <Pencil size={12} /> Edit details
       </button>
-      {error && (
-        <span className="pr-author-actions-error" role="alert">
-          {error}
-        </span>
+      <Popover
+        open={actionsOpen}
+        onOpenChange={setActionsOpen}
+        ariaLabel="PR actions"
+        className="pr-actions-popover"
+        trigger={
+          <button type="button" className="btn btn-sm">
+            PR actions <ChevronDown size={12} />
+          </button>
+        }
+      >
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={busy || Boolean(blocked)}
+          title={blocked ?? "Merge this pull request on GitHub"}
+          onClick={() => choose("merge")}
+        >
+          <GitMerge size={12} /> Merge pull request
+        </button>
+        {blocked && <p className="pr-actions-hint">{blocked}</p>}
+        <button
+          type="button"
+          className="btn btn-sm"
+          disabled={busy}
+          onClick={() =>
+            choose(session.state === "closed" ? "reopen" : "close")
+          }
+        >
+          <XCircle size={12} />{" "}
+          {session.state === "closed"
+            ? "Reopen pull request"
+            : "Close pull request"}
+        </button>
+      </Popover>
+      {editing && (
+        <PrDetailsEditor
+          session={session}
+          onChanged={onChanged}
+          onClose={() => {
+            setEditing(false);
+            editRef.current?.focus();
+          }}
+        />
       )}
       <ConfirmDialog
-        open={confirm === "close"}
-        title="Close pull request?"
-        description="This closes the pull request on GitHub. You can reopen it later."
-        confirmLabel="Close pull request"
-        variant="danger"
-        busy={busy}
-        onConfirm={() => void run(() => post("/api/gh/pr/close", {}))}
-        onCancel={() => setConfirm(null)}
-      />
-      <ConfirmDialog
-        open={confirm === "reopen"}
-        title="Reopen pull request?"
-        description="This reopens the pull request on GitHub."
-        confirmLabel="Reopen"
-        variant="primary"
-        busy={busy}
-        onConfirm={() => void run(() => post("/api/gh/pr/reopen", {}))}
-        onCancel={() => setConfirm(null)}
-      />
-      <ConfirmDialog
-        open={confirm === "merge"}
-        title="Merge pull request?"
+        open={confirm !== null}
+        title={
+          confirm === "merge"
+            ? "Merge pull request?"
+            : confirm === "reopen"
+              ? "Reopen pull request?"
+              : "Close pull request?"
+        }
         description={
-          blocked ??
-          `Merges ${session.headRefName ?? "the head branch"} into ${session.baseRefName ?? "the base"} at ${session.headSha.slice(0, 7)}. This cannot be undone from diffing.`
+          confirm === "merge"
+            ? (blocked ??
+              `Merges ${session.headRefName ?? "the head branch"} into ${session.baseRefName ?? "the base"} at ${session.headSha.slice(0, 7)}. This cannot be undone from diffing.`)
+            : confirm === "reopen"
+              ? "This reopens the pull request on GitHub."
+              : "This closes the pull request on GitHub. You can reopen it later."
         }
-        confirmLabel="Merge"
-        variant="danger"
+        confirmLabel={
+          confirm === "merge"
+            ? "Merge"
+            : confirm === "reopen"
+              ? "Reopen"
+              : "Close pull request"
+        }
+        variant={confirm === "reopen" ? "primary" : "danger"}
         busy={busy}
-        onConfirm={() =>
-          void run(() =>
-            post("/api/gh/pr/merge", {
-              method: "merge",
-              expectedHeadSha: session.headSha,
-            }),
-          )
-        }
+        error={error}
+        onConfirm={run}
         onCancel={() => setConfirm(null)}
       />
     </div>

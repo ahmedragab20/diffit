@@ -770,9 +770,6 @@ export function PrReviewApp() {
           onDeleteComment={removeComment}
           onSubmitted={setSubmissionToast}
           onOpenAiAssistant={() => setAiRailOpen(true)}
-          onAuthorChanged={() =>
-            queryClient.invalidateQueries({ queryKey: ["pr-session"] })
-          }
         />
 
         {!sidebarCollapsed && (
@@ -848,6 +845,11 @@ export function PrReviewApp() {
               // SAFETY: GET /api/gh/session returns the UI subset of PrSession; banner only reads those fields.
               session={session as unknown as PrSession}
               draftCount={comments.length}
+              onAuthorChanged={() => {
+                void queryClient.invalidateQueries({
+                  queryKey: ["pr-session"],
+                });
+              }}
             />
             <PrReviewActivity
               reviews={session.existingReviews ?? []}

@@ -14,3 +14,4 @@ site/node_modules
 *.swp
 .idea/
 .vscode/
+/worktrees/

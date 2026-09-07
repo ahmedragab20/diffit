@@ -1,113 +1,105 @@
 ---
 name: diffing-mockup-review
-description: Submit an HTML mockup to diffing for visual review and obey the verdict before implementing UI. Use when an agent already has mockup HTML and needs submit_mockup / await_mockup_review / inspect_mockup / revise_mockup. Author the HTML with diffing-mockup-author first.
+description: Submit HTML screens to diffing, inspect human feedback, and make version-guarded mockup revisions. Use after authoring a requested mockup, to process visual review comments or receive an approved implementation handoff.
 ---
 
-# Review an HTML mockup with diffing
+# Review an HTML mockup
 
-Same loop as plan review: submit HTML screens, park, act on the verdict. Do not implement the UI until the mockup is approved. Create or revise the HTML with `diffing-mockup-author` first — this skill is the submit / inspect / patch loop only.
+## Use this when
 
-## Human AI in the UI is not this loop
+HTML is ready for visual review, or the human returned feedback. Follow [Mockup authoring](../diffing-mockup-author/SKILL.md) for product styles and state structure; this skill handles the review loop.
 
-The mockup review UI has Ask AI, comment chips, Generate this screen, Rewrite region, and Attach preview. Those run **only when the human clicks them**. Agents do not start inference. `--model` on submit/reply is provenance. Keep parking after submit; do not treat the UI rail as an agent tool.
+## Before you start
 
-## Never write mockups into the consumer repo
+Select the correct consumer's local web session. Keep HTML inline/stdin or under `~/.diffing/`, never in the consumer tree. Use stable screen IDs, at most 24 screens, and one distinct state per screen. Viewport changes alone do not need duplicate screens.
 
-**Do not create or save mockup HTML (or a mockups/ folder) in the user's project.** Diffing stores screens itself under `~/.diffing/<repo>-<hash>/mockups.json` and `mockup-sources/<id>/`.
+## Recipe
 
-Prefer MCP inline HTML. If you must use a file, write only under `~/.diffing/<repo>-<hash>/mockup-sources/` and submit that path — never a path inside the git tree.
+### 1. Submit and park
 
-## Hard rule: one state per screen
-
-**Never build tabs, accordions, toggle switches, modals, dropdowns, or any JS that swaps content inside a mockup screen.** Each distinct state, variant, or case (loading/empty/error, open/closed, selected/unselected, each tab's content, each responsive breakpoint) must be its own `screens[]` entry with a stable `id` and a clear `label`.
-
-This keeps comments tab-aware: every comment anchors to one screen + element, and it vanishes cleanly when that element is gone instead of drifting across toggled states.
-
-**Split efficiently:** submit all states at once via `submit_mockup({ screens: [...] })` (one version bump), or add states incrementally with `revise_mockup op=upsert` per screen. Diffing flags in-page state UI (tabs/accordion/modal/dropdown/toggle) in the submit response — split any flagged screen.
-
-## Submit
-
-Prefer MCP when `mode: web`:
-
+```js
+submit_mockup({ title: 'Import empty state', html: emptyHtml, mode: 'fragment' })
 ```
-submit_mockup({ title, html })                    # one Main screen
-submit_mockup({ title, screens: [{ id, html }] }) # multi-screen
-submit_mockup({ mockupId, html })                 # resubmit / bump version
-```
-
-CLI (from the **consumer** workspace, body on stdin):
 
 ```bash
-printf '%s' "$html" | diffing mockup submit - --title "Checkout" --model "…"
+printf '%s' "$HTML" | diffing mockup submit - --title 'Import empty state' --mode fragment
 ```
 
-A directory of `*.html` is only valid if it already lives under `~/.diffing/…/mockup-sources/` (`index.html` first).
+For several states use `screens:[{id,label,html}, ...]` in one MCP submission. For a full replacement, reuse `mockupId` (CLI `--id`); do not create a second conversation. `--screen id=path` can submit existing staged files, but those paths must be outside the consumer tree.
 
-**Async default:** print/share `/mockup/<id>` and park. Do not `--wait` unless asked.
+Use the returned ID/version/URL and inspect advisory `hints`. Share the URL and end the turn. `model`/`--model` records provenance; submission does not invoke AI.
 
-## Await
+### 2. Receive a verdict
 
-When the human says ready (or for a sync wait):
+When ready or explicitly asked to wait:
+
+```js
+await_mockup_review({ timeoutSeconds: 60 })
+```
 
 ```bash
-diffing mockup await
-# or MCP await_mockup_review
+diffing mockup await --timeout 60
 ```
 
-Read `<mockup-review decision="…">` — **compact, open-only**: open comments on the current version only, each with `screen="<id>"`, `mockup-version="<n>"`, `viewport="desktop|tablet|mobile"` (comment scope = version + screen + viewport), plus anchor fields.
+Validate the released artifact ID and version: waits are session-global. MCP takes `timeoutSeconds`; only HTTP uses `sinceRound`/`timeoutMs`. Handoff XML is compact and open-only for the current version, with `screen`, `mockup-version`, and `viewport` scope.
 
-| Decision | Action |
-| ---------- | -------- |
-| `approved` | Implement the mockup |
-| `changes-requested` | Revise HTML, reply/resolve threads, resubmit same id, park again |
-| `rejected` | Stop; do not implement |
-| `comment-only` | Reply only; do not edit product files |
+`approved` permits implementation of the reviewed mockup. `changes-requested` calls for a revision. `rejected` stops that approach. `comment-only` permits replies only, not markup/product edits. Timeout/pending means park. Never submit the human decision endpoint yourself.
 
-Comments: `kind="section"` + `target=` → `data-diffing` region; `kind="block"` + `selector=` (+ `fingerprint=`) → element; `kind="point"` + `x`/`y` → pin. `x`/`y`/`rect` are viewport-relative — pull the real markup via inspect instead.
+### 3. Inspect only the needed source
 
-## Efficient recipe (changes-requested)
+If the handoff already includes actionable comments, use them directly. For a targeted refresh:
 
-1. **Inspect open comments** — compact, filterable by scope:
-
-   ```bash
-   diffing mockup inspect comments <id> --status open
-   # or MCP inspect_mockup({ mockupId, view: 'comments', status: 'open' })
-   # also: inspect preview — rendered preview metadata, no full HTML
-   ```
-
-   `context=none|anchor|source` (default `anchor`); `--version N` / `--viewport V` / `--screen S` filter the scope.
-2. **Inspect one screen's source** (bounded, no full-mockup dump):
-
-   ```bash
-   diffing mockup inspect screen <id> --screen main --context source
-   # or MCP inspect_mockup({ mockupId, view: 'screen', screenId: 'main', context: 'source' })
-   ```
-
-3. **Patch one screen** — version-bumping, `--expected-version` guarded (409 on conflict, nothing applied). Prefer `replace-region` when the comment has a `data-diffing` target; fall back to exact-text `patch`:
-
-   ```bash
-   diffing mockup screen replace-region <id> main --region hero --replacement '<h1>New</h1>' --expected-version 3
-   # or MCP revise_mockup({ mockupId, op: 'replace-region', screenId, region: 'hero', replacement, expectedVersion })
-   diffing mockup screen patch <id> main --text '<h1>Old</h1>' --replacement '<h1>New</h1>' --expected-version 3
-   # also: screen upsert|remove — multi-screen changes → resubmit with same mockupId
-   ```
-
-4. **Batch reply + resolve** — one atomic call, all-or-nothing, never bumps the version:
-
-   ```bash
-   diffing mockup threads reply <c1> --body "fixed — resubmitted" --model "…"
-   diffing mockup threads resolve <c1>
-   # or MCP update_mockup_threads({ mockupId, operations: [{ op: 'reply', commentId, body }, { op: 'resolve', commentId }] })
-   # threads also: edit [<reply-id>] / delete [<reply-id>] / unresolve
-   ```
-
-## Other
+```js
+inspect_mockup({ mockupId: 'MOCKUP_ID', view: 'comments', status: 'open', cursor: 0, limit: 20 })
+inspect_mockup({ mockupId: 'MOCKUP_ID', view: 'screen', screenId: 'imports-empty', context: 'source' })
+```
 
 ```bash
-diffing mockup list [--json]
-diffing mockup show [<id>] [--json] [--version N]
-diffing mockup versions <id>
-diffing mockup handoff [<id>]   # after approved: tokens + screen intent (MCP get_mockup_handoff)
+diffing mockup inspect comments MOCKUP_ID --status open --limit 20
+diffing mockup inspect screen MOCKUP_ID --screen imports-empty --context source
 ```
 
-Agents MAY tag regions with `data-diffing="hero"`. Humans can still click untagged blocks and drop pins.
+Page `nextCursor`. Narrow by `version`, `screenId`/`--screen`, and `viewport`. `context` is `none`, `anchor` or `source`; source/preview output may be bounded. `view:'preview'` reads available layout/screenshot metadata without starting AI. Fetch one historical/current full record only if bounded source is insufficient.
+
+Section comments use a `data-diffing` target, block comments a selector/fingerprint/source, and point comments coordinates. Read source before changing markup; a pin alone is not enough context.
+
+### 4. Revise once, guarded by version
+
+```js
+revise_mockup({
+  mockupId: 'MOCKUP_ID', screenId: 'imports-empty', op: 'replace-region',
+  region: 'imports-empty', replacement: '<h2>No imports yet</h2><p>Choose a file to start.</p>',
+  expectedVersion: 3,
+})
+```
+
+```bash
+diffing mockup screen replace-region MOCKUP_ID imports-empty --region imports-empty --replacement '<h2>No imports yet</h2><p>Choose a file to start.</p>' --expected-version 3
+```
+
+`op:'patch'` uses `expectedText` plus `replacement` in MCP/HTTP; CLI uses `--text`/`--replacement`. `upsert` adds/replaces one screen; `remove` cannot remove the last screen. Every successful screen operation already creates the next version. Do not submit again afterward. A 409 requires rereading the current version/target and reconciling the change.
+
+`apply_mockup_suggestion({commentId:'COMMENT_ID',expectedVersion:3})` / `diffing mockup apply-suggestion COMMENT_ID --expected-version 3` applies the suggestion but **does not resolve** the thread. Check the revised result first.
+
+### 5. Synchronize feedback
+
+After verifying the revision:
+
+```js
+update_mockup_threads({ mockupId: 'MOCKUP_ID', operations: [
+  { op: 'reply', commentId: 'COMMENT_ID', body: 'Updated the empty-state instructions.', role: 'agent' },
+  { op: 'resolve', commentId: 'COMMENT_ID' },
+] })
+```
+
+The batch validates all operations before applying any and does not bump the version. CLI `mockup threads reply` followed by `resolve` is two separate calls, **not atomic**. Questions stay open. Individual `reply_to_mockup_comment`, `resolve_mockup_comment` and `unresolve_mockup_comment` are available for one-off updates.
+
+## Recovery
+
+On conflict, verify scope/version and exact region/text; do not replay stale patches. On timeout, park. Never delete threads to clear feedback or invoke the human Ask AI UI as an agent inference loop. See [Recovery and safety](../diffing/references/recovery-and-safety.md).
+
+## Done
+
+Share the current URL and verdict, with unanswered questions left open. After approval use `get_mockup_handoff({mockupId:'MOCKUP_ID'})` or `diffing mockup handoff MOCKUP_ID` for compact tokens/screen intent before implementation.
+
+[Sessions and transports](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md)

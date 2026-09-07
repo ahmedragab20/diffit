@@ -1,49 +1,77 @@
 ---
 name: diffing-mockup-author
-description: Author HTML mockup screens that look like the product before submit_mockup. Use when creating or revising mockup HTML, splitting states into screens, tagging data-diffing regions, or avoiding generic AI chrome.
+description: Author product-grounded HTML mockup screens for diffing visual review. Use only when a mockup is requested or accepted, before submit_mockup, or when revising screen states and stable data-diffing regions from human feedback.
 ---
 
 # Author a reviewable mockup
 
-Write the HTML. Then use `diffing-mockup-review` to submit, await, inspect, and patch. Do not implement product UI until the mockup is approved.
+## Use this when
 
-## Hard rules (pi harness)
+The human requested or accepted an HTML mockup. Do not generate one merely because a UI change is large. Authoring is separate from [submission and review](../diffing-mockup-review/SKILL.md); implementation waits for approval.
 
-- **Lead only.** The lead writes and revises every mockup. Never spawn a worker/subagent to generate or check HTML.
-- **Opt-in only.** Write a mockup only if the user asked for one or accepted a suggestion. Do not author HTML because a UI change looks large — mockups drain tokens.
+## Before you start
 
-## Never write mockups into the consumer repo
+Select a local web session for the consumer. Keep all mockup HTML out of the consumer source tree: submit inline or on stdin. If staging is unavoidable, use `~/.diffing/…/mockup-sources/`.
 
-Prefer MCP `submit_mockup({ html })` or stdin. If you must stage a file, use only `~/.diffing/<repo>-<hash>/mockup-sources/`.
+Read the design system:
 
-## Before any HTML
+```js
+get_design_system({})
+```
 
-1. Call `get_design_system` / `diffing design show`. If a published system is present, use its tokens, fonts, and snippets. Do **not** invent a palette. If none exists, `extract_design_system` writes a draft — do not publish unless the human asks.
-2. If there is no system, match the running product (existing CSS, a screenshot, or a prior approved mockup). Still do not invent Inter + indigo + Tailwind CDN.
-3. List every distinct state as its own screen id **before** writing markup.
+```bash
+diffing design show
+```
 
-## One state per screen
+Use published tokens, fonts, guidelines and component patterns. A returned system may be a draft: do not assume it is published. If absent, inspect real product styles/screens; optional `extract_design_system({})` / `diffing design extract` creates a draft, not a published system. Propose changes with `propose_design_system`; publish only on explicit human request.
 
-Never put tabs, accordions, toggles, modals, dropdowns, or JS that swaps content inside one screen. Each variant is a `screens[]` entry with a stable `id` and a clear `label`.
+## Recipe
 
-Examples of separate screens: `checkout`, `checkout-empty`, `checkout-error`, `modal-closed`, `modal-open`. Only add `*-mobile` when the layout actually changes — viewports are a review control, not extra screens.
+### 1. Define the screen set
 
-Submit every state in one `submit_mockup({ screens: [...] })` when you can. Cap is 24 screens.
+List stable screen IDs before writing markup. Each distinct state is a screen: `imports-empty`, `imports-loaded`, `imports-error`, `dialog-open`. Maximum **24 screens** per mockup.
 
-## How to write the HTML
+Do not hide reviewable states behind JS tabs, accordions, dropdowns or toggles. Depict the open/closed/selected states in separate screens. A static rendering of controls is fine; state-swapping behavior is not needed. Viewport controls already cover desktop/tablet/mobile: add responsive screens only when composition/state genuinely differs.
 
-- Tag major regions: `data-diffing="hero"`, `data-diffing="toolbar"`, `data-diffing="empty"`. Humans can still click untagged blocks.
-- Use real product copy and realistic numbers. No lorem, no "John Doe", no purple gradients, no Inter + indigo, no `cdn.tailwindcss.com`, no Google Fonts.
-- Prefer a fragment (body contents). The design-system host shell wraps fragments by default (`mode: "fragment"`). Opt out with `mode: "document"` / `--mode document` — full HTML, no wrap.
-- Give stable `id` or `data-diffing` names so comments survive revisions.
+### 2. Match the product
 
-## After submit
+- Use realistic copy and data; no filler names or invented brand palette.
+- Prefer existing CSS/tokens, not Tailwind/Google Fonts CDNs or generic Inter-and-indigo styling.
+- Tag major regions with stable `data-diffing` values so comments can target future revisions.
+- Prefer body fragments with `mode:'fragment'` when using the published host design shell. Use `mode:'document'` for a self-contained document; do not assume a missing/draft design system will provide styles.
 
-Diffing returns soft `hints[]` (non-blocking):
+Minimal screen shape, with styling to be drawn from the actual product:
 
-- **state** — in-page tabs/modals/toggles. Split that screen.
-- **style** — CDN Tailwind, Google Fonts, Inter+indigo. Restyle to match the product.
+```html
+<section data-diffing="imports-empty">
+  <h2>No imports yet</h2>
+  <p>Choose a file to preview its rows before importing.</p>
+  <button type="button">Choose file</button>
+</section>
+```
 
-Fix hints before parking. Prefer `revise_mockup op=replace-region` (`region` + `replacement`) for a tagged block; use `op=patch` only for an exact string.
+### 3. Submit all states together
 
-Then park with the `/mockup/<id>` URL. Do not `--wait` unless asked.
+```js
+submit_mockup({
+  title: 'Import states', mode: 'fragment',
+  screens: [
+    { id: 'imports-empty', label: 'Empty', html: emptyHtml },
+    { id: 'imports-loaded', label: 'Loaded', html: loadedHtml },
+  ],
+})
+```
+
+Use `designSystem:'SYSTEM_ID'` only for the intended system; optional `planId` links the plan. `emptyHtml`/`loadedHtml` are the authored source, not filenames. Multi-screen submission creates one version, rather than one version per added screen.
+
+Read returned `hints`: state hints flag hidden interactive states; style hints flag generic/external styling. Inspect each warning and correct applicable issues with a guarded screen revision. Hints are advisory, not a substitute for reviewing the markup.
+
+## Recovery
+
+Use [mockup review](../diffing-mockup-review/SKILL.md) for `inspect_mockup` and `revise_mockup` with `expectedVersion`. A successful revision already bumps the version; do not resubmit it again. `comment-only` permits discussion, not markup/product edits. The UI's Ask AI is human-triggered; do not start inference to complete this workflow.
+
+## Done
+
+The state set is reviewable, product-grounded and submitted with stable anchors. Share its returned URL and park for human approval; do not implement the product UI yet.
+
+[Sessions and transports](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md) · [Recovery and safety](../diffing/references/recovery-and-safety.md)

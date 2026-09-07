@@ -1,48 +1,64 @@
 ---
 name: diffing-start-review
-description: Start or reopen a diffing UI for local changes or a GitHub pull request and hand it to the human. Use when the user asks to open diffing, inspect changes in the review UI, start a review, or send work for human review.
+description: Start or reopen a diffing UI for local changes or a GitHub pull request and hand it to the human. Use when the user asks to open diffing, start a review, or send changes for human review without reviewing or editing them yourself.
 ---
 
-# Start a diffing review
+# Start a review
 
-Start the local review UI for the repository in scope and make its URL available to the human. Do not review or edit the changes unless the user also asks for that work.
+## Use this when
 
-## Choose the available integration
+Open the requested review and hand it to the human. Do not create findings, edit files or publish a GitHub review unless separately asked.
 
-1. If MCP tools are available, call **`review_session_status`** first. Verify the repository, mode, and `diffArgs`. If they do not match, inspect `diffing sessions --json`: select an existing match with `diffing sessions use <id>`, then reconnect MCP so the new connection discovers it. For `gh-pr`, confirm identity with `gh_overview`; do not use the full `/api/gh/session` payload merely for status. An active TUI is the human's terminal UI, not a browser URL; never expose its capability-bearing agent API URL.
-2. Call **`start_review_session`** only to start or pin a matching local web session. It is idempotent, accepts structured `diffArgs`, and never launches, stops, or replaces TUI/PR sessions. If the desired web scope has no session and an incompatible session is active, start `diffing --web --no-open [scope…]` through the CLI; it safely coexists and becomes active, after which a fresh MCP connection can attach.
-3. If a shell is the available integration, first reuse a matching entry from `diffing sessions --json`; otherwise start the requested mode as a **persistent** process from the repository: `diffing --web --no-open [scope…]` for local review, or `diffing --no-open --gh-pr <ref>` for a PR. Every new launch coexists and becomes active. Use `diffing sessions open <id> --no-open` to select and print a specific web/PR URL. A foreground command that dies when the tool call ends is not sufficient; the interactive TUI belongs in the human's terminal, not an agent background process.
-4. If neither MCP nor a persistent shell is available, explain that the host must start `diffing` in the repository.
+## Before you start
 
-Never guess a repository. Bind MCP with `diffing mcp --repo <absolute-path>` when the harness does not launch it from the workspace.
+Identify the consumer repository and requested scope. Call `review_session_status({})` when MCP is available. If several sessions exist, `diffing sessions --json` lists safe summaries; reuse only a matching mode/scope. PR identity needs `gh_overview({})`, not just an active-session flag.
 
-Optional health check: `diffing doctor`.
+MCP `start_review_session` starts/reuses only a local web session. It does not start TUI or PR mode. See [Sessions and transports](../diffing/references/sessions-and-transports.md) for persistence, binding and selection.
 
-## Review scope
+## Recipe
 
-| Scope | How |
-|-------|-----|
-| Working tree (default) | no extra args |
-| Staged | `--staged` |
-| Recent commits | e.g. `HEAD~3` |
-| Branch comparison | e.g. `main..HEAD` |
-| Path filter | paths after `--` |
-| GitHub PR | `diffing --no-open --gh-pr 1234` or `diffing "gh pr 1234" --no-open` |
-| Commit series (show mode) | `diffing show <revspec>...` |
-| Native TUI | `diffing --tui` (bundled by the normal `npm i -g diffing` install) |
+### Existing matching session
 
-Use structured argument arrays with `start_review_session`; do not compose a shell string from untrusted user input.
+```bash
+diffing sessions use SESSION_ID
+diffing sessions open SESSION_ID --no-open
+```
 
-`start_review_session` accepts safe line-oriented git-diff scope/filter/context/whitespace/rename arguments, but rejects diffing runtime flags, external drivers, output files, and non-patch formats. Modifiers need a revision or pathspec anchor; baseline mode accepts only staged/cached selection. Start GitHub PR mode through the CLI, not this MCP tool.
+After changing CLI selection, reconnect MCP if used and verify its target. Do not assume a pinned connection follows the CLI.
 
-If the human starts the native TUI, agents can inspect its diff without full-patch transfer through MCP `diff_summary` / `diff_files` / `diff_hunks` / `diff_slice` / `diff_search` or CLI `diffing inspect …`. Do not start an extra web session merely to inspect a live TUI diff.
+### New local web review
 
-## Hand-off to the human
+```js
+start_review_session({ diffArgs: ['--staged'] })
+```
 
-For web mode, return the selected session's verified base review URL; append `/plan` or `/plan/<id>` for plans and `/gh/pr` for a PR session. Do not use `diffing url` before selecting the intended session, and never invent a URL from a guessed port. For TUI mode, report that the review is already open in the human's terminal and do not return the agent API URL.
+Use `{}` for default working-tree scope. Pass argument arrays, never shell-expanded user text. Use the returned URL/scope directly.
 
-Set the correct expectation: local code review uses **Send to agent**, plan review uses **Submit review**, and GitHub PR mode uses local drafts followed by an explicitly authorized **Submit to GitHub**; PR mode has no Send-to-agent handoff.
+CLI launch recipes:
 
-If the user requested the complete review loop, continue with **`diffing-finish-review`** (code) or **`diffing-plan-review`** (plan); otherwise stop after the session is reachable.
+| Requested scope | Foreground launch |
+| --- | --- |
+| Working tree | `diffing --web --no-open` |
+| Staged | `diffing --web --no-open --staged` |
+| Branch comparison | `diffing --web --no-open main...HEAD` |
+| Selected paths | `diffing --web --no-open -- src/` |
+| Commit series | `diffing show HEAD~2..HEAD --web --no-open` |
+| PR | `diffing --gh-pr owner/repo#123 --no-open` |
 
-Verdicts are behavioral controls: `comment-only` → no file edits; `changes-requested` → address open requests; `approved` → continue; `rejected` → stop building on the rejected approach.
+Keep launches alive through the host's persistent process facility. These commands do not detach themselves. Wait for startup success before returning a URL. New distinct scopes coexist; never stop another review merely to open this one.
+
+### Human handoff
+
+- **Web:** share the verified session URL. Local code uses **Send to agent**; a plan uses **Submit review** at its returned `/plan/ID` URL.
+- **PR:** confirm identity, then share the verified `/gh/pr` URL. Drafting is local; **Submit to GitHub** is a separate authorized external action. There is no local Send-to-agent PR loop.
+- **TUI:** say it is open in the human's terminal. Never share its capability-bearing agent API URL. Do not start web merely to inspect a live TUI diff.
+
+## Recovery
+
+If MCP is bound to another repository, use CLI from the consumer or ask the host to rebind. Never change into the diffing product checkout for foreign work. If the host cannot keep a server alive, ask the human to start it; do not invent a URL. Use `diffing doctor` for installation/availability problems, not destructive session replacement.
+
+## Done
+
+The selected session is reachable, its mode/scope is stated, and its safe human URL is shared (or TUI status reported). Park unless the user requested a synchronous loop; then use [Finish review](../diffing-finish-review/SKILL.md).
+
+[Headless API](../diffing/references/headless-api.md) · [Recovery and safety](../diffing/references/recovery-and-safety.md)

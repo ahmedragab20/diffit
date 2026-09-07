@@ -1,69 +1,72 @@
 ---
 name: diffing-pr-read
-description: Read a GitHub pull request through diffing with token-efficient bounded inspect APIs instead of dumping gh pr view/diff or the full patch. Use when summarizing a PR, inspecting PR changes, preparing a review, or reading PR discussion with minimal context.
+description: Read or summarize a GitHub pull request through diffing using slim overview, bounded diff pages and paginated discussion. Use for PR context gathering without full-patch dumps, unsolicited draft creation or remote publication.
 ---
 
-# Read a GitHub PR through diffing (token-efficient)
+# Read a GitHub PR
 
-Prefer diffing’s slim PR overview and bounded diff inspect over `gh pr view`, `gh pr diff`, or `GET /api/diff` full patches.
+## Use this when
 
-## Setup
+The user wants PR context or a summary. This is read-only by default; use [Review changes](../diffing-review/SKILL.md) to create local findings or [Address feedback](../diffing-pr-address/SKILL.md) to implement fixes.
 
-1. Target the correct repository. List `diffing sessions --json` when a shell is available; reuse a `gh-pr` entry only when its scope matches the requested PR.
-2. Select the match with `diffing sessions use <id>`. If none exists, start `diffing --gh-pr <ref> --no-open` (or `diffing "gh pr <ref>" --no-open`); it coexists with local and other PR reviews and becomes active.
-3. Attach or reconnect MCP after selection, call `review_session_status`, then confirm normalized PR identity with `gh_overview`. `start_review_session` is for local web diffs and must not be used for PR mode.
-4. Do not replace or stop another session just to read this PR. If the shell/session manager is unavailable and MCP is pinned to a different session, report that selection is required rather than reading the wrong PR.
+## Before you start
 
-`<ref>` may be a number, `owner/repo#N`, or a full PR URL.
-
-## Token-efficient read ladder
-
-Never load the full patch or full session JSON by default.
-
-| Step | MCP | CLI |
-|------|-----|-----|
-| Identity + counts | `gh_overview` | `diffing gh overview [--json]` |
-| Patch totals | `diff_summary` | `diffing inspect summary` |
-| File list | `diff_files` (`path` glob, page filtered `nextCursor`) | `diffing inspect files --path GLOB --cursor N --limit 50` |
-| Hunk map | `diff_hunks` (`path` XOR `file`) | `diffing inspect hunks --path FILE --generation G` |
-| Body rows | `diff_slice` (`path` XOR `file`) | `diffing inspect slice --path FILE --start R --max-lines 120 --generation G` |
-| Find text | `diff_search` (optional `path`) | `diffing inspect search "literal" --path GLOB --generation G` |
-| Discussion | `gh_list_threads` (`unresolvedOnly`) | `diffing gh threads --unresolved` |
-| Verdicts | `gh_list_reviews` | `diffing gh reviews` |
-
-### Rules
-
-- Carry `generation` from `diff_summary` into hunks/slice/search. On stale generation (HTTP 409), re-run summary and restart that file’s traversal.
-- Consume MCP `structuredContent` and returned cursors directly. Do not call `review_session_status`, `gh_overview`, or the same page repeatedly when nothing changed.
-- Keep default or smaller line/byte budgets; raise only when necessary.
-- Continue slices with `nextRow` and file lists with `nextCursor`. Continue search with `nextFile` + `nextRow`.
-- Prefer `gh_list_threads` with `unresolvedOnly: true` and truncated bodies. Use `fullBody` / `--full-body` only for threads you will act on.
-- Compact JSON is default. Avoid `--pretty` and avoid `GET /api/gh/session` (fat UI payload).
-- `get_diff` / full `GET /api/diff` is an escape hatch only when inspect is unavailable.
-
-## Optional: leave review findings
-
-This skill is **read-first**. To post draft review comments on the PR session, follow **`diffing-review`** (PR section): create drafts via `gh_create_draft_comment` / `POST /api/gh/pr-session/comments`, then publish only with explicit user authorization (`gh_submit_review` dry-run first).
-
-## CLI sketch
+Identify the requested PR, not an old conversation's PR. `<ref>` may be a number, `owner/repo#N`, or full URL. From the consumer repository, list sessions and reuse a matching `gh-pr` entry:
 
 ```bash
 diffing sessions --json
-diffing sessions use <matching-pr-session-id>  # reuse when present
-# Or, when none matches:
-diffing --gh-pr 1234 --no-open                  # starts a concurrent active session
-diffing gh overview --json
-diffing inspect summary
-diffing inspect files --path "src/**" --limit 50
-diffing inspect hunks --path src/lib/foo.ts --generation <g>
-diffing inspect slice --path src/lib/foo.ts --start 0 --max-lines 120 --generation <g>
-diffing gh threads --unresolved          # XML default
-diffing gh reviews --format json
+diffing sessions use PR_SESSION_ID
 ```
 
-## Anti-patterns
+If none matches, launch `diffing --gh-pr owner/repo#123 --no-open` as a persistent process. It coexists with local/other PR sessions. Reconnect MCP after selection; call `review_session_status({})`, then `gh_overview({})` and verify identity. MCP `start_review_session` is local-web only.
 
-- Dumping `gh pr diff` or the entire unified patch into context.
-- Calling `GET /api/gh/session` for “status” when `gh overview` exists.
-- Loading every resolved historical thread body when only unresolved feedback matters.
-- Starting a duplicate PR session when a compatible one can be selected by ID.
+## Recipe
+
+### Identity and patch
+
+```js
+gh_overview({})
+diff_summary({})
+diff_files({ cursor: 0, limit: 50 })
+diff_hunks({ path: 'src/app.ts', generation: G })
+diff_slice({ path: 'src/app.ts', start: 0, maxLines: 120, generation: G })
+```
+
+Use the returned numeric `G`; page files/hunks with `nextCursor`, slices with `nextRow`, search with both `nextFile` and `nextRow`. Do not call overview/status between unchanged pages. Filters are useful for a requested subset, not proof of whole-PR coverage.
+
+```bash
+diffing gh overview --json
+diffing inspect summary
+diffing inspect files --limit 50
+diffing inspect slice --path src/app.ts --start 0 --max-lines 120 --generation G
+```
+
+`complete:false`, `omittedPaths`, binary files or other incomplete PR metadata must appear as limitations in your summary. Do not repeatedly request the summary to make it complete. Use full patch/session JSON only as an explicit fallback.
+
+### Discussion and verdicts
+
+```js
+gh_list_threads({ unresolvedOnly: true, cursor: 0, limit: 20, replyCursor: 0, replyLimit: 20 })
+gh_list_reviews({ cursor: 0, limit: 20 })
+```
+
+```bash
+diffing gh threads --unresolved --cursor 0 --limit 20 --reply-cursor 0 --reply-limit 20 --format json
+diffing gh reviews --cursor 0 --limit 20 --format json
+```
+
+MCP wraps the page under `result`. Follow outer `nextCursor`. Each thread also has `repliesNextCursor`: retain the same outer page/filter and advance `replyCursor` for missing replies before moving on. That offset applies to every thread returned on the page; deduplicate by reply ID. Do not mistake a root comment with 20 returned replies for a complete thread.
+
+Bodies are truncated by default (`bodyTruncated`). Use `fullBody:true` / `--full-body` only for relevant pages, narrowing with `path`/`author` where useful. Read review verdict bodies too; requirements may be outside inline threads. Keep numeric comment IDs separate from GraphQL `threadId` used for resolution.
+
+For draft awareness, `gh_list_draft_comments({})` / `diffing gh pr-list-comments` reads local findings. Timeline and checks have separate [HTTP routes](../diffing/references/headless-api.md); `diffing gh timeline` is available, but `diffing gh checks` is not.
+
+## Recovery
+
+On stale generation, refresh summary and restart the affected traversal. If the PR head changed, verify identity before `gh_refresh({})` / `diffing gh pr-fetch REF`; then reread affected diff/discussion. Do not replace a mismatched user session or infer that an outdated thread is resolved. See [Recovery and safety](../diffing/references/recovery-and-safety.md).
+
+## Done
+
+Summarize the requested PR scope, material changes and actionable discussion. State pagination/body/patch limitations. Do not create drafts, reply, resolve, submit reviews or mutate PR state merely to read it.
+
+[Sessions and transports](../diffing/references/sessions-and-transports.md)

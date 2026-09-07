@@ -1,115 +1,96 @@
 ---
 name: diffing-plan-review
-description: Submit an implementation plan to diffing for human approval and obey the verdict before writing code. Use for plan sign-off, architecture review, risky work, or any request to let the human comment on a plan before implementation.
+description: Submit an implementation plan to diffing for human approval and obey the verdict before writing code. Use for design sign-off, risky work, plan revisions, or any request to let the human review an implementation approach first.
 ---
 
-# Review an implementation plan with diffing
+# Review an implementation plan
 
-Use diffing as a real implementation gate: submit clean markdown, wait for the human decision, and do not begin implementation until the plan is approved.
+## Use this when
 
-## Start and submit
+Get a human decision on a plan before implementation. This workflow submits and revises the plan; it does not let an agent manufacture approval.
 
-Prefer MCP when available:
+## Before you start
 
-1. Call `review_session_status`. Plan tools require `mode: web`. If another mode is active, use `diffing sessions --json` to select a compatible web session, or start `diffing --web --no-open` as a concurrent session; do not end the TUI/PR review merely to submit a plan. Reconnect MCP after `sessions use` so the new connection discovers the selected web session.
-2. Call `start_review_session` only for `mode: none` or to idempotently reuse/pin a matching web scope. It never creates a plan-specific session and never launches, stops, or replaces TUI/PR sessions.
-3. `submit_plan` with complete markdown in the inline `body` field, plus title and model/source when known. No shell, no `cd`, no scratch file required.
-4. **Async handoff (default):** share the plan URL returned by `submit_plan`, tell the human to review, and **end your turn**. Do not call status or fetch the plan just to rediscover that URL. Call `await_plan_review` only when they are reviewing now or explicitly asked you to wait.
-5. On `await_plan_review` timeout (`disposition=park`): park again — do **not** silent-loop. At most one extra await if they asked you to keep waiting. When they say a verdict is ready, call `await_plan_review` once (or `get_plan` / `list_plans`).
+Verify the **consumer repository** and select a local web session. Plans are not a TUI/PR workflow. Keep existing PR/TUI sessions alive; select or start a compatible concurrent web session and reconnect MCP deliberately. Never submit a foreign plan from the diffing product checkout.
 
-**Consumer repo, not product checkout:** plan submit/start/await targets the **consumer** repository (the project you are implementing for). MCP “bound to …/diffing” names the product checkout the server runs from — it is **not** an instruction to `cd` there. Never `cd` into the diffing product tree to run plan commands for foreign work. If MCP `--repo` mismatches the consumer, use CLI from the consumer workspace instead of “fixing” cwd in the product.
+Prepare Markdown with scope, proposed changes, verification and non-goals. Use inline bodies/stdin; scratch files, if needed, belong under `~/.diffing/`, not the consumer tree.
 
-CLI fallback (always from the **consumer** workspace):
+## Recipe
 
-```bash
-diffing sessions --json
-diffing sessions use <web-session-id>       # reuse a compatible web session
-# Or, when none matches:
-diffing --web --no-open                     # starts a concurrent active session
-diffing plan submit [<plan.md>|-] [--title T] [--source S] [--model M] [--id ID] [--save-source]
-# default: prints URL and parks — do not add --wait unless sync
-diffing plan submit [<plan.md>|-] --wait [--timeout N]   # sync only
-diffing plan await [--timeout N]                         # sync / resume
-# or: cat PLAN.md | diffing plan submit --model "..."
+### 1. Submit and park
+
+```js
+submit_plan({
+  title: 'Validate import inputs',
+  body: '## Changes\n- Validate before saving.\n## Verification\n- Run import tests.',
+})
 ```
 
-Keep temporary plan files in **`~/.diffing/<repo>/plan-sources/`** — never in the consumer project tree. Use `--save-source` / `-S` to copy the submitted body there. Prefer stdin for zero working-tree footprint. Always resubmit revisions with the original plan **`--id`** so history stays one conversation.
-
-Useful reads:
-
 ```bash
-diffing plan list [--json]
-diffing plan show [<id>] [--json] [--version n]  # omit id for latest
-diffing plan versions <id> [--json]
+printf '%s' "$PLAN" | diffing plan submit - --title 'Validate import inputs'
 ```
 
-Minimize duplicate reads: `await_plan_review` already returns the reviewed plan and relevant comments. Use `get_plan` / `plan show` only to refresh the current plan, `get_plan_versions` / `plan versions` for lightweight history metadata, and `get_plan_version` / `plan show --version` only for a specific historical body. Do not fetch every historical body by default.
+`PLAN` is the complete Markdown body. Optional `source`/`model` (CLI `--source`/`--model`) record provenance. `--save-source` copies a CLI submission into diffing's source storage.
 
-Use plan CLI/MCP/API operations instead of editing `plans.json`; the file-backed store, version snapshots, comment anchors, and `plan-sources/<id>.md` mirror are implementation-owned state under per-repository `~/.diffing/` storage.
+Read the returned plan ID/version/URL. Share the URL and **end the turn** by default. Do not immediately fetch the same plan or add `--wait` unless the human wants a synchronous wait.
 
-MCP intentionally exposes reply and resolve for plan comments, but not edit/delete/reply-edit operations. When correcting a mis-posted plan thread and no native command exists, use the documented loopback `/api/plans/:id/comments*` endpoints; deletion is destructive and requires clear intent.
+### 2. Receive the human decision
 
-## Anti-pattern: do not cd into the product
+When the human says ready, or requests a synchronous wait:
 
-```bash
-# BAD — side-effect cwd + wrong repo host
-cd /path/to/diffing-product && diffing plan submit …
-
-# GOOD — MCP inline (preferred)
-submit_plan({ title, body, model })
-
-# GOOD — CLI from consumer repo
-printf '%s' "$PLAN" | diffing plan submit --model "…"
+```js
+await_plan_review({ timeoutSeconds: 60 })
 ```
 
-MCP binding ≠ cwd. The harness may report “bound to …/diffing” for the product checkout; that does not mean plans for another repo belong there. Stay in the consumer workspace (or use MCP inline) for foreign plans.
-
-## Obey the verdict
-
-| Decision | Action |
-|----------|--------|
-| `approved` | Implement the reviewed version; account for open inline comments. |
-| `changes-requested` | Do **not** implement. Reply to open threads, revise plan, resolve addressed threads, `submit` same `planId`, `await` again. |
-| `rejected` | Stop. Do not implement or extend the rejected approach. |
-| `comment-only` | Do **not** edit files or implement. Only answer questions / discuss. |
-| `pending` | Park (async) or sync-await once if asked; do not silent-loop on timeout. |
-
-MCP: `reply_to_plan_comment`, `resolve_plan_comment`, `get_plan`, `get_plan_versions`, `get_plan_version`.
-
-CLI:
-
 ```bash
-diffing plan reply <comment-id> --body "..." --model "<model-name>"
-diffing plan resolve <comment-id>
-diffing plan submit <revised-plan.md> --id <plan-id> --model "<model-name>"
+diffing plan await --timeout 60
 ```
 
-Only address comments with `status="open"`. Questions stay open after reply; resolve a change request only when the revised plan incorporates it.
+Use the returned handoff, not a duplicate fetch. Verify `planId` and reviewed content/version: the wait is session-global, not filtered to the plan you last submitted. HTTP alone uses `sinceRound`/`timeoutMs`; those are **not** MCP input fields.
 
-## Plan comments, ranges, and severity
+| Decision | Next action |
+| --- | --- |
+| `approved` | Implement the actual reviewed content, accounting for open requests |
+| `changes-requested` | Revise the plan, then resubmit the same ID; no implementation yet |
+| `rejected` | Stop and rethink with the human |
+| `comment-only` | Reply/discuss only; no plan-body or product edits |
+| Pending/timeout | Park; do not infer approval |
 
-Human comments on the plan appear in `<plan-review>` XML with:
+### 3. Revise without losing history
 
-- `line="N"` or inclusive `line="A-B"` (multi-line selection)
-- optional `severity="blocking|nit|question|praise"` (same triage as code review)
-- optional section title and source/quote context
+```js
+reply_to_plan_comment({ commentId: 'COMMENT_ID', body: 'The revised plan adds the migration check.' })
+submit_plan({ planId: 'PLAN_ID', title: 'Validate import inputs', body: revisedMarkdown })
+resolve_plan_comment({ commentId: 'COMMENT_ID' })
+```
 
-Treat **blocking** as must-fix before resubmit; **nit** as optional; **question** as needing a reply (usually leave open); **praise** as no change required. Missing severity = untriaged normal request.
+Reply/resolve only incorporated change requests; questions stay open. Resubmission must succeed before resolution. Line ranges are inclusive and comments may be version-anchored.
 
-## Human UI notes (so agents set expectations)
+```bash
+printf '%s' "$PLAN" | diffing plan submit - --id PLAN_ID --title 'Validate import inputs'
+diffing plan reply COMMENT_ID --body 'The revised plan adds the migration check.'
+diffing plan resolve COMMENT_ID
+```
 
-The human reviews at `/plan` or `/plan/<id>`:
+Share the new version's URL and park again. Do not POST the human decision endpoint to unblock yourself.
 
-| Feature | Behavior |
-|---------|----------|
-| Source / Read / Split | `m` cycles modes; toolbar switches the same modes |
-| Zen Read | `z` toggles full-width focus (switches to Read if needed); Esc exits zen when not editing |
-| Live edit | `e` / pencil: edit current version markdown + title; autosave `PUT` (no version bump); Save as new version = `POST` same id; Esc opens Discard |
-| Discard | Recent = this session; original = first enter for this version (survives exit/re-enter). Dual choice only when both apply |
-| Comments map (right rail) | `c` toggles; lists open threads with `L` / `Lstart–Lend` labels |
-| Inline comments | Source: gutter + / line selection; Read: text highlight → Add comment; multi-line ranges with optional severity (paused while live-editing) |
-| Read mode threads | Comments render inline under the matching section (React-owned; survives mode switches) |
-| Comment cards | Collapsible thread; collapsible source preview inside the card |
-| Submit review | Verdict that unblocks `plan await` |
+### Targeted reads
 
-Plans may be versioned; comments are version-anchored when the human browses history. Human in-page edits use `PUT` (same version) unless they explicitly Save as new version.
+| Need | MCP | CLI |
+| --- | --- | --- |
+| List | `list_plans({})` | `diffing plan list --json` |
+| Current body | `get_plan({planId:'PLAN_ID'})` | `diffing plan show PLAN_ID --json` |
+| Version metadata | `get_plan_versions({planId:'PLAN_ID'})` | `diffing plan versions PLAN_ID --json` |
+| One old version | `get_plan_version({planId:'PLAN_ID',version:2})` | `diffing plan show PLAN_ID --version 2 --json` |
+
+MCP submit and read tools use `planId`; HTTP POST uses `id`. See [Headless API](../diffing/references/headless-api.md) for comment CRUD/reply edits not exposed by MCP/CLI.
+
+## Recovery
+
+A timeout is a park signal. If a different plan was released, preserve it but do not apply its verdict to this plan. Human live edits can change a body without a version bump: refresh/confirm if content changed after approval. Never edit `plans.json` or source mirrors to bypass the API. See [Recovery and safety](../diffing/references/recovery-and-safety.md).
+
+## Done
+
+The plan is either parked with its URL, returned for revision/discussion, or approved with the reviewed content identified. Implementation starts only for the approved scope.
+
+[Sessions and transports](../diffing/references/sessions-and-transports.md)

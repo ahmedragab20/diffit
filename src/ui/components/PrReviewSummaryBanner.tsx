@@ -3,16 +3,19 @@ import { GitPullRequest } from "lucide-react";
 import type { PrSession } from "../../lib/pr-session";
 import { PrChecksPopover } from "./PrChecksPopover";
 import { Markdown } from "./Markdown";
+import { PrAuthorActions } from "./PrAuthorActions";
 
 interface PrReviewSummaryBannerProps {
   session: PrSession;
   draftCount: number;
+  onAuthorChanged?: () => void;
 }
 
 /** GitHub-specific context, kept out of the action toolbar. */
 export function PrReviewSummaryBanner({
   session,
   draftCount,
+  onAuthorChanged,
 }: PrReviewSummaryBannerProps) {
   const [bodyOpen, setBodyOpen] = useState(false);
   return (
@@ -88,6 +91,7 @@ export function PrReviewSummaryBanner({
           <PrChecksPopover headSha={session.headSha} />
         </div>
       </header>
+      <PrAuthorActions session={session} onChanged={onAuthorChanged} />
       {session.body?.trim() ? (
         <div className="pr-overview-body">
           <button

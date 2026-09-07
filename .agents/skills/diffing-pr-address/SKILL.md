@@ -1,53 +1,82 @@
 ---
 name: diffing-pr-address
-description: Turn GitHub pull-request review feedback into a human-approved local implementation through diffing. Use when asked to address PR comments, fix reviewer requests, turn unresolved PR feedback into a plan, or implement requested changes on a PR branch. Default to a local checkout plus plan/review cycle; reply, resolve, publish, or otherwise mutate GitHub only with explicit user authorization.
+description: Turn GitHub PR feedback into a human-approved local implementation through diffing. Use to address reviewer requests, plan fixes or map unresolved threads to local changes; remote replies, resolution, pushes and publication require separate authorization.
 ---
 
-# Address GitHub PR feedback through diffing
+# Address PR feedback locally
 
-Use token-efficient PR reads to understand feedback, then switch to the normal local plan and implementation loop. Treat GitHub publication and thread mutation as a separate, authorization-gated step.
+## Use this when
 
-## 1. Gather only actionable PR context
+The human wants code changes based on PR feedback. Default to a local checkout plus plan/review cycle, not remote mutation. A request to fix feedback does not by itself authorize a push, published reply, thread resolution or merge.
 
-1. Run `diffing sessions --json` when available and select the matching `gh-pr` session with `diffing sessions use <id>`. If none exists, start the requested PR session; concurrent local/TUI/other PR sessions may remain running. Attach or reconnect MCP after selection, call `review_session_status`, and verify normalized identity with `gh_overview`.
-2. Read identity and counts with MCP `gh_overview` or CLI `diffing gh overview --json`.
-3. Page unresolved published threads with `gh_list_threads` (`unresolvedOnly: true`) or `diffing gh threads --unresolved`. Read full bodies only for threads being acted on.
-4. Page reviews with `gh_list_reviews` or `diffing gh reviews --format json`; include `CHANGES_REQUESTED` review bodies that add requirements beyond inline threads.
-5. Inspect referenced files and lines with `diff_summary` → `diff_files` → `diff_hunks` / bounded `diff_slice`. Carry `generation`; restart traversal after a stale-generation error. Do not dump the full patch or PR session by default.
+## Before you start
 
-Classify each item as a concrete change, question, already-addressed/outdated request, or conflict. Preserve thread IDs and paths in the plan so implementation can be traced back to feedback.
+Follow [PR reads](../diffing-pr-read/SKILL.md): verify PR identity/head, inspect the relevant diff, page unresolved threads and nested replies, and read overall review verdicts. Keep comment IDs, `threadId`, paths, outdated flags and the PR session ID.
 
-## 2. Submit a local implementation plan
-
-Write the plan under `~/.diffing/<repo>/plan-sources/`; never place scratch files in the repository. Cover requested changes, tests, feedback that needs clarification, and explicit non-goals.
-
-Plan APIs are web-only. Before selecting another mode, retain the compact PR overview, actionable thread list, and PR session ID. Do **not** end the PR review. Select an existing web session with `diffing sessions use <id>` or start a concurrent one, reconnect MCP to the selected web session, then follow `diffing-plan-review`:
+Verify the local checkout **before proposing exact file edits**:
 
 ```bash
-diffing sessions --json
-diffing sessions use <web-session-id>   # reuse when present
-# Or, when none matches:
-diffing --web --no-open                 # starts a concurrent active session
-diffing plan submit <plan-file> --model "<model>" --save-source
-diffing plan await
+git status --short
+git branch --show-current
+git rev-parse HEAD
 ```
 
-Obey the verdict: implement only `approved`; revise the same plan ID on `changes-requested`; stop on `rejected`; discuss only on `comment-only`. Reply to open questions and resolve only incorporated change requests.
+Use a redacted host summary to verify remote identity; do not print credential-bearing remote URLs. Compare branch/HEAD with the PR head from overview; account for fork repository identity, not just a matching branch name.
 
-## 3. Implement on the PR head branch
+Do not switch over unrelated dirty work, stash/reset it, or force checkout. If the right checkout is absent, ask for authorization to create/use an isolated checkout. No destructive cleanup is part of this recipe.
 
-After approval, verify the local repository and current branch. If the PR head is not checked out, use `gh pr checkout <ref>` as the normal local preparation step, preserving unrelated working-tree changes and reporting any checkout conflict.
+## Recipe
 
-Implement the approved scope, run proportionate tests/builds, and use the local diffing code-review loop (`diffing-start-review` / `diffing-finish-review`) for human feedback. Keep every shipped edit in the repository and every plan/note under `~/.diffing/`.
+### 1. Map feedback to a plan
 
-## 4. Gate remote GitHub actions
+For each relevant open thread, record the request, affected source, proposed fix and focused check. Separate questions/outdated requests from actionable changes. Do not infer the fix from a line number alone.
 
-Do not reply to published comments, resolve/reopen threads, submit reviews, push, or publish other GitHub state unless the user explicitly authorized that specific external action. Local draft creation is not publication.
+Preserve `PR_SESSION_ID` and its identity. Select a compatible local web session (or start a concurrent one) for the same consumer, reconnect MCP, and verify scope. Plans cannot be hosted as the PR-mode workflow.
 
-When publication is authorized:
+```js
+submit_plan({ title: 'Address PR feedback', body: planMarkdown })
+```
 
-1. Reselect the saved PR session with `diffing sessions use <pr-session-id>`, reconnect MCP if used, and confirm it with `gh_overview` before refreshing.
-2. Dry-run review submission first (`gh_submit_review` with `dryRun: true` or `diffing gh pr-review ... --dry-run`).
-3. Publish only the authorized replies/verdict and report what changed remotely.
+```bash
+printf '%s' "$PLAN" | diffing plan submit - --title 'Address PR feedback'
+```
 
-If authorization is absent, finish with a local implementation summary plus a mapping from unresolved thread IDs to completed changes or remaining questions.
+Share the returned plan URL and park. Use [Plan review](../diffing-plan-review/SKILL.md) for verdicts and same-ID revisions. `comment-only` permits discussion, not file edits. Only implement the approved current plan.
+
+### 2. Implement and verify locally
+
+Apply the scoped changes, run the planned focused checks, and review the diff for unrelated edits. Maintain a mapping:
+
+| Feedback | Outcome |
+| --- | --- |
+| Comment/thread ID | Changed file/behavior, verification, or remaining question |
+
+Open the local implementation in [Start review](../diffing-start-review/SKILL.md) and share its URL. Keep questions unresolved. Local plan/comment resolutions do not resolve GitHub threads.
+
+### 3. Remote follow-up only when authorized
+
+Restore `PR_SESSION_ID`, reconnect MCP and verify `gh_overview({})` before refreshing. If the head changed, reconcile before publishing anything.
+
+For an explicitly requested review publication:
+
+```js
+gh_submit_review({ decision: 'comment', body: 'Summary of the verified changes.', dryRun: true })
+```
+
+```bash
+diffing gh pr-review --decision comment --body 'Summary of the verified changes.' --dry-run
+```
+
+Inspect the proposed payload and publish only the specifically authorized verdict/body/drafts. A dry-run is not proof GitHub accepted a write. Published-comment replies, edits/deletes and thread resolve/reopen are HTTP-only operations in [Headless API](../diffing/references/headless-api.md), not imaginary `gh_reply` tools. Authorize each type of external effect; use dry-run where supported, not where it does not exist.
+
+`gh pending submit/discard/resume` acts on a GitHub pending review; it is not the same as editing diffing's local drafts. Merging, suggestion commits and pushing code are separate actions from review publication.
+
+## Recovery
+
+If checkout or PR identity is uncertain, stop instead of guessing. If source/head changed, reread affected feedback and adjust the plan before applying stale work. After a network failure, inspect remote state/publication results before retrying—an error can follow a successful write. See [Recovery and safety](../diffing/references/recovery-and-safety.md).
+
+## Done
+
+Report verified local changes mapped to feedback, the implementation review URL and remaining questions. If authorized remote actions were performed, name the actual outcome; otherwise explicitly leave GitHub unchanged.
+
+[Sessions and transports](../diffing/references/sessions-and-transports.md)
