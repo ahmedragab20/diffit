@@ -33,6 +33,9 @@ interface DiffData {
   binaryFiles: BinaryFileInfo[]
   tabSizeMap: Record<string, number>
   untrackedFiles: string[]
+  /** False when optional untracked reads were omitted rather than represented. */
+  complete?: boolean
+  omittedPaths?: string[]
   /**
    * "What is this diff?" overview. The diff-engine builds one whenever it
    * has enough metadata (working tree / staged / range / show / PR). The
@@ -125,6 +128,8 @@ export function useDiff(options: DiffOptions, enabled = true) {
     binaryFiles: data?.binaryFiles ?? EMPTY_ARRAY,
     tabSizeMap: data?.tabSizeMap ?? EMPTY_OBJECT,
     untrackedFiles: data?.untrackedFiles ?? EMPTY_ARRAY,
+    complete: data?.complete !== false,
+    omittedPaths: data?.omittedPaths ?? EMPTY_ARRAY,
     // Atomic with the rest of the diff payload — no second fetch, no second
     // source of truth. The banner refreshes whenever the diff does.
     overview: data?.overview,

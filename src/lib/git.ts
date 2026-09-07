@@ -1,7 +1,6 @@
 import { execFileSync, execFile } from "node:child_process";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { readFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { homedir } from "node:os";
 import { createHash } from "node:crypto";
@@ -15,10 +14,7 @@ import {
   getNativeRepositoryFs,
   NativeFsError,
 } from "./native-fs.js";
-import {
-  parseSync as parseEditorConfig,
-  type ProcessedFileConfig,
-} from "editorconfig";
+import { parseFromFilesSync } from "editorconfig";
 
 const execFileAsync = promisify(execFile);
 
@@ -48,28 +44,152 @@ export function isImageFile(filePath: string): boolean {
   return IMAGE_EXTENSIONS.has(ext);
 }
 
-function isBinaryFile(absolutePath: string): boolean {
+export function parseGitZPaths(output: string): string[] {
+  if (!output) return [];
+  return output.split("\0").filter((path) => path.length > 0);
+}
+
+function isBinaryBytes(bytes: Buffer): boolean {
+  const n = Math.min(bytes.length, 8192);
+  for (let i = 0; i < n; i++) {
+    if (bytes[i] === 0) return true;
+  }
+  return false;
+}
+
+function synthesizeUntrackedPatch(file: string, bytes: Buffer): string {
+  if (isBinaryBytes(bytes)) {
+    return [
+      `diff --git a/${file} b/${file}`,
+      "new file mode 100644",
+      "index 0000000..0000001",
+      `Binary files /dev/null and b/${file} differ`,
+    ].join("\n");
+  }
+  const lines = splitLines(bytes.toString("utf-8"));
+  return [
+    `diff --git a/${file} b/${file}`,
+    "new file mode 100644",
+    "index 0000000..0000001",
+    "--- /dev/null",
+    `+++ b/${file}`,
+    `@@ -0,0 +1,${lines.length} @@`,
+    ...lines.map((line) => `+${line}`),
+  ].join("\n");
+}
+
+export type FileContentScope = {
+  staged?: boolean;
+  revisions?: string[];
+  showMode?: boolean;
+  showRevspecs?: string[];
+};
+
+export type UntrackedDiffResult = {
+  patch: string;
+  omitted: string[];
+  listingFailed?: boolean;
+};
+
+export type GitDiffResult = {
+  patch: string;
+  omittedUntracked: string[];
+  untrackedListingFailed?: boolean;
+};
+
+function isNativeTransportFailure(error: unknown): boolean {
+  return (
+    error instanceof NativeFsError &&
+    (error.code === "unavailable" ||
+      error.code === "protocol" ||
+      error.code === "timeout" ||
+      error.code === "busy")
+  );
+}
+
+function splitRange(rev: string): [string, string] | null {
+  const three = rev.lastIndexOf("...");
+  if (three >= 0) {
+    const left = rev.slice(0, three);
+    const right = rev.slice(three + 3);
+    if (left && right) return [left, right];
+  }
+  const two = rev.lastIndexOf("..");
+  if (two >= 0) {
+    const left = rev.slice(0, two);
+    const right = rev.slice(two + 2);
+    if (left && right) return [left, right];
+  }
+  return null;
+}
+
+function blobSpecFor(
+  version: "old" | "new",
+  relPath: string,
+  scope: FileContentScope,
+): string | null {
+  const revisions = scope.revisions ?? [];
+  const showRevs = scope.showRevspecs ?? [];
+  if (scope.showMode && showRevs.length > 0) {
+    const last = showRevs[showRevs.length - 1];
+    const range = splitRange(last);
+    if (range) return `${version === "old" ? range[0] : range[1]}:${relPath}`;
+    return version === "new" ? `${last}:${relPath}` : `${last}^:${relPath}`;
+  }
+  if (revisions.length >= 2) {
+    const first = revisions[0];
+    const last = revisions[revisions.length - 1];
+    const firstRange = splitRange(first);
+    const lastRange = splitRange(last);
+    const oldRev = firstRange ? firstRange[0] : first;
+    const newRev = lastRange ? lastRange[1] : last;
+    return `${version === "old" ? oldRev : newRev}:${relPath}`;
+  }
+  if (revisions.length === 1) {
+    const range = splitRange(revisions[0]);
+    if (range) return `${version === "old" ? range[0] : range[1]}:${relPath}`;
+    return version === "old" ? `${revisions[0]}:${relPath}` : null;
+  }
+  if (scope.staged) {
+    return version === "old" ? `HEAD:${relPath}` : `:${relPath}`;
+  }
+  return version === "old" ? `:${relPath}` : null;
+}
+
+async function gitShowBlob(spec: string): Promise<Buffer | null> {
   try {
-    const buffer = readFileSync(absolutePath);
-    const bytesToCheck = Math.min(buffer.length, 8192);
-    for (let i = 0; i < bytesToCheck; i++) {
-      if (buffer[i] === 0) return true;
-    }
-    return false;
+    const { stdout } = await execFileAsync(
+      "git",
+      ["show", "--no-textconv", spec],
+      {
+        encoding: "buffer",
+        maxBuffer: 50 * 1024 * 1024,
+        timeout: 30_000,
+        windowsHide: true,
+        env: {
+          ...process.env,
+          GIT_NO_LAZY_FETCH: "1",
+          GIT_TERMINAL_PROMPT: "0",
+        },
+      },
+    );
+    return stdout;
   } catch {
-    return true;
+    return null;
   }
 }
 
 export async function getFileContent(
   filePath: string,
   version: "old" | "new",
+  scope: FileContentScope = {},
 ): Promise<Buffer | null> {
   const root = getRepoRoot();
   if (typeof filePath !== "string") throw new NativeFsError("invalid-path");
   const relPath = toSafeLiteralRelativePath(filePath, root);
   if (!relPath) throw new NativeFsError("invalid-path");
-  if (version === "new") {
+  const spec = blobSpecFor(version, relPath, scope);
+  if (spec === null) {
     try {
       return (await getNativeRepositoryFs(root).read(relPath)).bytes;
     } catch (error) {
@@ -78,23 +198,10 @@ export async function getFileContent(
       throw error;
     }
   }
-  // Historical blobs are Git data, not paths to reopen in the working tree.
-  try {
-    const { stdout } = await execFileAsync("git", ["show", `HEAD:${relPath}`], {
-      encoding: "buffer",
-      maxBuffer: 50 * 1024 * 1024,
-      timeout: 30_000,
-      windowsHide: true,
-      env: { ...process.env, GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0" },
-    });
-    return stdout;
-  } catch {
-    return null;
-  }
+  return gitShowBlob(spec);
 }
 
 let cachedRepoRoot: string | null = null;
-const editorConfigCache = new Map<string, ProcessedFileConfig>();
 type RepoMetadata = { repoName: string; branch: string; headToken: string };
 let cachedRepoMetadata: RepoMetadata | null = null;
 let tabSizeCache: { key: string; map: Record<string, number> } | null = null;
@@ -111,7 +218,6 @@ function gitHeadToken(): string {
 export function _resetRepoRootCache(): void {
   closeNativeRepositoryFs();
   cachedRepoRoot = null;
-  editorConfigCache.clear();
   cachedRepoMetadata = null;
   tabSizeCache = null;
 }
@@ -226,98 +332,95 @@ export function getGitDiff(
 }
 
 export function getTabSizeForFiles(
-  filePaths: string[],
+  _filePaths: string[],
 ): Record<string, number> {
+  // Sync callers cannot use the capability helper. Do not walk EditorConfig
+  // through Node fs — that follows symlink ancestors out of the repo.
+  return {};
+}
+
+export async function getTabSizeForFilesAsync(
+  filePaths: string[],
+): Promise<Record<string, number>> {
   const key = [...filePaths].sort().join("\0");
-  if (tabSizeCache?.key === key) {
-    return tabSizeCache.map;
-  }
+  if (tabSizeCache?.key === key) return tabSizeCache.map;
   const root = getRepoRoot();
+  if (!root) return {};
+  const files = getNativeRepositoryFs(root);
   const result: Record<string, number> = {};
-  for (const filePath of filePaths) {
+  const configCache = new Map<string, Buffer | null>();
+
+  const readConfig = async (rel: string): Promise<Buffer | null> => {
+    if (configCache.has(rel)) return configCache.get(rel) ?? null;
     try {
-      const absPath = join(root, filePath);
-      const config = parseEditorConfig(absPath, { cache: editorConfigCache });
+      const { bytes } = await files.read(rel);
+      configCache.set(rel, bytes);
+      return bytes;
+    } catch (error) {
+      if (
+        error instanceof NativeFsError &&
+        (error.code === "not-found" ||
+          error.code === "denied" ||
+          error.code === "not-file")
+      ) {
+        configCache.set(rel, null);
+        return null;
+      }
+      configCache.set(rel, null);
+      return null;
+    }
+  };
+
+  for (const filePath of filePaths) {
+    const relPath = toSafeLiteralRelativePath(filePath, root);
+    if (!relPath) continue;
+    const configs: { name: string; contents: Buffer }[] = [];
+    let dir: string | null = dirname(relPath);
+    while (dir !== null) {
+      const configRel =
+        !dir || dir === "." ? ".editorconfig" : `${dir}/.editorconfig`;
+      const bytes = await readConfig(configRel);
+      if (bytes) configs.push({ name: join(root, configRel), contents: bytes });
+      if (!dir || dir === ".") {
+        dir = null;
+      } else {
+        const parent = dirname(dir);
+        dir = parent === dir ? null : parent;
+      }
+    }
+    if (configs.length === 0) continue;
+    try {
+      const config = parseFromFilesSync(join(root, relPath), configs, {
+        root,
+      });
       const size =
         config.tab_width ??
         (config.indent_size === "tab" ? undefined : config.indent_size);
-      if (typeof size === "number") {
-        result[filePath] = size;
-      }
+      if (typeof size === "number") result[filePath] = size;
     } catch {
-      // skip files that fail to resolve
+      // skip files whose EditorConfig cannot be interpreted
     }
   }
   tabSizeCache = { key, map: result };
   return result;
 }
 
-export async function getTabSizeForFilesAsync(
-  filePaths: string[],
-): Promise<Record<string, number>> {
-  return getTabSizeForFiles(filePaths);
-}
-
 export function getUntrackedFilePaths(): string[] {
   const output = execFileSync(
     "git",
-    ["ls-files", "--others", "--exclude-standard"],
+    ["ls-files", "-z", "--others", "--exclude-standard"],
     {
       encoding: "utf-8",
       maxBuffer: 50 * 1024 * 1024,
     },
-  ).trim();
-  return output ? output.split("\n") : [];
+  );
+  return parseGitZPaths(output);
 }
 
 function getUntrackedFilesDiff(): string {
-  const root = getRepoRoot();
-  const output = execFileSync(
-    "git",
-    ["ls-files", "--others", "--exclude-standard"],
-    {
-      encoding: "utf-8",
-      maxBuffer: 50 * 1024 * 1024,
-    },
-  ).trim();
-
-  if (!output) return "";
-
-  const files = output.split("\n");
-  const patches: string[] = [];
-
-  for (const file of files) {
-    const absolutePath = join(root, file);
-    if (isBinaryFile(absolutePath)) {
-      const patch = [
-        `diff --git a/${file} b/${file}`,
-        "new file mode 100644",
-        "index 0000000..0000001",
-        `Binary files /dev/null and b/${file} differ`,
-      ].join("\n");
-      patches.push(patch);
-    } else {
-      try {
-        const content = readFileSync(absolutePath, "utf-8");
-        const lines = splitLines(content);
-        const diffLines = lines.map((l: string) => `+${l}`);
-        const patch = [
-          `diff --git a/${file} b/${file}`,
-          "new file mode 100644",
-          "index 0000000..0000001",
-          "--- /dev/null",
-          `+++ b/${file}`,
-          `@@ -0,0 +1,${lines.length} @@`,
-          ...diffLines,
-        ].join("\n");
-        patches.push(patch);
-      } catch {
-        // skip unreadable files
-      }
-    }
-  }
-
-  return patches.length > 0 ? "\n" + patches.join("\n") : "";
+  // Sync callers cannot use the native helper. Omitting untracked content here
+  // is incomplete, not a Node-fs fallback. Use getGitDiffAsync.
+  return "";
 }
 
 export async function getRepoRootAsync(): Promise<string> {
@@ -349,101 +452,88 @@ export async function getBranchNameAsync(): Promise<string> {
 }
 
 export async function getUntrackedFilePathsAsync(): Promise<string[]> {
-  try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["ls-files", "--others", "--exclude-standard"],
-      { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 },
-    );
-    const trimmed = stdout.trim();
-    return trimmed ? trimmed.split("\n") : [];
-  } catch {
-    return [];
-  }
+  const { stdout } = await execFileAsync(
+    "git",
+    ["ls-files", "-z", "--others", "--exclude-standard"],
+    { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 },
+  );
+  return parseGitZPaths(stdout);
 }
 
-async function getUntrackedFilesDiffAsync(): Promise<string> {
-  const root = await getRepoRootAsync();
-  const filePaths = await getUntrackedFilePathsAsync();
+async function getUntrackedFilesDiffAsync(): Promise<UntrackedDiffResult> {
+  const root = getRepoRoot();
+  if (!root) return { patch: "", omitted: [], listingFailed: true };
 
-  if (filePaths.length === 0) return "";
+  let filePaths: string[];
+  try {
+    filePaths = await getUntrackedFilePathsAsync();
+  } catch {
+    return { patch: "", omitted: [], listingFailed: true };
+  }
+  if (filePaths.length === 0) return { patch: "", omitted: [] };
 
+  const native = getNativeRepositoryFs(root);
   const patches: string[] = [];
+  const omitted: string[] = [];
 
-  const fileDiffPromises = filePaths.map(async (file) => {
-    const absolutePath = join(root, file);
-    if (isBinaryFile(absolutePath)) {
-      return [
-        `diff --git a/${file} b/${file}`,
-        "new file mode 100644",
-        "index 0000000..0000001",
-        `Binary files /dev/null and b/${file} differ`,
-      ].join("\n");
-    } else {
-      try {
-        const content = await readFile(absolutePath, "utf-8");
-        const lines = splitLines(content);
-        const diffLines = lines.map((l: string) => `+${l}`);
-        return [
-          `diff --git a/${file} b/${file}`,
-          "new file mode 100644",
-          "index 0000000..0000001",
-          "--- /dev/null",
-          `+++ b/${file}`,
-          `@@ -0,0 +1,${lines.length} @@`,
-          ...diffLines,
-        ].join("\n");
-      } catch {
-        return "";
+  for (let i = 0; i < filePaths.length; i++) {
+    const file = filePaths[i];
+    const rel = toSafeLiteralRelativePath(file, root);
+    if (!rel) {
+      omitted.push(file);
+      continue;
+    }
+    try {
+      const { bytes } = await native.read(rel);
+      patches.push(synthesizeUntrackedPatch(rel, bytes));
+    } catch (error) {
+      omitted.push(file);
+      if (isNativeTransportFailure(error)) {
+        omitted.push(...filePaths.slice(i + 1));
+        break;
       }
     }
-  });
-
-  const results = await Promise.all(fileDiffPromises);
-  for (const r of results) {
-    if (r) patches.push(r);
   }
 
-  return patches.length > 0 ? "\n" + patches.join("\n") : "";
+  return {
+    patch: patches.length > 0 ? "\n" + patches.join("\n") : "",
+    omitted,
+  };
 }
 
 export async function getCustomGitDiffAsync(args: string[]): Promise<string> {
-  try {
-    const { stdout } = await execFileAsync(
-      "git",
-      ["diff", ...DIFF_FLAGS, ...args],
-      { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 },
-    );
-    return stdout;
-  } catch {
-    return "";
-  }
+  const { stdout } = await execFileAsync(
+    "git",
+    ["diff", ...DIFF_FLAGS, ...args],
+    { encoding: "utf-8", maxBuffer: 50 * 1024 * 1024 },
+  );
+  return stdout;
 }
 
 export async function getGitDiffAsync(
   options: { staged?: boolean; untracked?: boolean } = {},
-): Promise<string> {
+): Promise<GitDiffResult> {
   const unstagedPromise = execFileAsync("git", ["diff", ...DIFF_FLAGS], {
     encoding: "utf-8",
     maxBuffer: 50 * 1024 * 1024,
-  })
-    .then(({ stdout }) => stdout)
-    .catch(() => "");
+  }).then(({ stdout }) => stdout);
 
   const stagedPromise = options.staged
     ? execFileAsync("git", ["diff", ...DIFF_FLAGS, "--staged"], {
         encoding: "utf-8",
         maxBuffer: 50 * 1024 * 1024,
-      })
-        .then(({ stdout }) => stdout)
-        .catch(() => "")
+      }).then(({ stdout }) => stdout)
     : Promise.resolve("");
 
   const untrackedPromise = options.untracked
-    ? getUntrackedFilesDiffAsync()
-    : Promise.resolve("");
+    ? getUntrackedFilesDiffAsync().catch(() => ({
+        patch: "",
+        omitted: [] as string[],
+        listingFailed: true,
+      }))
+    : Promise.resolve({ patch: "", omitted: [] as string[] });
 
-  const [unstaged, staged, untrackedPatch] = await Promise.all([
+  const [unstaged, staged, untracked] = await Promise.all([
     unstagedPromise,
     stagedPromise,
     untrackedPromise,
@@ -452,9 +542,13 @@ export async function getGitDiffAsync(
   const parts: string[] = [];
   if (unstaged) parts.push(unstaged);
   if (staged) parts.push(staged);
-  if (untrackedPatch) parts.push(untrackedPatch);
+  if (untracked.patch) parts.push(untracked.patch);
 
-  return parts.join("\n");
+  return {
+    patch: parts.join("\n"),
+    omittedUntracked: untracked.omitted,
+    ...(untracked.listingFailed ? { untrackedListingFailed: true } : {}),
+  };
 }
 
 /**
@@ -464,21 +558,18 @@ export async function getGitDiffAsync(
  */
 export function listRepoFiles(): string[] {
   try {
-    const tracked = execFileSync("git", ["ls-files"], {
+    const tracked = execFileSync("git", ["ls-files", "-z"], {
       encoding: "utf-8",
       maxBuffer: 100 * 1024 * 1024,
-    }).trim();
+    });
     const untracked = execFileSync(
       "git",
-      ["ls-files", "--others", "--exclude-standard"],
+      ["ls-files", "-z", "--others", "--exclude-standard"],
       { encoding: "utf-8", maxBuffer: 100 * 1024 * 1024 },
-    ).trim();
+    );
     const set = new Set<string>();
     for (const list of [tracked, untracked]) {
-      if (!list) continue;
-      for (const line of list.split("\n")) {
-        if (line) set.add(line);
-      }
+      for (const file of parseGitZPaths(list)) set.add(file);
     }
     return [...set].sort();
   } catch {
@@ -535,7 +626,7 @@ export function gitAddFile(filePath: string): void {
  * and untracked changes). Used by the Phase E hunk-revert flow to derive
  * the exact patch text we need to `git apply --reverse`.
  */
-export function getFilePatch(filePath: string): string {
+export async function getFilePatch(filePath: string): Promise<string> {
   try {
     const unstaged = execFileSync(
       "git",
@@ -544,24 +635,14 @@ export function getFilePatch(filePath: string): string {
     );
     if (unstaged) return unstaged;
   } catch {
-    // fall through
+    // fall through to untracked synthesis
   }
-  // Untracked: synthesize a new-file patch like getGitDiff does.
   try {
     const root = getRepoRoot();
-    const absolutePath = join(root, filePath);
-    if (isBinaryFile(absolutePath)) return "";
-    const content = readFileSync(absolutePath, "utf-8");
-    const lines = splitLines(content);
-    return [
-      `diff --git a/${filePath} b/${filePath}`,
-      "new file mode 100644",
-      "index 0000000..0000001",
-      "--- /dev/null",
-      `+++ b/${filePath}`,
-      `@@ -0,0 +1,${lines.length} @@`,
-      ...lines.map((l) => `+${l}`),
-    ].join("\n");
+    const rel = toSafeLiteralRelativePath(filePath, root);
+    if (!rel) return "";
+    const { bytes } = await getNativeRepositoryFs(root).read(rel);
+    return synthesizeUntrackedPatch(rel, bytes);
   } catch {
     return "";
   }
@@ -603,8 +684,11 @@ export function extractPatchHeader(patch: string): string {
  * `git apply --reverse`. Throws if git rejects the apply (typically because
  * the file has shifted since the diff was rendered).
  */
-export function revertHunk(filePath: string, hunkIndex: number): void {
-  const patch = getFilePatch(filePath);
+export async function revertHunk(
+  filePath: string,
+  hunkIndex: number,
+): Promise<void> {
+  const patch = await getFilePatch(filePath);
   if (!patch) {
     throw new Error("No diff available for this file");
   }

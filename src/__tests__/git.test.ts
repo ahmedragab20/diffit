@@ -6,6 +6,7 @@ const mockExecFile = vi.fn();
 const mockReadFileSync = vi.fn();
 const mockIsSafePath = vi.fn();
 const mockParseEditorConfig = vi.fn();
+const mockParseFromFilesSync = vi.fn();
 const mockToSafeRelativePath = vi.fn((filePath) =>
   mockIsSafePath(filePath) ? filePath : null,
 );
@@ -42,7 +43,10 @@ vi.mock("../lib/native-fs.js", async (importOriginal) => {
     closeNativeRepositoryFs: mockNativeClose,
   };
 });
-vi.mock("editorconfig", () => ({ parseSync: mockParseEditorConfig }));
+vi.mock("editorconfig", () => ({
+  parseSync: mockParseEditorConfig,
+  parseFromFilesSync: mockParseFromFilesSync,
+}));
 
 describe("git", () => {
   beforeEach(async () => {
@@ -192,45 +196,207 @@ describe("git", () => {
   });
 
   describe("getTabSizeForFiles", () => {
-    it("uses tab_width from editorconfig", async () => {
-      mockExecFileSync.mockReturnValue("/repo\n");
-      mockParseEditorConfig.mockReturnValue({ tab_width: 2, indent_size: 2 });
+    it("does not walk EditorConfig through Node fs", async () => {
       const { getTabSizeForFiles } = await import("../lib/git.js");
-      expect(getTabSizeForFiles(["src/index.ts"])).toEqual({
+      expect(getTabSizeForFiles(["src/index.ts"])).toEqual({});
+      expect(mockParseEditorConfig).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("getTabSizeForFilesAsync", () => {
+    it("parses EditorConfig from capability-read bytes", async () => {
+      mockExecFileSync.mockReturnValue("/repo\n");
+      mockIsSafePath.mockReturnValue(true);
+      mockNativeRead.mockResolvedValue({
+        bytes: Buffer.from("[*]\ntab_width = 2\n"),
+        sha256: "a".repeat(64),
+      });
+      mockParseFromFilesSync.mockReturnValue({ tab_width: 2 });
+      const { getTabSizeForFilesAsync } = await import("../lib/git.js");
+      expect(await getTabSizeForFilesAsync(["src/index.ts"])).toEqual({
         "src/index.ts": 2,
       });
+      expect(mockNativeRead).toHaveBeenCalled();
+      expect(mockParseFromFilesSync).toHaveBeenCalled();
     });
 
     it("falls back to indent_size", async () => {
       mockExecFileSync.mockReturnValue("/repo\n");
-      mockParseEditorConfig.mockReturnValue({ indent_size: 4 });
-      const { getTabSizeForFiles } = await import("../lib/git.js");
-      expect(getTabSizeForFiles(["src/index.ts"])).toEqual({
+      mockIsSafePath.mockReturnValue(true);
+      mockNativeRead.mockResolvedValue({
+        bytes: Buffer.from("[*]\nindent_size = 4\n"),
+        sha256: "a".repeat(64),
+      });
+      mockParseFromFilesSync.mockReturnValue({ indent_size: 4 });
+      const { getTabSizeForFilesAsync } = await import("../lib/git.js");
+      expect(await getTabSizeForFilesAsync(["src/index.ts"])).toEqual({
         "src/index.ts": 4,
       });
     });
 
-    it("skips files on error", async () => {
+    it("skips files when EditorConfig parse throws", async () => {
       mockExecFileSync.mockReturnValue("/repo\n");
-      mockParseEditorConfig.mockImplementation(() => {
+      mockIsSafePath.mockReturnValue(true);
+      mockNativeRead.mockResolvedValue({
+        bytes: Buffer.from("[*]\ntab_width = 2\n"),
+        sha256: "a".repeat(64),
+      });
+      mockParseFromFilesSync.mockImplementation(() => {
         throw new Error("fail");
       });
-      const { getTabSizeForFiles } = await import("../lib/git.js");
-      expect(getTabSizeForFiles(["src/index.ts"])).toEqual({});
+      const { getTabSizeForFilesAsync } = await import("../lib/git.js");
+      expect(await getTabSizeForFilesAsync(["src/index.ts"])).toEqual({});
     });
   });
 
   describe("getUntrackedFilePaths", () => {
-    it("splits output by newline", async () => {
-      mockExecFileSync.mockReturnValue("a.ts\nb.ts\n");
+    it("splits output on NUL, not newline", async () => {
+      mockExecFileSync.mockReturnValue("a.ts\0b.ts\0");
       const { getUntrackedFilePaths } = await import("../lib/git.js");
       expect(getUntrackedFilePaths()).toEqual(["a.ts", "b.ts"]);
+    });
+
+    it("preserves newlines inside a filename", async () => {
+      mockExecFileSync.mockReturnValue("foo\nbar.ts\0");
+      const { getUntrackedFilePaths } = await import("../lib/git.js");
+      expect(getUntrackedFilePaths()).toEqual(["foo\nbar.ts"]);
     });
 
     it("returns empty array for empty output", async () => {
       mockExecFileSync.mockReturnValue("");
       const { getUntrackedFilePaths } = await import("../lib/git.js");
       expect(getUntrackedFilePaths()).toEqual([]);
+    });
+  });
+
+  describe("getGitDiffAsync", () => {
+    function installGitExec(options: {
+      diff?: string;
+      staged?: string;
+      lsFilesZ?: string;
+      failDiff?: boolean;
+      failLsFiles?: boolean;
+    }) {
+      mockExecFile.mockImplementation(
+        (_cmd: string, args: string[] | undefined, _opts: unknown, cb: any) => {
+          const a = args ?? [];
+          if (options.failDiff && a[0] === "diff" && !a.includes("--staged")) {
+            cb(new Error("diff failed"));
+            return;
+          }
+          if (options.failLsFiles && a[0] === "ls-files") {
+            cb(new Error("ls-files failed"));
+            return;
+          }
+          let stdout = "";
+          if (a[0] === "diff" && a.includes("--staged")) {
+            stdout = options.staged ?? "";
+          } else if (a[0] === "diff") {
+            stdout = options.diff ?? "";
+          } else if (a[0] === "ls-files") {
+            stdout = options.lsFilesZ ?? "";
+          }
+          cb(null, { stdout, stderr: "" });
+        },
+      );
+    }
+
+    it("keeps tracked diffs when a symlink untracked file is denied", async () => {
+      mockExecFileSync.mockReturnValue("/repo\n");
+      mockIsSafePath.mockReturnValue(true);
+      installGitExec({
+        diff: "unstaged-diff\n",
+        lsFilesZ: "ok.ts\0link.ts\0",
+      });
+      const { NativeFsError } = await import("../lib/native-fs.js");
+      mockNativeRead.mockImplementation(async (rel: string) => {
+        if (rel === "link.ts") throw new NativeFsError("denied");
+        return { bytes: Buffer.from("ok\n"), sha256: "a".repeat(64) };
+      });
+      const { getGitDiffAsync } = await import("../lib/git.js");
+      const result = await getGitDiffAsync({ untracked: true });
+      expect(result.patch).toContain("unstaged-diff");
+      expect(result.patch).toContain("diff --git a/ok.ts b/ok.ts");
+      expect(result.patch).not.toContain("link.ts");
+      expect(result.omittedUntracked).toEqual(["link.ts"]);
+      expect(mockReadFileSync).not.toHaveBeenCalled();
+    });
+
+    it("omits remaining untracked files when the helper is unavailable", async () => {
+      mockExecFileSync.mockReturnValue("/repo\n");
+      mockIsSafePath.mockReturnValue(true);
+      installGitExec({
+        diff: "unstaged-diff\n",
+        lsFilesZ: "a.ts\0b.ts\0",
+      });
+      const { NativeFsError } = await import("../lib/native-fs.js");
+      mockNativeRead.mockRejectedValue(new NativeFsError("unavailable"));
+      const { getGitDiffAsync } = await import("../lib/git.js");
+      const result = await getGitDiffAsync({ untracked: true });
+      expect(result.patch).toBe("unstaged-diff\n");
+      expect(result.omittedUntracked).toEqual(["a.ts", "b.ts"]);
+      expect(mockNativeRead).toHaveBeenCalledTimes(1);
+    });
+
+    it("marks listing failure without dropping tracked diffs", async () => {
+      mockExecFileSync.mockReturnValue("/repo\n");
+      installGitExec({ diff: "unstaged-diff\n", failLsFiles: true });
+      const { getGitDiffAsync } = await import("../lib/git.js");
+      const result = await getGitDiffAsync({ untracked: true });
+      expect(result.patch).toBe("unstaged-diff\n");
+      expect(result.omittedUntracked).toEqual([]);
+      expect(result.untrackedListingFailed).toBe(true);
+    });
+
+    it("synthesizes untracked files whose names contain a newline", async () => {
+      mockExecFileSync.mockReturnValue("/repo\n");
+      mockIsSafePath.mockReturnValue(true);
+      installGitExec({
+        diff: "",
+        lsFilesZ: "foo\nbar.ts\0",
+      });
+      mockNativeRead.mockResolvedValue({
+        bytes: Buffer.from("x\n"),
+        sha256: "a".repeat(64),
+      });
+      const { getGitDiffAsync } = await import("../lib/git.js");
+      const result = await getGitDiffAsync({ untracked: true });
+      expect(result.omittedUntracked).toEqual([]);
+      expect(result.patch).toContain("foo\nbar.ts");
+      expect(mockNativeRead).toHaveBeenCalledWith("foo\nbar.ts");
+    });
+
+    it("reads a literal percent path without URL-decoding", async () => {
+      mockExecFileSync.mockReturnValue("/repo\n");
+      mockIsSafePath.mockReturnValue(true);
+      installGitExec({
+        diff: "",
+        lsFilesZ: "weird%2fname.ts\0",
+      });
+      mockNativeRead.mockResolvedValue({
+        bytes: Buffer.from("x\n"),
+        sha256: "a".repeat(64),
+      });
+      const { getGitDiffAsync } = await import("../lib/git.js");
+      const result = await getGitDiffAsync({ untracked: true });
+      expect(result.omittedUntracked).toEqual([]);
+      expect(mockNativeRead).toHaveBeenCalledWith("weird%2fname.ts");
+    });
+
+    it("propagates tracked git-diff failures instead of an empty patch", async () => {
+      installGitExec({ failDiff: true });
+      const { getGitDiffAsync } = await import("../lib/git.js");
+      await expect(getGitDiffAsync()).rejects.toThrow("diff failed");
+    });
+  });
+
+  describe("listRepoFiles", () => {
+    it("splits tracked and untracked paths on NUL", async () => {
+      mockExecFileSync
+        .mockReturnValueOnce("a.ts\0foo\nbar.ts\0")
+        .mockReturnValueOnce("new.ts\0");
+      const { listRepoFiles } = await import("../lib/git.js");
+      expect(listRepoFiles()).toEqual(["a.ts", "foo\nbar.ts", "new.ts"]);
     });
   });
 
@@ -316,6 +482,34 @@ describe("git", () => {
       expect(mockExecFile.mock.calls[0][0]).toBe("git");
       expect(mockExecFile.mock.calls[0][1]).toEqual([
         "show",
+        "--no-textconv",
+        ":src/index.ts",
+      ]);
+    });
+
+    it("reads staged old content from HEAD", async () => {
+      mockIsSafePath.mockReturnValue(true);
+      mockExecFileSync.mockReturnValue("/repo\n");
+      mockExecFile.mockImplementationOnce(
+        (
+          _cmd: string,
+          _args: string[] | undefined,
+          _opts: unknown,
+          cb: BufferExecCallback,
+        ) => {
+          cb(null, {
+            stdout: Buffer.from("staged-old"),
+            stderr: Buffer.alloc(0),
+          });
+        },
+      );
+      const { getFileContent } = await import("../lib/git.js");
+      expect(
+        await getFileContent("src/index.ts", "old", { staged: true }),
+      ).toEqual(Buffer.from("staged-old"));
+      expect(mockExecFile.mock.calls[0][1]).toEqual([
+        "show",
+        "--no-textconv",
         "HEAD:src/index.ts",
       ]);
     });
@@ -366,21 +560,17 @@ describe("git", () => {
       mockExecFileSync
         .mockReturnValueOnce("") // `git diff` -> no output (untracked)
         .mockReturnValueOnce("/repo\n"); // getRepoRoot inside the untracked branch
-      mockReadFileSync.mockImplementation((p: string) =>
-        p === "/repo/new-windows-file.ts"
-          ? "line one\r\nline two\r\nline three\r\n"
-          : Buffer.from(""),
-      );
+      mockNativeRead.mockResolvedValue({
+        bytes: Buffer.from("line one\r\nline two\r\nline three\r\n"),
+        sha256: "a".repeat(64),
+      });
       const { getFilePatch } = await import("../lib/git.js");
-      const patch = getFilePatch("new-windows-file.ts");
+      const patch = await getFilePatch("new-windows-file.ts");
 
-      // No stray \r at the end of any added line.
       for (const line of patch.split("\n").filter((l) => l.startsWith("+"))) {
         expect(line.endsWith("\r")).toBe(false);
       }
 
-      // The header should match the actual line count after CRLF-aware split:
-      // ["line one", "line two", "line three", ""] → 4 elements.
       expect(patch).toContain("@@ -0,0 +1,4 @@");
       expect(patch).toContain("+line one");
       expect(patch).toContain("+line two");
@@ -390,44 +580,43 @@ describe("git", () => {
     it("handles plain LF file unchanged", async () => {
       mockIsSafePath.mockReturnValue(true);
       mockExecFileSync.mockReturnValueOnce("").mockReturnValueOnce("/repo\n");
-      mockReadFileSync.mockImplementation((p: string) =>
-        p === "/repo/posix-file.ts" ? "a\nb\nc\n" : Buffer.from(""),
-      );
+      mockNativeRead.mockResolvedValue({
+        bytes: Buffer.from("a\nb\nc\n"),
+        sha256: "a".repeat(64),
+      });
       const { getFilePatch } = await import("../lib/git.js");
-      const patch = getFilePatch("posix-file.ts");
+      const patch = await getFilePatch("posix-file.ts");
 
       expect(patch).toContain("@@ -0,0 +1,4 @@");
       expect(patch).toContain("+a\n+b\n+c\n+");
     });
 
     it("handles legacy CR-only line endings", async () => {
-      // Classic Mac line endings — vanishingly rare but legal, and a stray
-      // \r in the middle of the diff stream would corrupt the UI just like
-      // CRLF does.
       mockIsSafePath.mockReturnValue(true);
       mockExecFileSync.mockReturnValueOnce("").mockReturnValueOnce("/repo\n");
-      mockReadFileSync.mockImplementation((p: string) =>
-        p === "/repo/classic-mac.txt" ? "foo\rbar\rbaz" : Buffer.from(""),
-      );
+      mockNativeRead.mockResolvedValue({
+        bytes: Buffer.from("foo\rbar\rbaz"),
+        sha256: "a".repeat(64),
+      });
       const { getFilePatch } = await import("../lib/git.js");
-      const patch = getFilePatch("classic-mac.txt");
+      const patch = await getFilePatch("classic-mac.txt");
 
       expect(patch).toContain("@@ -0,0 +1,3 @@");
       expect(patch).toContain("+foo");
       expect(patch).toContain("+bar");
       expect(patch).toContain("+baz");
-      // No stray \r anywhere in the synthesized output.
       expect(patch.includes("\r")).toBe(false);
     });
 
     it("handles mixed CRLF/LF in one file", async () => {
       mockIsSafePath.mockReturnValue(true);
       mockExecFileSync.mockReturnValueOnce("").mockReturnValueOnce("/repo\n");
-      mockReadFileSync.mockImplementation((p: string) =>
-        p === "/repo/mixed.txt" ? "win\r\nposix\nmac\r\n" : Buffer.from(""),
-      );
+      mockNativeRead.mockResolvedValue({
+        bytes: Buffer.from("win\r\nposix\nmac\r\n"),
+        sha256: "a".repeat(64),
+      });
       const { getFilePatch } = await import("../lib/git.js");
-      const patch = getFilePatch("mixed.txt");
+      const patch = await getFilePatch("mixed.txt");
 
       expect(patch).toContain("+win");
       expect(patch).toContain("+posix");

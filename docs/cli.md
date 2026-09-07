@@ -467,7 +467,7 @@ The loopback HTTP contract is shared across modes:
 
 | Route | Purpose |
 | ------- | --------- |
-| `GET /api/diff/summary?exclude` | Generation, completion, totals, kind counts, top-level directories, and PR identity when applicable |
+| `GET /api/diff/summary?exclude` | Generation, `complete`, optional `omittedPaths`, totals, kind counts, top-level directories, and PR identity when applicable |
 | `GET /api/diff/files?path&cursor&limit` | Paged file metadata; `path` filters first, then pages |
 | `GET /api/diff/hunks?file\|path&cursor&limit&generation` | Paged hunk metadata with stale-generation protection |
 | `GET /api/diff/slice?file\|path&start&maxLines&maxBytes&generation` | Strictly bounded logical rows; continue with `nextRow` |

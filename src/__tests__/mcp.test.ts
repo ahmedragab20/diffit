@@ -323,6 +323,7 @@ describe('diffing MCP', () => {
       expect(diff.structuredContent).toMatchObject({
         repoName: 'repo',
         branch: 'main',
+        complete: true,
       })
       expect((diff.content as Array<unknown>)[0]).toMatchObject({
         type: 'text',

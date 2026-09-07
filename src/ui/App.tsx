@@ -89,6 +89,8 @@ export function App() {
 		binaryFiles,
 		tabSizeMap,
 		untrackedFiles,
+		complete,
+		omittedPaths,
 		overview,
 		loading,
 		refreshing,
@@ -1542,6 +1544,16 @@ export function App() {
 							/>
 						)}
 						<main className="main" ref={diffViewerRef} id="diff-main" tabIndex={-1}>
+							{complete === false && (
+								<div className="diff-incomplete-banner" role="status">
+									<strong>Review is incomplete</strong>
+									<span>
+										{omittedPaths.length > 0
+											? `${omittedPaths.length} untracked file${omittedPaths.length === 1 ? "" : "s"} could not be read through the repository sandbox and ${omittedPaths.length === 1 ? "was" : "were"} omitted.`
+											: "Some untracked files could not be read through the repository sandbox and were omitted."}
+									</span>
+								</div>
+							)}
 							{overview && (
 								<DiffOverviewBanner
 									overview={overview}

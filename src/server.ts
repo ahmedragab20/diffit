@@ -121,7 +121,11 @@ import {
 	injectSessionTokenIntoHtml,
 	type ServerAuthConfig,
 } from "./lib/server-auth.js";
-import { FilePrSessionStore, findPendingReview, samePrIdentity } from "./lib/pr-session.js";
+import {
+	FilePrSessionStore,
+	findPendingReview,
+	samePrIdentity,
+} from "./lib/pr-session.js";
 import type {
 	PrSessionStore,
 	PrDecision,
@@ -424,7 +428,9 @@ export function createApp(
 	const currentViewedScope = async () => {
 		const session = prMode ? await prStore.get() : null;
 		const key = viewedScopeKey(session, prMode);
-		const fingerprints = session ? fingerprintsForPatch(session.diff ?? "") : null;
+		const fingerprints = session
+			? fingerprintsForPatch(session.diff ?? "")
+			: null;
 		return { key, fingerprints, headSha: session?.headSha, session };
 	};
 	/** Agent-reported progress events for the human UI (SSE `agent-progress`). */
@@ -741,6 +747,8 @@ export function createApp(
 			binaryFiles: result.binaryFiles,
 			tabSizeMap: result.tabSizeMap,
 			untrackedFiles: result.untrackedFiles,
+			complete: result.complete,
+			...(result.omittedPaths ? { omittedPaths: result.omittedPaths } : {}),
 			// Show mode signals the UI to render commit metadata banners. Both
 			// fields are absent in the normal flow so existing clients see the
 			// same payload they always did.
@@ -756,21 +764,37 @@ export function createApp(
 	});
 
 	// ── Bounded agent inspect (web + gh-pr; same contract as TUI Agent API) ──
-	async function resolveAgentPatch(): Promise<string> {
+	async function resolveAgentPatch(): Promise<{
+		patch: string;
+		complete: boolean;
+		omittedPaths?: string[];
+	}> {
 		if (prMode) {
 			const prSession = await prStore.get();
-			return prSession?.diff ?? "";
+			const omitted = prSession?.diffCompleteness?.omittedPatches ?? 0;
+			return {
+				patch: prSession?.diff ?? "",
+				complete: omitted === 0,
+			};
 		}
-		const stagedQuery = undefined;
-		const untrackedQuery = undefined;
-		const staged = stagedQuery === undefined ? diffOpts.staged : false;
-		const untracked =
-			untrackedQuery === undefined ? diffOpts.includeUntracked : false;
 		const optsForDiff = customMode
 			? diffOpts
-			: { ...diffOpts, staged, includeUntracked: untracked };
+			: {
+					...diffOpts,
+					staged: diffOpts.staged,
+					includeUntracked: diffOpts.includeUntracked,
+				};
 		const result = await executeDiffWithMeta(optsForDiff);
-		return result.patch ?? "";
+		return {
+			patch: result.patch ?? "",
+			complete: result.complete,
+			...(result.omittedPaths ? { omittedPaths: result.omittedPaths } : {}),
+		};
+	}
+
+	async function getAgentIndex() {
+		const { patch, complete, omittedPaths } = await resolveAgentPatch();
+		return agentDiffCache.getOrBuild(patch, complete, omittedPaths);
 	}
 
 	function parseUInt(value: string | undefined, fallback: number): number {
@@ -796,8 +820,7 @@ export function createApp(
 	}
 
 	app.get("/api/diff/summary", async (c) => {
-		const patch = await resolveAgentPatch();
-		const index = agentDiffCache.getOrBuild(patch);
+		const index = await getAgentIndex();
 		const summary = indexSummary(index, c.req.query("exclude"));
 		if ("status" in summary) return inspectError(c, summary);
 		if (!prMode) return c.json(summary);
@@ -817,8 +840,7 @@ export function createApp(
 	});
 
 	app.get("/api/diff/files", async (c) => {
-		const patch = await resolveAgentPatch();
-		const index = agentDiffCache.getOrBuild(patch);
+		const index = await getAgentIndex();
 		const cursor = parseUInt(c.req.query("cursor"), 0);
 		const limit = parseUInt(c.req.query("limit"), 100);
 		const result = indexFiles(index, cursor, limit, c.req.query("path"));
@@ -827,8 +849,7 @@ export function createApp(
 	});
 
 	app.get("/api/diff/hunks", async (c) => {
-		const patch = await resolveAgentPatch();
-		const index = agentDiffCache.getOrBuild(patch);
+		const index = await getAgentIndex();
 		const resolved = resolveInspectFile(
 			index,
 			optionalUInt(c.req.query("file")),
@@ -852,8 +873,7 @@ export function createApp(
 	});
 
 	app.get("/api/diff/slice", async (c) => {
-		const patch = await resolveAgentPatch();
-		const index = agentDiffCache.getOrBuild(patch);
+		const index = await getAgentIndex();
 		const resolved = resolveInspectFile(
 			index,
 			optionalUInt(c.req.query("file")),
@@ -879,8 +899,7 @@ export function createApp(
 	});
 
 	app.get("/api/diff/search", async (c) => {
-		const patch = await resolveAgentPatch();
-		const index = agentDiffCache.getOrBuild(patch);
+		const index = await getAgentIndex();
 		const q = c.req.query("q") ?? "";
 		const file = parseUInt(c.req.query("file"), 0);
 		const row = parseUInt(c.req.query("row"), 0);
@@ -908,7 +927,13 @@ export function createApp(
 			throw new NativeFsError("invalid-request");
 		const safePath = toSafeLiteralRelativePath(path, repoRoot);
 		if (!safePath) throw new NativeFsError("invalid-path");
-		if (!prMode) return getFileContent(safePath, version);
+		if (!prMode)
+			return getFileContent(safePath, version, {
+				staged: diffOpts.staged,
+				revisions: diffOpts.revisions,
+				showMode: diffOpts.showMode,
+				showRevspecs: diffOpts.showRevspecs,
+			});
 		const session = await prStore.get();
 		if (!session) return null;
 		const sha =
@@ -1174,7 +1199,7 @@ export function createApp(
 			if (!relPath) {
 				return c.json({ error: "Forbidden file path" }, 403);
 			}
-			revertHunk(relPath, hunkIndex);
+			await revertHunk(relPath, hunkIndex);
 			return c.json({ ok: true });
 		} catch (err: any) {
 			const stderr =
@@ -2666,10 +2691,7 @@ export function createApp(
 			(session.headOwner != null && session.headOwner !== session.owner) ||
 			(session.headRepo != null && session.headRepo !== session.repo);
 		if (forkHead && session.maintainerCanModify === false) {
-			return c.json(
-				{ error: "Maintainer cannot push to the head branch" },
-				403,
-			);
+			return c.json({ error: "Maintainer cannot push to the head branch" }, 403);
 		}
 		if (body.dryRun === true) {
 			return c.json({
@@ -2771,7 +2793,8 @@ export function createApp(
 			title: body.title,
 			body: body.body,
 		});
-		if (!result.ok) return c.json({ error: result.error ?? "Update failed" }, 502);
+		if (!result.ok)
+			return c.json({ error: result.error ?? "Update failed" }, 502);
 		const next = await prStore.apply((latest) =>
 			latest
 				? {
@@ -2797,11 +2820,9 @@ export function createApp(
 		const session = await prStore.get();
 		if (!session) return notInPrMode(c);
 		if (dryRun) return c.json({ ok: true, dryRun: true, state });
-		const result = await setPrOpenStateViaGh(
-			resolvedFromSession(session),
-			state,
-		);
-		if (!result.ok) return c.json({ error: result.error ?? "Update failed" }, 502);
+		const result = await setPrOpenStateViaGh(resolvedFromSession(session), state);
+		if (!result.ok)
+			return c.json({ error: result.error ?? "Update failed" }, 502);
 		await prStore.apply((latest) =>
 			latest ? { ...latest, state: state === "closed" ? "closed" : "open" } : null,
 		);
@@ -2830,7 +2851,9 @@ export function createApp(
 			commitMessage?: string;
 		};
 		const method =
-			body.method === "squash" || body.method === "rebase" || body.method === "merge"
+			body.method === "squash" ||
+			body.method === "rebase" ||
+			body.method === "merge"
 				? body.method
 				: "merge";
 		const expectedHeadSha = body.expectedHeadSha || session.headSha;

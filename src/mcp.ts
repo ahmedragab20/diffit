@@ -164,6 +164,8 @@ interface DiffResponse {
 	}>;
 	tabSizeMap: Record<string, number>;
 	untrackedFiles: string[];
+	complete?: boolean;
+	omittedPaths?: string[];
 	showMode?: boolean;
 	commits?: unknown[];
 	truncated?: number;
@@ -979,6 +981,8 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 				),
 				tabSizeMap: z.record(z.string(), z.number()),
 				untrackedFiles: z.array(z.string()),
+				complete: z.boolean(),
+				omittedPaths: z.array(z.string()).optional(),
 				showMode: z.boolean().optional(),
 				commits: z.array(z.unknown()).optional(),
 				truncated: z.number().optional(),
@@ -995,6 +999,10 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 				binaryFiles: diff.binaryFiles,
 				tabSizeMap: diff.tabSizeMap,
 				untrackedFiles: diff.untrackedFiles,
+				complete: diff.complete !== false,
+				...(Array.isArray(diff.omittedPaths) && diff.omittedPaths.length > 0
+					? { omittedPaths: diff.omittedPaths }
+					: {}),
 				...(typeof diff.showMode === "boolean" ? { showMode: diff.showMode } : {}),
 				...(Array.isArray(diff.commits) ? { commits: diff.commits } : {}),
 				...(typeof diff.truncated === "number"
