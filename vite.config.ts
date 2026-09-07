@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
+import { isBuiltin } from 'node:module'
 import { basename, join } from 'node:path'
 import { defineConfig, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
@@ -55,8 +56,22 @@ function diffingDevSessionAuthPlugin(): Plugin {
   }
 }
 
+/** Fail before Vite replaces server dependencies with empty browser shims. */
+export function browserOnlyPlugin(): Plugin {
+  return {
+    name: 'diffing-browser-only',
+    enforce: 'pre',
+    resolveId(source, importer) {
+      if (isBuiltin(source)) {
+        this.error(`Node-only module "${source}" imported by "${importer}" in the browser UI`)
+      }
+      return null
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), diffingDevSessionAuthPlugin()],
+  plugins: [browserOnlyPlugin(), react(), diffingDevSessionAuthPlugin()],
   root: '.',
   // Ensure a single React instance across the app and Base UI primitives,
   // otherwise hooks inside Base UI components throw "Invalid hook call".

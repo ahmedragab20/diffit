@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import type { ReviewComment } from "../../lib/types";
 import type { PrSession, PrDecision } from "../../lib/pr-session";
-import { classifyPrComments } from "../../lib/github";
+import { classifyPrComments } from "../../lib/pr-comments";
 import { fileName } from "../utils";
 import { Popover } from "../primitives/Popover";
 import { MarkdownField } from "./MarkdownField";
