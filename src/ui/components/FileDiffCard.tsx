@@ -8,6 +8,12 @@ import {
   useCallback,
 } from "react";
 import { FileDiff, MultiFileDiff } from "@pierre/diffs/react";
+import { VirtualizedFileDiff } from "@pierre/diffs";
+import type { FileDiffOptions } from "@pierre/diffs";
+import {
+  registerDiffTarget,
+  scheduleDiffNavigation,
+} from "../lib/diffNavigation";
 import type {
   DiffLineAnnotation,
   FileDiffMetadata,
@@ -36,7 +42,6 @@ import {
   AlertCircle,
   X,
   HelpCircle,
-  GitCommit,
   Clock,
   User,
   Copy,
@@ -192,7 +197,7 @@ interface FileDiffCardProps {
     body: string,
     startLineNumber?: number,
     severity?: import("../../lib/types").CommentSeverity,
-  ) => void;
+  ) => void | Promise<unknown>;
   onDeleteComment: (id: string) => void;
   onAddSelectionToAsk?: (selection: AiDiffSelection) => void;
   onReplyExisting?: (commentId: number, body: string) => Promise<void>;
@@ -226,7 +231,7 @@ interface FileDiffCardProps {
   ) => void;
   onEditAttach?: (
     filePath: string,
-    editor: Editor<CardAnnotationMetadata>,
+    editor: Editor<"file-diff", CardAnnotationMetadata>,
   ) => void;
   onEditSave?: (filePath: string) => void;
   onEditDiscard?: (filePath: string) => void;
@@ -325,10 +330,62 @@ export const FileDiffCard = memo(function FileDiffCard({
   /** Live selection text for edit-mode comment drafts (patch arrays are stale mid-session). */
   const selectionContentRef = useRef<string | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
+  const rendererRef = useRef<{
+    node: HTMLElement;
+    instance: VirtualizedFileDiff<CardAnnotationMetadata>;
+  } | null>(null);
+  const syncSearchRef = useRef<(() => void) | undefined>(undefined);
+  const onPostRender = useCallback<
+    NonNullable<
+      FileDiffOptions<CardAnnotationMetadata, undefined>["onPostRender"]
+    >
+  >((node, instance, phase) => {
+    rendererRef.current =
+      phase !== "unmount" && instance instanceof VirtualizedFileDiff
+        ? { node, instance }
+        : null;
+    if (phase !== "unmount") syncSearchRef.current?.();
+  }, []);
   // Defer mounting the expensive @pierre/diffs renderer until the card is near
   // the viewport. Once mounted we keep it (sticky) so scroll-back doesn't re-run
   // Shiki. Combined with content-visibility CSS this is the main large-diff win.
   const [bodyMounted, setBodyMounted] = useState(false);
+
+  useEffect(
+    () =>
+      registerDiffTarget(filePath, {
+        reveal: () => {
+          setCollapsed(false);
+          setBodyMounted(true);
+        },
+        position: (line, side) => {
+          const renderer = rendererRef.current;
+          if (renderer?.node.isConnected) {
+            const position = renderer.instance.getLinePosition(line, side);
+            if (position)
+              return (
+                window.scrollY +
+                renderer.node.getBoundingClientRect().top +
+                position.top
+              );
+          }
+          const root =
+            cardRef.current?.querySelector("diffs-container")?.shadowRoot;
+          const type = side === "additions" ? "addition" : "deletion";
+          const row =
+            root?.querySelector(
+              `[data-line="${line}"][data-line-type="${type}"]`,
+            ) ??
+            root?.querySelector(
+              `[data-line="${line}"][data-line-type="context"]`,
+            );
+          return row
+            ? window.scrollY + row.getBoundingClientRect().top
+            : undefined;
+        },
+      }),
+    [filePath],
+  );
 
   const handleCopyPath = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -403,8 +460,10 @@ export const FileDiffCard = memo(function FileDiffCard({
   // scrolled — so the scroll would be computed against the un-collapsed
   // layout, then the page would shift up under the scroll position,
   // landing on the file AFTER the intended next one.
+  const previousViewed = useRef(viewed);
   useLayoutEffect(() => {
-    setCollapsed(viewed);
+    if (previousViewed.current !== viewed) setCollapsed(viewed);
+    previousViewed.current = viewed;
   }, [viewed]);
 
   useEffect(() => {
@@ -474,16 +533,13 @@ export const FileDiffCard = memo(function FileDiffCard({
   useEffect(() => {
     const card = cardRef.current;
     if (!card) return;
-    if (!searchSessionActive || !searchQuery.trim()) {
-      clearFindHighlights(card);
-      return;
-    }
-    syncFindHighlights(card, searchHits, searchIndex, searchQuery);
-    const timer = window.setInterval(() => {
+    if (!searchSessionActive || !searchQuery.trim()) return;
+    const sync = () =>
       syncFindHighlights(card, searchHits, searchIndex, searchQuery);
-    }, 300);
+    syncSearchRef.current = sync;
+    sync();
     return () => {
-      window.clearInterval(timer);
+      syncSearchRef.current = undefined;
       clearFindHighlights(card);
     };
   }, [
@@ -583,15 +639,12 @@ export const FileDiffCard = memo(function FileDiffCard({
   // bottom edge moves so the form stays near the anchor slot.
   useEffect(() => {
     if (!pending) return;
-    const id = window.requestAnimationFrame(() => {
-      const el = cardRef.current?.querySelector(
-        ".comment-form, [data-annotation-slot]",
-      );
-      if (el instanceof HTMLElement) {
-        el.scrollIntoView({ block: "nearest", behavior: "smooth" });
-      }
+    return scheduleDiffNavigation(() => {
+      const el = cardRef.current?.querySelector("[data-pending-comment]");
+      if (!(el instanceof HTMLElement)) return false;
+      el.scrollIntoView({ block: "nearest", behavior: "auto" });
+      return true;
     });
-    return () => cancelAnimationFrame(id);
   }, [pending?.side, pending?.lineNumber]);
 
   const handleOpenEditor = async (e: React.MouseEvent) => {
@@ -648,15 +701,10 @@ export const FileDiffCard = memo(function FileDiffCard({
    * (from EditProvider) owns the Editor instance; these callbacks wire it to
    * the edit-session state in App.
    */
-  const editorOptions = useMemo<EditorOptions<CardAnnotationMetadata>>(
+  const editorOptions = useMemo<
+    EditorOptions<"file-diff", CardAnnotationMetadata, undefined>
+  >(
     () => ({
-      onChange: (file, lineAnnotations) => {
-        onEditChange?.(
-          filePath,
-          file,
-          lineAnnotations as EditAnnotation[] | undefined,
-        );
-      },
       onAttach: (editor) => {
         onEditAttach?.(filePath, editor);
       },
@@ -732,59 +780,65 @@ export const FileDiffCard = memo(function FileDiffCard({
       const ordered = pendingOrderedRange(pending);
       const bounds = pendingBounds;
       return (
-        <CommentForm
-          draftKey={draftKey}
-          lineContent={lineContent}
-          aiSurface="diff"
-          aiContext={{
-            kind: "selection",
-            filePath,
-            side: pending.side,
-            startLine: ordered.start,
-            endLine: ordered.end,
-            selectedText: lineContent,
-          }}
-          onAddToAsk={onAddSelectionToAsk ? (selection) => {
-            onAddSelectionToAsk(selection);
-            clearPending();
-          } : undefined}
-          lineLabel={pendingLineLabel(pending)}
-          range={{
-            start: ordered.start,
-            end: ordered.end,
-            sideLabel: pendingSideLabel(pending),
-            canAdjustStart: (d) => canAdjustPendingStart(pending, d, bounds),
-            canAdjustEnd: (d) => canAdjustPendingEnd(pending, d, bounds),
-          }}
-          onAdjustStart={(delta) => {
-            updatePendingRange(adjustPendingStart(pending, delta, bounds));
-          }}
-          onAdjustEnd={(delta) => {
-            updatePendingRange(adjustPendingEnd(pending, delta, bounds));
-          }}
-          onSubmit={(body, severity) => {
-            // Recompute content at submit so adjusted ranges are accurate.
-            const content =
-              selectionContentRef.current ??
-              getLineContent(
+        <div data-pending-comment={session}>
+          <CommentForm
+            draftKey={draftKey}
+            lineContent={lineContent}
+            aiSurface="diff"
+            aiContext={{
+              kind: "selection",
+              filePath,
+              side: pending.side,
+              startLine: ordered.start,
+              endLine: ordered.end,
+              selectedText: lineContent,
+            }}
+            onAddToAsk={
+              onAddSelectionToAsk
+                ? (selection) => {
+                    onAddSelectionToAsk(selection);
+                    clearPending();
+                  }
+                : undefined
+            }
+            lineLabel={pendingLineLabel(pending)}
+            range={{
+              start: ordered.start,
+              end: ordered.end,
+              sideLabel: pendingSideLabel(pending),
+              canAdjustStart: (d) => canAdjustPendingStart(pending, d, bounds),
+              canAdjustEnd: (d) => canAdjustPendingEnd(pending, d, bounds),
+            }}
+            onAdjustStart={(delta) => {
+              updatePendingRange(adjustPendingStart(pending, delta, bounds));
+            }}
+            onAdjustEnd={(delta) => {
+              updatePendingRange(adjustPendingEnd(pending, delta, bounds));
+            }}
+            onSubmit={async (body, severity) => {
+              // Recompute content at submit so adjusted ranges are accurate.
+              const content =
+                selectionContentRef.current ??
+                getLineContent(
+                  pending.side,
+                  pending.lineNumber,
+                  pending.startLineNumber,
+                );
+              await onAddComment(
+                filePath,
                 pending.side,
                 pending.lineNumber,
+                content,
+                body,
                 pending.startLineNumber,
+                severity,
               );
-            selectionContentRef.current = null;
-            onAddComment(
-              filePath,
-              pending.side,
-              pending.lineNumber,
-              content,
-              body,
-              pending.startLineNumber,
-              severity,
-            );
-            clearPending();
-          }}
-          onCancel={clearPending}
-        />
+              selectionContentRef.current = null;
+              clearPending();
+            }}
+            onCancel={clearPending}
+          />
+        </div>
       );
     }
     if ("_existingPr" in annotation.metadata) {
@@ -860,8 +914,6 @@ export const FileDiffCard = memo(function FileDiffCard({
     | { _pending: true }
     | { _existingPr: true; comment: PrExistingComment }
   >[] = [
-    ...lineAnnotations,
-    ...existingLineAnnotations,
     ...(pending
       ? [
           {
@@ -871,6 +923,8 @@ export const FileDiffCard = memo(function FileDiffCard({
           },
         ]
       : []),
+    ...lineAnnotations,
+    ...existingLineAnnotations,
   ];
 
   return (
@@ -1369,8 +1423,8 @@ export const FileDiffCard = memo(function FileDiffCard({
                       lineContent=""
                       aiSurface="diff"
                       aiContext={{ kind: "file", filePath }}
-                      onSubmit={(body, severity) => {
-                        onAddComment(
+                      onSubmit={async (body, severity) => {
+                        await onAddComment(
                           filePath,
                           "additions",
                           0,
@@ -1406,8 +1460,13 @@ export const FileDiffCard = memo(function FileDiffCard({
                 oldFile={{ name: oldFilePath, contents: oldContent ?? "" }}
                 newFile={{ name: filePath, contents: editSession.seedContent }}
                 edit
+                onEditChange={(event) =>
+                  onEditChange?.(filePath, event.file, event.lineAnnotations)
+                }
+                onEditComplete={() => "reject"}
                 editorOptions={editorOptions}
                 options={{
+                  onPostRender,
                   diffStyle,
                   // Line selection + gutter utility are read-mode comment
                   // affordances; the editor owns selection while editing.
@@ -1460,9 +1519,7 @@ export const FileDiffCard = memo(function FileDiffCard({
                   unsafeCSS,
                 }}
                 metrics={virtualMetrics}
-                lineAnnotations={filterSupportedLineAnnotations<CardAnnotationMetadata>(
-                  editSession.annotations ?? allAnnotations,
-                )}
+                lineAnnotations={allAnnotations}
                 renderHeaderMetadata={() => null}
                 renderAnnotation={renderAnnotationFn}
               />
@@ -1475,6 +1532,7 @@ export const FileDiffCard = memo(function FileDiffCard({
                 oldFile={{ name: oldFilePath, contents: oldContent ?? "" }}
                 newFile={{ name: filePath, contents: newContent ?? "" }}
                 options={{
+                  onPostRender,
                   diffStyle,
                   enableGutterUtility: true,
                   enableLineSelection: true,
@@ -1549,6 +1607,7 @@ export const FileDiffCard = memo(function FileDiffCard({
               >
                 fileDiff={fileDiff}
                 options={{
+                  onPostRender,
                   diffStyle,
                   enableGutterUtility: true,
                   enableLineSelection: true,
