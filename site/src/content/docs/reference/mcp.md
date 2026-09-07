@@ -41,8 +41,8 @@ Prefer bounded tools over `get_diff` for large trees.
 
 | Tool | Purpose |
 | ------ | --------- |
-| `get_diff` | Full patch (use sparingly) |
-| `diff_summary` | High-level change summary (optional `exclude: ["lockfiles"]`) |
+| `get_diff` | Full patch (use sparingly). Includes `complete` and optional `omittedPaths` when untracked reads were skipped. |
+| `diff_summary` | High-level change summary (optional `exclude: ["lockfiles"]`). `complete` is false when the snapshot omitted files. |
 | `diff_files` | Paged file list (optional `path` glob; `nextCursor` is filtered) |
 | `diff_hunks` | Hunks for a file (`path` XOR `file`) |
 | `diff_slice` | Exact row window with budgets (`path` XOR `file`) |

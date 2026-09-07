@@ -73,7 +73,7 @@ Native failures return `{error, code, outcomeUnknown}`: invalid-path/invalid-req
 
 | Method | Path | Role |
 | -------- | ------ | ------ |
-| `GET` | `/api/diff/summary?exclude` | Totals, kind counts, top-level directories. `exclude=lockfiles` drops lock/generated basenames from counts only |
+| `GET` | `/api/diff/summary?exclude` | Totals, kind counts, top-level directories, `complete`, and `omittedPaths` when optional reads were skipped. `exclude=lockfiles` drops lock/generated basenames from counts only |
 | `GET` | `/api/diff/files?path&cursor&limit` | Paged file metadata. `path` is a git pathspec-ish glob; `nextCursor` indexes the filtered list |
 | `GET` | `/api/diff/hunks?file\|path&cursor&limit&generation` | Hunk metadata. `path` XOR `file`; 0 matches → 404, many → 409 |
 | `GET` | `/api/diff/slice?file\|path&start&maxLines&maxBytes&generation` | Bounded logical rows |

@@ -6933,6 +6933,24 @@ file-tree,
   font-weight: 700;
 }
 
+.diff-incomplete-banner {
+  margin: 12px 16px 0;
+  padding: 12px 16px;
+  border-radius: var(--radius-md);
+  background: var(--feedback-warning-bg);
+  color: var(--feedback-warning-text);
+  border: 1px solid var(--feedback-warning-border);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-family: var(--font-sans);
+}
+
+.diff-incomplete-banner strong {
+  font-size: 14px;
+  font-weight: 700;
+}
+
 .merge-conflict-card {
   margin: 12px 16px;
   border: 1px solid var(--feedback-warning-border);

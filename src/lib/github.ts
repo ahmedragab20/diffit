@@ -10,6 +10,8 @@ import type {
 } from "./pr-session.js";
 import type { ReviewComment } from "./types.js";
 
+export { classifyPrComments } from "./pr-comments.js";
+
 const execFileAsync = promisify(execFile);
 const GH_REQUEST_TIMEOUT_MS = 45_000;
 const GH_MAX_OUTPUT_BYTES = 20 * 1024 * 1024;
@@ -1235,24 +1237,6 @@ export interface GhReviewComment {
  * - File-level comments (`lineNumber === 0`) are excluded; callers fold them
  *   into the review body via {@link buildReviewPayload}.
  */
-export function classifyPrComments(comments: ReviewComment[]): {
-  inline: ReviewComment[];
-  fileLevel: ReviewComment[];
-  excluded: ReviewComment[];
-} {
-  const inline: ReviewComment[] = [];
-  const fileLevel: ReviewComment[] = [];
-  const excluded: ReviewComment[] = [];
-  for (const comment of comments) {
-    if (comment.status !== "open") {
-      excluded.push(comment);
-      continue;
-    }
-    if (comment.lineNumber === 0) fileLevel.push(comment);
-    else inline.push(comment);
-  }
-  return { inline, fileLevel, excluded };
-}
 
 export function expandMultiLineComments(
   comments: ReviewComment[],

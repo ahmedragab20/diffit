@@ -1,7 +1,7 @@
-import { execFileSync } from 'node:child_process'
-import type { DiffOptions } from './diff-options.js'
-import { buildGitDiffArgs } from './diff-options.js'
-import { parseGitDiffHeaderPaths } from './git-path.js'
+import { execFileSync } from "node:child_process";
+import type { DiffOptions } from "./diff-options.js";
+import { buildGitDiffArgs } from "./diff-options.js";
+import { parseGitDiffHeaderPaths } from "./git-path.js";
 import {
   isGitRepo,
   getRepoMetadataAsync,
@@ -14,41 +14,45 @@ import {
   getShowDiff,
   getCommitSeriesSummary,
   type CommitInfo,
-} from './git.js'
+} from "./git.js";
 import {
   buildWorkingTreeOverview,
   buildStagedOnlyOverview,
   buildRangeOverview,
   buildCommitOverview,
   type DiffOverview,
-} from './diff-overview.js'
+} from "./diff-overview.js";
 
 export interface DiffResult {
-  patch: string
-  binaryFiles: BinaryFileInfo[]
-  filePaths: string[]
-  tabSizeMap: Record<string, number>
-  untrackedFiles: string[]
+  patch: string;
+  binaryFiles: BinaryFileInfo[];
+  filePaths: string[];
+  tabSizeMap: Record<string, number>;
+  untrackedFiles: string[];
+  /** False when untracked/optional reads were omitted rather than represented. */
+  complete: boolean;
+  /** Repo-relative paths listed by git but omitted from the patch. */
+  omittedPaths?: string[];
   /** Populated only when `opts.showMode` is true. */
-  commits?: CommitInfo[]
+  commits?: CommitInfo[];
   /** Number of commits dropped past the show-mode cap. */
-  truncated?: number
+  truncated?: number;
   /**
    * "What is this diff?" overview. Always populated for non-PR flows when we
    * have enough metadata to derive one; the field is optional so existing
    * MCP / test callers that destructure the result keep working.
    */
-  overview?: DiffOverview
+  overview?: DiffOverview;
 }
 
 export interface DiffMeta {
-  repoName: string
-  branch: string
+  repoName: string;
+  branch: string;
 }
 
 export interface BinaryFileInfo {
-  path: string
-  type: 'added' | 'deleted' | 'changed' | 'untracked'
+  path: string;
+  type: "added" | "deleted" | "changed" | "untracked";
 }
 
 /**
@@ -60,71 +64,80 @@ export interface BinaryFileInfo {
  * — the "Show staged / Show untracked" toggles don't apply to a commit view.
  */
 function isCustomMode(opts: DiffOptions): boolean {
-  return opts.revisions.length > 0 || opts.pathspecs.length > 0 || opts.showMode
+  return (
+    opts.revisions.length > 0 || opts.pathspecs.length > 0 || opts.showMode
+  );
 }
 
 function parseFilePaths(patch: string): string[] {
-  const paths = new Set<string>()
-  for (const line of patch.split('\n')) {
-    const parsed = parseGitDiffHeaderPaths(line)
-    if (parsed) paths.add(parsed[1])
+  const paths = new Set<string>();
+  for (const line of patch.split("\n")) {
+    const parsed = parseGitDiffHeaderPaths(line);
+    if (parsed) paths.add(parsed[1]);
   }
-  return [...paths]
+  return [...paths];
 }
 
-function parseBinaryFiles(patch: string, untrackedFiles?: Set<string>): BinaryFileInfo[] {
-  const binaryFiles: BinaryFileInfo[] = []
-  const lines = patch.split('\n')
+function parseBinaryFiles(
+  patch: string,
+  untrackedFiles?: Set<string>,
+): BinaryFileInfo[] {
+  const binaryFiles: BinaryFileInfo[] = [];
+  const lines = patch.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    if (!line.startsWith('Binary files ') || !line.includes(' differ')) continue
+    const line = lines[i];
+    if (!line.startsWith("Binary files ") || !line.includes(" differ"))
+      continue;
 
-    let filePath = ''
+    let filePath = "";
     for (let j = i - 1; j >= 0; j--) {
-      const parsed = parseGitDiffHeaderPaths(lines[j])
+      const parsed = parseGitDiffHeaderPaths(lines[j]);
       if (parsed) {
-        filePath = parsed[1]
-        break
+        filePath = parsed[1];
+        break;
       }
     }
-    if (!filePath) continue
+    if (!filePath) continue;
 
-    let changeType: BinaryFileInfo['type'] = 'changed'
+    let changeType: BinaryFileInfo["type"] = "changed";
     for (let j = i - 1; j >= 0; j--) {
-      if (lines[j].startsWith('diff --git')) break
-      if (lines[j].startsWith('new file mode')) {
-        changeType = 'added'
-        break
+      if (lines[j].startsWith("diff --git")) break;
+      if (lines[j].startsWith("new file mode")) {
+        changeType = "added";
+        break;
       }
-      if (lines[j].startsWith('deleted file mode')) {
-        changeType = 'deleted'
-        break
+      if (lines[j].startsWith("deleted file mode")) {
+        changeType = "deleted";
+        break;
       }
     }
 
-    if (changeType === 'added' && untrackedFiles?.has(filePath)) {
-      changeType = 'untracked'
+    if (changeType === "added" && untrackedFiles?.has(filePath)) {
+      changeType = "untracked";
     }
-    binaryFiles.push({ path: filePath, type: changeType })
+    binaryFiles.push({ path: filePath, type: changeType });
   }
-  return binaryFiles
+  return binaryFiles;
 }
 
 /**
  * Execute a diff synchronously.
  */
-export function executeDiff(opts: DiffOptions): { patch: string; args: string[] } {
+export function executeDiff(opts: DiffOptions): {
+  patch: string;
+  args: string[];
+} {
   if (isCustomMode(opts)) {
-    const args = buildGitDiffArgs(opts)
-    const patch = getCustomGitDiff(args)
-    return { patch, args }
+    const args = buildGitDiffArgs(opts);
+    const patch = getCustomGitDiff(args);
+    return { patch, args };
   }
 
   const patch = getGitDiff({
     staged: opts.staged,
     untracked: opts.includeUntracked,
-  })
-  return { patch, args: [] }
+  });
+  return { patch, args: [] };
 }
 
 /**
@@ -138,53 +151,83 @@ export function executeDiff(opts: DiffOptions): { patch: string; args: string[] 
  * rides along on `commits` for the metadata banners.
  */
 export async function executeDiffAsync(opts: DiffOptions): Promise<{
-  patch: string
-  args: string[]
-  commits?: CommitInfo[]
-  truncated?: number
+  patch: string;
+  args: string[];
+  commits?: CommitInfo[];
+  truncated?: number;
+  omittedUntracked?: string[];
+  untrackedListingFailed?: boolean;
 }> {
   if (opts.showMode) {
-    const { commits, patch, truncated } = await getShowDiff(opts.showRevspecs, opts.pathspecs)
-    return { patch, args: [], commits, truncated }
+    const { commits, patch, truncated } = await getShowDiff(
+      opts.showRevspecs,
+      opts.pathspecs,
+    );
+    return { patch, args: [], commits, truncated };
   }
 
   if (isCustomMode(opts)) {
-    const args = buildGitDiffArgs(opts)
-    const patch = await getCustomGitDiffAsync(args)
-    return { patch, args }
+    const args = buildGitDiffArgs(opts);
+    const patch = await getCustomGitDiffAsync(args);
+    return { patch, args };
   }
 
-  const patch = await getGitDiffAsync({
+  const result = await getGitDiffAsync({
     staged: opts.staged,
     untracked: opts.includeUntracked,
-  })
-  return { patch, args: [] }
+  });
+  // Test doubles still return a raw patch string.
+  if (typeof result === "string") {
+    return { patch: result, args: [], omittedUntracked: [] };
+  }
+  return {
+    patch: result.patch,
+    args: [],
+    omittedUntracked: result.omittedUntracked,
+    ...(result.untrackedListingFailed
+      ? { untrackedListingFailed: true }
+      : {}),
+  };
 }
 
 /**
  * Execute a diff and produce the full enriched result used by the web API.
  */
-export async function executeDiffWithMeta(opts: DiffOptions): Promise<DiffResult & DiffMeta> {
-  const { patch, commits, truncated } = await executeDiffAsync(opts)
+export async function executeDiffWithMeta(
+  opts: DiffOptions,
+): Promise<DiffResult & DiffMeta> {
+  const {
+    patch,
+    commits,
+    truncated,
+    omittedUntracked,
+    untrackedListingFailed,
+  } = await executeDiffAsync(opts);
 
   const [{ repoName, branch }, untrackedFiles] = await Promise.all([
     getRepoMetadataAsync(),
     opts.includeUntracked && !opts.showMode
-      ? getUntrackedFilePathsAsync()
+      ? getUntrackedFilePathsAsync().catch(() => [] as string[])
       : Promise.resolve([] as string[]),
-  ])
+  ]);
 
-  const untrackedSet = new Set(untrackedFiles)
-  const binaryFiles = parseBinaryFiles(patch, untrackedSet)
-  const filePaths = parseFilePaths(patch)
-  const tabSizeMap = await getTabSizeForFilesAsync(filePaths)
+  const omitted = omittedUntracked ?? [];
+  const omittedSet = new Set(omitted);
+  const visibleUntracked = untrackedFiles.filter(
+    (file) => !omittedSet.has(file),
+  );
+  const untrackedSet = new Set(visibleUntracked);
+  const binaryFiles = parseBinaryFiles(patch, untrackedSet);
+  const filePaths = parseFilePaths(patch);
+  const tabSizeMap = await getTabSizeForFilesAsync(filePaths);
+  const complete = omitted.length === 0 && !untrackedListingFailed;
 
   // ── Diff overview banner ───────────────────────────────────────────
   // PR mode is short-circuited in server.ts, so we don't need a pr kind
   // here. The other branches (show / custom / staged-only / working-tree)
   // are mutually exclusive based on what `executeDiffAsync` returned and
   // what the user asked for.
-  let overview: DiffOverview | undefined
+  let overview: DiffOverview | undefined;
   if (opts.showMode && commits && commits.length > 0) {
     overview = buildCommitOverview({
       commits: commits.map((c) => ({
@@ -194,11 +237,11 @@ export async function executeDiffWithMeta(opts: DiffOptions): Promise<DiffResult
       })),
       truncated: truncated ?? 0,
       rangeLabel: deriveShowRangeLabel(opts.showRevspecs),
-    })
+    });
   } else if (!opts.showMode && opts.revisions.length > 0) {
     // Custom non-show mode: fetch lightweight commit metadata. Cheap enough
     // because we use `--no-walk` and stop at MAX_SHOW_COMMITS.
-    const series = await getCommitSeriesSummary(opts.revisions, opts.pathspecs)
+    const series = await getCommitSeriesSummary(opts.revisions, opts.pathspecs);
     overview = buildRangeOverview({
       revspecs: opts.revisions,
       branch,
@@ -210,23 +253,28 @@ export async function executeDiffWithMeta(opts: DiffOptions): Promise<DiffResult
         commitCount: series.commitCount,
         truncated: series.truncated,
       },
-    })
-  } else if (!opts.showMode && opts.staged && !opts.includeUntracked && opts.revisions.length === 0) {
+    });
+  } else if (
+    !opts.showMode &&
+    opts.staged &&
+    !opts.includeUntracked &&
+    opts.revisions.length === 0
+  ) {
     // Staged-only: user explicitly turned off untracked and is reviewing a
     // clean staging area. `staged=true&untracked=true` is the default
     // working-tree flow, not staged-only.
     overview = buildStagedOnlyOverview({
       branch,
       fileCount: filePaths.length,
-    })
+    });
   } else if (!opts.showMode) {
     overview = buildWorkingTreeOverview({
       branch,
       staged: opts.staged,
       untracked: opts.includeUntracked,
-      untrackedCount: untrackedFiles.length,
+      untrackedCount: visibleUntracked.length,
       fileCount: filePaths.length,
-    })
+    });
   }
 
   return {
@@ -234,13 +282,15 @@ export async function executeDiffWithMeta(opts: DiffOptions): Promise<DiffResult
     binaryFiles,
     filePaths,
     tabSizeMap,
-    untrackedFiles,
+    untrackedFiles: visibleUntracked,
+    complete,
+    ...(omitted.length > 0 ? { omittedPaths: omitted } : {}),
     repoName,
     branch,
     ...(commits ? { commits } : {}),
     ...(truncated ? { truncated } : {}),
     ...(overview ? { overview } : {}),
-  }
+  };
 }
 
 /**
@@ -250,11 +300,12 @@ export async function executeDiffWithMeta(opts: DiffOptions): Promise<DiffResult
  * single SHA/tag is omitted because the headline already names the commit.
  */
 function deriveShowRangeLabel(revspecs: string[]): string | undefined {
-  if (revspecs.length === 0) return undefined
-  if (revspecs.length > 1) return revspecs.join(' ')
-  const single = revspecs[0]
-  if (single && (single.includes('..') || single.includes('...'))) return single
-  return undefined
+  if (revspecs.length === 0) return undefined;
+  if (revspecs.length > 1) return revspecs.join(" ");
+  const single = revspecs[0];
+  if (single && (single.includes("..") || single.includes("...")))
+    return single;
+  return undefined;
 }
 
 /**
@@ -265,35 +316,35 @@ function deriveShowRangeLabel(revspecs: string[]): string | undefined {
  */
 export function runTerminalDiff(opts: DiffOptions): number {
   if (opts.showMode) {
-    return runTerminalShow(opts)
+    return runTerminalShow(opts);
   }
 
-  const args = buildGitDiffArgs(opts)
+  const args = buildGitDiffArgs(opts);
 
   // --no-ext-diff and --no-color are currently always enforced to ensure
   // a standard unified diff regardless of user's git config.
   // In terminal mode however, we want to respect the user's request,
   // so we only add these if the user hasn't explicitly overridden them.
-  const enforceDefaults = !opts.outputFormat && !opts.quiet
+  const enforceDefaults = !opts.outputFormat && !opts.quiet;
 
-  const finalArgs: string[] = []
+  const finalArgs: string[] = [];
   if (enforceDefaults) {
-    if (!args.includes('--no-ext-diff') && !opts.extDiff) {
-      finalArgs.push('--no-ext-diff')
+    if (!args.includes("--no-ext-diff") && !opts.extDiff) {
+      finalArgs.push("--no-ext-diff");
     }
   }
-  finalArgs.push(...args)
+  finalArgs.push(...args);
 
   try {
-    execFileSync('git', ['diff', ...finalArgs], { stdio: 'inherit' })
-    return 0
+    execFileSync("git", ["diff", ...finalArgs], { stdio: "inherit" });
+    return 0;
   } catch (err: any) {
     // --exit-code causes git diff to exit with 1 if diffs exist
     if (err.status === 1 && opts.exitCode) {
-      return 1
+      return 1;
     }
     // git diff writes to stderr on error; just propagate exit code
-    return err.status ?? 1
+    return err.status ?? 1;
   }
 }
 
@@ -304,15 +355,15 @@ export function runTerminalDiff(opts: DiffOptions): number {
  * (matches the web-mode pipeline), but otherwise hand everything to git.
  */
 function runTerminalShow(opts: DiffOptions): number {
-  const args = ['show', '--no-ext-diff', ...opts.showRevspecs]
+  const args = ["show", "--no-ext-diff", ...opts.showRevspecs];
   if (opts.pathspecs.length > 0) {
-    args.push('--', ...opts.pathspecs)
+    args.push("--", ...opts.pathspecs);
   }
   try {
-    execFileSync('git', args, { stdio: 'inherit' })
-    return 0
+    execFileSync("git", args, { stdio: "inherit" });
+    return 0;
   } catch (err: any) {
-    return err.status ?? 1
+    return err.status ?? 1;
   }
 }
 
@@ -323,10 +374,10 @@ function runTerminalShow(opts: DiffOptions): number {
 export function validateEnvironment(): string | null {
   if (!isGitRepo()) {
     return [
-      'Error: not inside a git repository.',
-      'Run `diffing setup` for first-time configuration, or `diffing doctor` to diagnose your environment.',
-      'Then `cd <your-repo> && diffing` to start a review.',
-    ].join('\n')
+      "Error: not inside a git repository.",
+      "Run `diffing setup` for first-time configuration, or `diffing doctor` to diagnose your environment.",
+      "Then `cd <your-repo> && diffing` to start a review.",
+    ].join("\n");
   }
-  return null
+  return null;
 }

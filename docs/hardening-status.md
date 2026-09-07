@@ -9,8 +9,9 @@ This is an implemented safety slice, not a completed hardening roadmap. Remainin
 - Hunk-based changed-line totals in the header and minimap.
 - A Rust directory-capability filesystem core and bounded JSON-lines helper, with a strict Node client. Selected local previews, saves, edits, suggestions and uploaded-image operations use it. TUI preview/image readers and LSP document-content loading use capability reads too.
 - Explicit native access errors, optimistic hash checks for edit-save/suggestions, partial-write reporting, sandboxed raw previews, and captured image data URLs for Codex.
+- Browser UI no longer imports the Node GitHub client. PR comment classification lives in `src/lib/pr-comments.ts`, and the Vite build fails closed if a Node builtin leaks into the client bundle.
 
-**This is not a complete repository sandbox.** Untracked-file and EditorConfig reads still bypass this provider. Git, editors, LSP servers and the native search backend are not sandboxed. Do not treat the selected-route protections as permission to run arbitrary untrusted repositories or tools.
+**This is not a complete repository sandbox.** Untracked-file and EditorConfig reads now go through the capability helper and NUL-delimited Git path lists. Denied, missing, or unavailable untracked files are omitted and the review is marked `complete: false` instead of being represented as a full snapshot. Git, editors, LSP servers and the native search backend are still not sandboxed. Do not treat the selected-route protections as permission to run arbitrary untrusted repositories or tools.
 
 ## Operational contract and known limits
 
@@ -21,7 +22,7 @@ This is an implemented safety slice, not a completed hardening roadmap. Remainin
 - `baseHash` on edit-save is optional and must be 64 lowercase hex characters. Suggestions pass the hash of their just-read bytes. These are optimistic pre-write checks, **not cross-process compare-and-swap**. `save-file` has no hash precondition.
 - A reported comment-store failure after a successful file write returns `500` with `fileSaved: true`; edit-save also returns the saved `hash`. Resolve/reconcile metadata separately rather than reapplying the file change. A failed optional Git stage returns `200`, `ok: true`, and `gitAddError` because the file was already saved.
 - Native write errors with `outcomeUnknown: true` require inspecting current file state before retrying. Never blindly replay them.
-- Local preview selection is still legacy: `new` reads the working tree and `old` reads `HEAD`. It does not yet reproduce staged/revision/commit-series sides exactly. PR previews use the session's base/head SHAs. Some legacy Git errors still appear as missing content. A03/A07 remain open.
+- Local file-content reads now pick a Git blob spec from the active scope (staged index/`HEAD`, revision ranges, show-mode) and otherwise use a capability working-tree read. This is still not a complete A03 matrix: rename/repeated-path/commit-series edge cases and guarded mutations remain. PR previews use the session's base/head SHAs. Tracked `git diff` failures now propagate instead of becoming an empty successful review; untracked listing/helper failures keep the tracked patch and set `complete: false`. A03 remains open; A07 is still partial for Git stage/revert and storage parsers.
 
 ## Verification checkpoint
 
@@ -33,7 +34,7 @@ The last full compiler check returned **47 diagnostics across 18 files**. None w
 
 `pnpm build` passed (TypeScript/client plus the host release binary); bundle verification passed 18 tests; `pnpm docs:build` built 25 pages. A real packed-layout smoke passed 14 API checks, including reads/writes, stale hashes, CSP, literal percent paths, symlink/traversal denial and missing-helper denial while tracked diffs/comments remain available. This exposed and fixed pnpm stripping executable bits: `publishConfig.executableFiles` now declares the seven native paths. No fixture chmod workaround was used.
 
-The built UI rendered the saved synthetic file and persisted comment. It also reproduced the deferred legacy untracked-reader gap: an outside-symlink sentinel appeared in the untracked diff despite the protected file API denying it. UI preferences can override the CLI untracked setting, and legacy untracked newline handling can add a blank line. Full browser inline-edit workflow verification was stopped at the owner's request; do not claim it passed. Cross-platform runtime verification remains deferred.
+The previous slice's built UI reproduced a legacy untracked-reader gap: an outside-symlink sentinel appeared in the untracked diff despite the protected file API denying it. This follow-up omits that class of untracked path from the patch, keeps the tracked diff, and reports `complete: false` / `omittedPaths` through `/api/diff`, inspect, MCP `get_diff`, and the web incomplete banner. UI preferences can still override the CLI untracked setting. Full browser inline-edit workflow verification was stopped at the owner's request; do not claim it passed. Cross-platform runtime verification remains deferred.
 
 ## Original acceptance criteria
 
@@ -42,12 +43,12 @@ The built UI rendered the saved synthetic file and persisted comment. It also re
 | ID | Status | Remaining contract / implemented evidence |
 | --- | --- | --- |
 | A01 | Complete | Bootstrap/API auth boundaries and same-origin credential attachment are tested. |
-| A02 | Partial | Capability core and selected callers are tested; finish all repository readers/writers and cross-platform coverage. |
-| A03 | Deferred | Resolve exact old/new snapshot sides for every supported scope. |
+| A02 | Partial | Untracked diffs and EditorConfig reads use capability bytes and NUL Git paths; omitted files set `complete: false` on `/api/diff`, inspect, MCP `get_diff`, and the web UI. Git stage/revert, editor launch, search/`fff`, and remaining Rust callers are still not capability-owned. Cross-platform coverage remains. |
+| A03 | Partial | `getFileContent`/`resolveFileVersion` now honor staged/revision/show scope for blob specs; rename/repeated-path/commit-series and mutation freshness are still open. |
 | A04 | Partial | Edit/suggestion hash checks and read-only scope restrictions exist; require current evidence for every mutation. |
 | A05 | Complete | Runtime validation, line/range rules, request/content limits and HTTP errors for code comments/replies. |
 | A06 | Complete | Escaped attributes, CDATA termination, invalid Unicode and instruction-text serialization in TS/Rust handoffs. |
-| A07 | Partial | Native errors and reported post-write metadata failures are explicit; eliminate silent legacy Git/storage/parse failures. |
+| A07 | Partial | Tracked async git-diff failures propagate; untracked/helper failures are omitted with `complete: false` rather than an empty successful review. Stage/revert, storage parsers, and remaining silent catches are still open. |
 | A08 | Deferred | Distinguish repository, worktree, session, review and snapshot identities. |
 | A09 | Deferred | Prove concurrent sessions cannot replace scope or lose review state. |
 | A10 | Deferred | Transactional persistence, revision checks and idempotent mutation IDs. |
@@ -56,13 +57,13 @@ The built UI rendered the saved synthetic file and persisted comment. It also re
 | A13 | Deferred | Invalidate review evidence on changes; preserve original anchor context. |
 | A14 | Deferred | Shared operation catalog, schemas, capabilities, OpenAPI and generated references. |
 | A15 | Deferred | Intentional parity across REST, CLI, MCP and supported TUI operations. |
-| A16 | Deferred | Asset-independent headless startup and honest bounded inspection metadata. |
+| A16 | Partial | Inspect summary/`get_diff` now carry `complete` and `omittedPaths` instead of hard-coding completeness. Asset-independent headless startup is still open. |
 | A17 | Deferred | Shared success/error/stale/unavailable/retry contract fixtures. |
 | A18 | Partial | Change totals are corrected; scope, freshness and reviewed-state clarity remain. |
 | A19 | Deferred | Browser keyboard/focus/conflict/accessibility E2E coverage. |
 | A20 | Deferred | Ordering and rename/repeated-path/binary/submodule/quoted/Unicode/CRLF edge cases. |
 | A21 | Deferred | Full human-to-agent-to-human re-review workflow coverage. |
-| A22 | Deferred | Stable navigation, annotation batches and inspected/skipped/unavailable coverage. |
+| A22 | Partial | Inspect/MCP/UI report omitted untracked coverage instead of claiming a complete snapshot. Stable navigation and annotation batches remain. |
 | A23 | Deferred | Explicit operation authority, provenance and resume/context-budget semantics. |
 | A24 | Deferred | PR publication revalidation, dry-run and ambiguous-outcome reconciliation. |
 | A25 | Deferred | Central secret/egress policy across review content and AI context. |
@@ -78,7 +79,7 @@ The built UI rendered the saved synthetic file and persisted comment. It also re
 
 ## Next-agent work, in order
 
-1. **Finish containment and report incomplete results honestly (A02/A07/A16/A22).** Start at `src/lib/git.ts`'s untracked-file and EditorConfig readers. Use capability-read bytes, NUL-delimited Git paths and in-memory config parsing bounded to the repo. Preserve tracked review when optional reads are unavailable, without representing omitted files as complete. `src/lib/diff-engine.ts` and `/api/diff` rebuild metadata; `resolveAgentPatch` in `src/server.ts` discards it; `src/lib/agent-diff-index.ts` hard-codes `complete: true` and caches by patch only; MCP `get_diff` in `src/mcp.ts` rebuilds its output; `src/ui/hooks/useDiff.ts` selects fields. Carry availability through all of them. Check helper-unavailable, denied symlink, literal percent/quoted/newline path, cache-generation and CLI/MCP/UI agreement cases.
+1. **Done in this follow-up: untracked/EditorConfig containment and honest completeness (A02/A07/A16/A22 slice).** Capability-read untracked diffs, in-memory EditorConfig, NUL Git paths, and `complete`/`omittedPaths` now flow through `/api/diff`, inspect, MCP `get_diff`, and the web UI. Remaining A02 work is item 2.
 2. **Audit remaining access and launch boundaries (A02/A23/A32).** Trace Git stage/revert, `/api/open-file`, `src/lib/editor-launcher.ts`, `src/lib/search.ts` and `@ff-labs/fff-node`, plus remaining Rust callers. Distinguish capability-owned operations from trusted external programs. Prove outside sentinels remain untouched and run the supported OS matrix.
 3. **Snapshot-correct reads and guarded mutations (A03/A04/A07/A13).** Start at `resolveFileVersion` in `src/server.ts`, `getFileContent`/revert helpers in `src/lib/git.ts`, and suggestion/edit routes. Test staged-vs-working content, revisions, renames, repeated commit paths, stale hashes and no-write/no-comment-change on rejection. Do not call optimistic checks transactional CAS.
 4. **Durable isolated state (A08–A13/A31).** Review `src/lib/comments.ts`, `review-session.ts`, `pr-session.ts`, `session-manager.ts` and atomic JSON helpers. Design migration and transactional storage before changing formats. Test two processes, restarts, replay, disk failures and preserved originals.

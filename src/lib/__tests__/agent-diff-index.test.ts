@@ -269,4 +269,16 @@ describe('AgentDiffIndexCache', () => {
     const b = cache.getOrBuild(SAMPLE + '\n')
     expect(b.generation).not.toBe(a.generation)
   })
+
+  it('rebuilds when completeness changes for the same patch', () => {
+    const cache = new AgentDiffIndexCache()
+    const a = cache.getOrBuild(SAMPLE, true)
+    const b = cache.getOrBuild(SAMPLE, false, ['skip.ts'])
+    expect(b.generation).not.toBe(a.generation)
+    expect(b.complete).toBe(false)
+    expect(b.omittedPaths).toEqual(['skip.ts'])
+    const summary = indexSummary(b)
+    expect('complete' in summary && summary.complete).toBe(false)
+    expect('omittedPaths' in summary && summary.omittedPaths).toEqual(['skip.ts'])
+  })
 })

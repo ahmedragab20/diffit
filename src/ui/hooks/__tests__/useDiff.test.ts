@@ -52,7 +52,29 @@ describe('useDiff', () => {
     expect(result.current.binaryFiles).toEqual([])
     expect(result.current.tabSizeMap).toEqual({ 'src/index.ts': 2 })
     expect(result.current.untrackedFiles).toEqual([])
+    expect(result.current.complete).toBe(true)
+    expect(result.current.omittedPaths).toEqual([])
     expect(result.current.error).toBeNull()
+  })
+
+  it('surfaces incomplete payloads', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: () =>
+        Promise.resolve({
+          ...diffData,
+          complete: false,
+          omittedPaths: ['outside-symlink.ts'],
+        }),
+    })
+
+    const { result } = renderHook(() => useDiff({ staged: true, untracked: true }))
+
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    expect(result.current.complete).toBe(false)
+    expect(result.current.omittedPaths).toEqual(['outside-symlink.ts'])
+    expect(result.current.patch).toBe(diffData.patch)
   })
 
   it('sets error when fetch fails', async () => {

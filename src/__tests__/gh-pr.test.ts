@@ -43,7 +43,8 @@ vi.mock("../lib/github.js", async (importOriginal) => {
 });
 
 vi.mock("../lib/github-pr-actions.js", async (importOriginal) => {
-    const actual = await importOriginal<typeof import("../lib/github-pr-actions.js")>();
+    const actual =
+        await importOriginal<typeof import("../lib/github-pr-actions.js")>();
     return {
         ...actual,
         addCommentsToPendingReviewViaGh: githubMocks.addCommentsToPendingReview,
@@ -65,6 +66,11 @@ vi.mock("../lib/git.js", () => ({
     getUntrackedFilePaths: vi.fn(() => []),
     getGitDiffAsync: vi.fn(async () => ""),
     getCustomGitDiffAsync: vi.fn(async () => ""),
+    getTabSizeForFilesAsync: vi.fn(async () => ({})),
+    getRepoMetadataAsync: vi.fn(async () => ({
+        repoName: "test-repo",
+        branch: "main",
+    })),
     getRepoRootAsync: vi.fn(async () => "/tmp/test-repo"),
     getBranchNameAsync: vi.fn(async () => "main"),
     getUntrackedFilePathsAsync: vi.fn(async () => []),
@@ -981,6 +987,7 @@ index 111..222 100644
         const summary = await summaryRes.json();
         expect(summary.files).toBe(1);
         expect(summary.complete).toBe(true);
+        expect(summary.omittedPaths).toBeUndefined();
         expect(typeof summary.generation).toBe("number");
         expect(summary).toMatchObject({
             prMode: true,
@@ -1007,6 +1014,28 @@ index 111..222 100644
         expect(
             slice.rows.some((r: any) => r.type === "line" && r.kind === "add"),
         ).toBe(true);
+    });
+
+    it("GET /api/diff/summary is incomplete when PR patches were omitted", async () => {
+        await prStore.set({
+            ...baseSession,
+            diffCompleteness: { listedFiles: 4, omittedPatches: 2 },
+            diff: `diff --git a/src/a.ts b/src/a.ts
+index 111..222 100644
+--- a/src/a.ts
++++ b/src/a.ts
+@@ -1 +1,2 @@
+ line
++added
+`,
+        });
+        const summaryRes = await app.fetch(
+            new Request("http://localhost/api/diff/summary"),
+        );
+        expect(summaryRes.status).toBe(200);
+        const summary = await summaryRes.json();
+        expect(summary.complete).toBe(false);
+        expect(summary.files).toBe(1);
     });
 
     it("POST /api/gh/pr-session/comments accepts severity", async () => {
@@ -1665,13 +1694,15 @@ index 111..222 100644
     it("POST /api/gh/reviews/:id/submit 404s when the review is not pending", async () => {
         await prStore.set({
             ...baseSession,
-            existingReviews: [{
-                id: 88,
-                author: { login: "octocat" },
-                body: "done",
-                state: "COMMENTED",
-                submittedAt: "2026-01-01T00:00:00.000Z",
-            }],
+            existingReviews: [
+                {
+                    id: 88,
+                    author: { login: "octocat" },
+                    body: "done",
+                    state: "COMMENTED",
+                    submittedAt: "2026-01-01T00:00:00.000Z",
+                },
+            ],
         });
         const res = await app.fetch(
             new Request("http://localhost/api/gh/reviews/88/submit", {
@@ -1687,24 +1718,28 @@ index 111..222 100644
     it("POST /api/gh/reviews/:id/submit keeps drafts when attach fails", async () => {
         await prStore.set({
             ...baseSession,
-            existingReviews: [{
-                id: 88,
-                author: { login: "octocat" },
-                body: "still drafting",
-                state: "PENDING",
-                submittedAt: null,
-            }],
-            comments: [{
-                id: "c1",
-                filePath: "src/x.ts",
-                side: "additions",
-                lineNumber: 1,
-                lineContent: "+ x",
-                body: "nit",
-                status: "open",
-                createdAt: 1,
-                replies: [],
-            }],
+            existingReviews: [
+                {
+                    id: 88,
+                    author: { login: "octocat" },
+                    body: "still drafting",
+                    state: "PENDING",
+                    submittedAt: null,
+                },
+            ],
+            comments: [
+                {
+                    id: "c1",
+                    filePath: "src/x.ts",
+                    side: "additions",
+                    lineNumber: 1,
+                    lineContent: "+ x",
+                    body: "nit",
+                    status: "open",
+                    createdAt: 1,
+                    replies: [],
+                },
+            ],
         });
         githubMocks.addCommentsToPendingReview.mockResolvedValue({
             ok: false,
@@ -1765,12 +1800,14 @@ index 111..222 100644
             headOwner: "forker",
             headRepo: "widget",
             maintainerCanModify: false,
-            existingComments: [{
-                ...baseSession.existingComments[0],
-                body: "```suggestion\nfixed\n```",
-                line: 4,
-                side: "RIGHT",
-            }],
+            existingComments: [
+                {
+                    ...baseSession.existingComments[0],
+                    body: "```suggestion\nfixed\n```",
+                    line: 4,
+                    side: "RIGHT",
+                },
+            ],
         });
         const res = await app.fetch(
             new Request(
@@ -1814,7 +1851,9 @@ index 111..333 100644
             }),
         );
         expect(put.status).toBe(200);
-        const before = await app.fetch(new Request("http://localhost/api/viewed"));
+        const before = await app.fetch(
+            new Request("http://localhost/api/viewed"),
+        );
         expect(await before.json()).toEqual(["a.ts"]);
         githubMocks.refreshPrSession.mockResolvedValue({
             ...baseSession,
@@ -1822,10 +1861,14 @@ index 111..333 100644
             headSha: "bbb",
         });
         const refresh = await app.fetch(
-            new Request("http://localhost/api/gh/pr/refresh", { method: "POST" }),
+            new Request("http://localhost/api/gh/pr/refresh", {
+                method: "POST",
+            }),
         );
         expect(refresh.status).toBe(200);
-        const after = await app.fetch(new Request("http://localhost/api/viewed"));
+        const after = await app.fetch(
+            new Request("http://localhost/api/viewed"),
+        );
         expect(await after.json()).toEqual([]);
     });
 });

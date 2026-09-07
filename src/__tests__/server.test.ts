@@ -249,6 +249,47 @@ describe("server", () => {
         expect(body.repoName).toBe("test-repo");
         expect(body.branch).toBe("main");
         expect(body.customMode).toBe(false);
+        expect(body.complete).toBe(true);
+      });
+
+      it("reports omitted untracked files as incomplete on /api/diff and inspect", async () => {
+        mockGetGitDiffAsync.mockResolvedValue({
+          patch:
+            "diff --git a/src/index.ts b/src/index.ts\n@@ -1 +1 @@\n-old\n+new\n",
+          omittedUntracked: ["outside-symlink.ts"],
+        });
+        const res = await app.fetch(
+          new Request("http://localhost/api/diff?staged=true&untracked=true"),
+        );
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.complete).toBe(false);
+        expect(body.omittedPaths).toEqual(["outside-symlink.ts"]);
+        expect(body.patch).toContain("src/index.ts");
+
+        const summaryRes = await app.fetch(
+          new Request("http://localhost/api/diff/summary"),
+        );
+        expect(summaryRes.status).toBe(200);
+        const summary = await summaryRes.json();
+        expect(summary.complete).toBe(false);
+        expect(summary.omittedPaths).toEqual(["outside-symlink.ts"]);
+        expect(typeof summary.generation).toBe("number");
+      });
+
+      it("marks the review incomplete when untracked listing fails", async () => {
+        mockGetGitDiffAsync.mockResolvedValue({
+          patch:
+            "diff --git a/src/index.ts b/src/index.ts\n@@ -1 +1 @@\n-old\n+new\n",
+          omittedUntracked: [],
+          untrackedListingFailed: true,
+        });
+        const res = await app.fetch(
+          new Request("http://localhost/api/diff?staged=true&untracked=true"),
+        );
+        const body = await res.json();
+        expect(body.complete).toBe(false);
+        expect(body.patch).toContain("src/index.ts");
       });
 
       it("forwards staged/untracked params", async () => {

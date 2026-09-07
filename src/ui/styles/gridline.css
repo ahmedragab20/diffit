@@ -1281,7 +1281,8 @@ file-tree,
 .hunk-history-commit-card,
 .review-history-item,
 .merge-conflict-card,
-.merge-conflict-banner {
+.merge-conflict-banner,
+.diff-incomplete-banner {
   border: 1px solid var(--gl-rule-subtle);
   border-radius: var(--gl-radius-surface);
   background: var(--gl-surface);
@@ -1351,7 +1352,8 @@ file-tree,
 }
 
 .plan-review-historical-banner,
-.merge-conflict-banner {
+.merge-conflict-banner,
+.diff-incomplete-banner {
   border-color: var(--gl-warning);
   background: color-mix(in srgb, var(--gl-warning) 14%, var(--gl-canvas));
 }
