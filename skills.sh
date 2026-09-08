@@ -60,6 +60,35 @@ check_skills_dir() {
     fi
 }
 
+# The `skills` installer treats every skills directory it detects as an install
+# target - including this repository's own sources - and replaces them with
+# symlinks back into .agents/skills. Snapshot before installing, repair after.
+SKILLS_SNAPSHOT=""
+
+snapshot_skills() {
+    SKILLS_SNAPSHOT=$(mktemp -d "${TMPDIR:-/tmp}/diffing-skills.XXXXXX")
+    cp -R skills/. "$SKILLS_SNAPSHOT/"
+}
+
+restore_skills() {
+    [ -n "$SKILLS_SNAPSHOT" ] && [ -d "$SKILLS_SNAPSHOT" ] || return 0
+    local restored=0
+    local link name
+    for link in skills/*; do
+        [ -L "$link" ] || continue
+        name=$(basename "$link")
+        [ -d "$SKILLS_SNAPSHOT/$name" ] || continue
+        rm -f "$link"
+        cp -R "$SKILLS_SNAPSHOT/$name" "skills/$name"
+        restored=$((restored + 1))
+    done
+    rm -rf "$SKILLS_SNAPSHOT"
+    SKILLS_SNAPSHOT=""
+    if [ "$restored" -gt 0 ]; then
+        print_warning "Restored $restored skill source(s) the installer replaced with symlinks."
+    fi
+}
+
 # Command: List skills
 cmd_list() {
     check_skills_dir
@@ -111,9 +140,9 @@ cmd_validate() {
             fi
             
             # Check required fields
-            local name=$(grep -E "^name:" "$dir/SKILL.md" | sed 's/name:[[:space:]]*//' | tr -d '"' | tr -d "'")
-            local desc=$(grep -E "^description:" "$dir/SKILL.md" | sed 's/description:[[:space:]]*//')
-            local user_invocable=$(grep -E "^user_invocable:" "$dir/SKILL.md" | sed 's/user_invocable:[[:space:]]*//')
+            local name=$(grep -E "^name:" "$dir/SKILL.md" | head -n 1 | sed 's/name:[[:space:]]*//' | tr -d '"' | tr -d "'")
+            local desc=$(grep -E "^description:" "$dir/SKILL.md" | head -n 1 | sed 's/description:[[:space:]]*//')
+            local user_invocable=$(grep -E "^user_invocable:" "$dir/SKILL.md" | head -n 1 | sed 's/user_invocable:[[:space:]]*//')
             
             if [ -z "$name" ]; then
                 errors+=("Missing 'name' field in frontmatter")
@@ -158,7 +187,11 @@ cmd_install() {
     
     print_header "Installing Skills Locally"
     echo -e "Installing local skills to all detected coding agents via ${CYAN}npx skills add${NC}..."
+    snapshot_skills
+    trap restore_skills EXIT
     npx skills add ./skills --copy --all
+    restore_skills
+    trap - EXIT
 }
 
 # Command: Publish skills
@@ -225,6 +258,8 @@ cmd_publish() {
     echo -e "Running telemetry registration via: ${CYAN}npx skills add $slug --all${NC}"
     echo
     
+    snapshot_skills
+    trap restore_skills EXIT
     if npx skills add "$slug" --all; then
         echo
         print_success "Successfully published and registered all skills to skills.sh!"
@@ -232,6 +267,8 @@ cmd_publish() {
     else
         print_error "Telemetry registration failed. You may need to manually run 'npx skills add $slug' once."
     fi
+    restore_skills
+    trap - EXIT
 }
 
 # Main command dispatcher
