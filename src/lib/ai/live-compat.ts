@@ -24,6 +24,8 @@ export interface LiveCompatProbe {
 	runtimeVersion: string | null;
 	modelCount: number;
 	inference: InferenceOutcome;
+	/** Present only on failed/timeout pings. Typed codes, never provider text. */
+	failureCode: string | null;
 	liveVerified: false;
 }
 
@@ -52,27 +54,38 @@ function requestFor(modelId: string): AiRunRequest {
 	};
 }
 
+function failureCodeOf(error: unknown): string | null {
+	if (!error || typeof error !== "object") return null;
+	const code = (error as { code?: unknown }).code;
+	return typeof code === "string" && /^[a-z][a-z_]{0,63}$/.test(code)
+		? code
+		: null;
+}
+
 async function ping(
 	adapter: AiBackendAdapter,
 	modelId: string,
 	now: () => number,
 	pingMs: number,
-): Promise<InferenceOutcome> {
+): Promise<{ inference: InferenceOutcome; failureCode: string | null }> {
 	const started = now();
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), pingMs);
 	try {
 		const text = await adapter.run(requestFor(modelId), controller.signal, () => {});
-		if (typeof text !== "string" || !text.trim()) return "failed";
-		return "ok";
+		if (typeof text !== "string" || !text.trim())
+			return { inference: "failed", failureCode: "empty_output" };
+		return { inference: "ok", failureCode: null };
 	} catch (error) {
-		if (controller.signal.aborted || now() - started >= pingMs)
-			return "timeout";
-		if (error && typeof error === "object" && "name" in error) {
-			const name = (error as { name?: string }).name;
-			if (name === "AbortError" || name === "TimeoutError") return "timeout";
-		}
-		return "failed";
+		const timedOut =
+			controller.signal.aborted || now() - started >= pingMs;
+		const name =
+			error && typeof error === "object"
+				? (error as { name?: string }).name
+				: undefined;
+		if (timedOut || name === "AbortError" || name === "TimeoutError")
+			return { inference: "timeout", failureCode: failureCodeOf(error) };
+		return { inference: "failed", failureCode: failureCodeOf(error) };
 	} finally {
 		clearTimeout(timer);
 	}
@@ -89,13 +102,16 @@ export async function probeLiveCompatibility(
 		const models =
 			connection.status === "connected" ? await adapter.models() : [];
 		let inference: InferenceOutcome = "skipped";
+		let failureCode: string | null = null;
 		if (options.ping && connection.status === "connected" && models[0]?.id) {
-			inference = await ping(
+			const pinged = await ping(
 				adapter,
 				models[0].id,
 				now,
 				options.pingMs ?? LIVE_PING_MS,
 			);
+			inference = pinged.inference;
+			failureCode = pinged.failureCode;
 		}
 		probes.push({
 			sourceId: adapter.id,
@@ -104,6 +120,7 @@ export async function probeLiveCompatibility(
 			runtimeVersion: adapter.capabilities?.runtimeVersion ?? null,
 			modelCount: models.length,
 			inference,
+			failureCode,
 			liveVerified: false,
 		});
 	}

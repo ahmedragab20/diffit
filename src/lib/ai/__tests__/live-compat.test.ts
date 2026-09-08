@@ -68,6 +68,7 @@ describe("probeLiveCompatibility", () => {
 				runtimeVersion: "1.2.3",
 				modelCount: 1,
 				inference: "skipped",
+				failureCode: null,
 				liveVerified: false,
 			}),
 		]);
@@ -95,6 +96,7 @@ describe("probeLiveCompatibility", () => {
 		expect(report.probes[0]).toMatchObject({
 			status: "missing-runtime",
 			inference: "skipped",
+			failureCode: null,
 			liveVerified: false,
 			modelCount: 0,
 		});
@@ -139,6 +141,7 @@ describe("probeLiveCompatibility", () => {
 		const target = adapter({ run: vi.fn(async () => "   ") });
 		const report = await probeLiveCompatibility([target], { ping: true });
 		expect(report.probes[0]?.inference).toBe("failed");
+		expect(report.probes[0]?.failureCode).toBe("empty_output");
 		expect(report.liveVerified).toBe(false);
 	});
 });

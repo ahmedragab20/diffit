@@ -184,6 +184,9 @@ export class RuntimeTextDecoder {
 				if (this.source !== "claude") throw new AiRunError("protocol_error");
 				record(frame.rate_limit_info);
 				return "";
+			case "thinking":
+				// Private model reasoning is never assistant text.
+				return "";
 			default:
 				throw new AiRunError("protocol_error");
 		}

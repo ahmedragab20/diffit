@@ -86,6 +86,22 @@ describe("RuntimeTextDecoder offline protocols", () => {
 		expect(open.finish()).toBe("haha");
 	});
 
+	it("ignores thinking frames so they never become assistant text", () => {
+		const frames = cursor(["pong"]);
+		const decoder = new RuntimeTextDecoder("cursor");
+		expect(
+			decoder.push({
+				type: "thinking",
+				session_id: "s",
+				subtype: "delta",
+				text: "should not surface",
+				timestamp_ms: 1,
+			}),
+		).toBe("");
+		frames.forEach((frame) => decoder.push(frame));
+		expect(decoder.finish()).toBe("pong");
+	});
+
 	it("rejects array frames and malformed assistant text", () => {
 		expectCode(() => new RuntimeTextDecoder("cursor").push([]), "protocol_error");
 		expectCode(

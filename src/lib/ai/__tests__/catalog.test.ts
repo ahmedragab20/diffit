@@ -52,13 +52,20 @@ describe("offline catalog parsers", () => {
   it.each([
     "provider/" + "x".repeat(513),
     "garbage line\nsecond garbage",
-    "provider/gpt\nnot valid!",
   ])("rejects model-line protocol errors", (output) =>
     errCode(
       Promise.resolve().then(() => parseModelLines(output)),
       "protocol_error",
     ),
   );
+
+  it("keeps parsed ids when the catalog has an advisory footer", () => {
+    expect(
+      parseModelLines(
+        "Available models\nauto - Auto (default)\ngpt-5 - GPT 5\nTip: use --model <id> to switch.\n",
+      ),
+    ).toEqual(["auto", "gpt-5"]);
+  });
   it("bounds model lines", () => {
     expect(() =>
       parseModelLines(

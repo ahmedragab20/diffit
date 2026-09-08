@@ -903,6 +903,7 @@ export function createDefaultAdapters(
 			statusArgs: ["status"],
 			disconnectArgs: ["logout"],
 			modelArgs: ["--list-models"],
+			fallbackModels: [{ id: "auto", label: "Auto" }],
 			routes: ["subscription", "runtime-key"],
 			setup: {
 				subscription: "cursor-agent login",

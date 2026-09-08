@@ -109,16 +109,21 @@ export function parseModelLines(output: string): string[] {
 	if (Buffer.byteLength(output, "utf8") > CATALOG_LIMITS.bytes)
 		throw new AiRunError("resource_limit");
 	const ids = new Set<string>();
+	let unmatched = 0;
 	for (const raw of output.split("\n")) {
 		const line = raw.trim();
 		if (!line || /^(available models|models:|[-=]{2,})/i.test(line)) continue;
 		const match = line.match(
 			/^[*✓>]?\s*([a-z0-9][a-z0-9._:/\-[\]]{0,511})(?:\s+-\s+[^\r\n]{1,1024})?$/i,
 		);
-		if (!match) throw new AiRunError("protocol_error");
+		if (!match) {
+			unmatched += 1;
+			continue;
+		}
 		ids.add(match[1]);
 		if (ids.size > CATALOG_LIMITS.models) throw new AiRunError("resource_limit");
 	}
+	if (ids.size === 0 && unmatched > 0) throw new AiRunError("protocol_error");
 	return [...ids];
 }
 
