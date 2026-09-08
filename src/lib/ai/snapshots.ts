@@ -271,6 +271,54 @@ export class ReviewSnapshot {
 		};
 	}
 
+	/**
+	 * Locates matches without returning their text. Searching is not reading:
+	 * it issues no evidence and adds nothing to returned-line coverage, so a
+	 * caller must read a match before it can cite it. The query is a literal
+	 * substring, never a caller-supplied regular expression.
+	 */
+	search(
+		query: string,
+		options: { key?: string; limit?: number; ignoreCase?: boolean } = {},
+	): { matches: { key: string; line: number }[]; truncated: boolean } {
+		const limit = options.limit ?? 100;
+		if (
+			!query ||
+			query.length > 512 ||
+			!Number.isSafeInteger(limit) ||
+			limit < 1 ||
+			limit > 500
+		)
+			throw new AiSnapshotError("invalid");
+		const sources = options.key
+			? this.value.sources.filter((item) => item.key === options.key)
+			: this.value.sources;
+		if (options.key && !sources.length) throw new AiSnapshotError("missing");
+		const needle = options.ignoreCase ? query.toLowerCase() : query;
+		const matches: { key: string; line: number }[] = [];
+		let scanned = 0;
+		let truncated = false;
+		for (const source of sources) {
+			const lines = this.contents.get(source.id);
+			if (!lines) continue;
+			for (let index = 0; index < lines.length; index++) {
+				// Bound the work as well as the result; a wide snapshot is not a free scan.
+				if (++scanned > 200_000) return { matches, truncated: true };
+				const line = options.ignoreCase
+					? lines[index].toLowerCase()
+					: lines[index];
+				if (!line.includes(needle)) continue;
+				if (matches.length >= limit) {
+					truncated = true;
+					break;
+				}
+				matches.push({ key: source.key, line: index + 1 });
+			}
+			if (truncated) break;
+		}
+		return { matches, truncated };
+	}
+
 	coverage() {
 		return {
 			sourceCount: this.value.sources.length,
