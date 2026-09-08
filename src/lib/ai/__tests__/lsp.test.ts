@@ -44,7 +44,17 @@ process.stdin.on('data', (chunk) => {
 							? "send({ jsonrpc: '2.0', id: message.id, result: [{ targetUri: 'file:///a.ts', targetSelectionRange: { start: { line: 4, character: 2 }, end: { line: 4, character: 8 } } }] });"
 							: mode === "null"
 								? "send({ jsonrpc: '2.0', id: message.id, result: null });"
-								: "send({ jsonrpc: '2.0', id: message.id, result: [{ uri: 'file:///a.ts', range: { start: { line: 4, character: 2 }, end: { line: 4, character: 8 } } }] });"
+								: mode === "hover-markup"
+									? "send({ jsonrpc: '2.0', id: message.id, result: { contents: { kind: 'markdown', value: '**const** x: number' } } });"
+									: mode === "hover-string"
+										? "send({ jsonrpc: '2.0', id: message.id, result: { contents: 'plain hover' } });"
+										: mode === "hover-marked-array"
+											? "send({ jsonrpc: '2.0', id: message.id, result: { contents: [{ language: 'ts', value: 'const x: number' }, 'docs here'] } });"
+											: mode === "hover-huge"
+												? "send({ jsonrpc: '2.0', id: message.id, result: { contents: { kind: 'markdown', value: 'é'.repeat(20000) } } });"
+												: mode === "hover-bad"
+													? "send({ jsonrpc: '2.0', id: message.id, result: { contents: [42] } });"
+													: "send({ jsonrpc: '2.0', id: message.id, result: [{ uri: 'file:///a.ts', range: { start: { line: 4, character: 2 }, end: { line: 4, character: 8 } } }] });"
 			}
     }
   }
@@ -224,5 +234,71 @@ describe("LspSession", () => {
 		await expect(lsp.definitions("file:///a.ts", 1, 0)).rejects.toBeInstanceOf(
 			LspError,
 		);
+	});
+
+	it("returns markdown hover contents", async () => {
+		const lsp = await session("hover-markup");
+		try {
+			expect(await lsp.hover("file:///a.ts", 10, 3)).toBe(
+				"**const** x: number",
+			);
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("accepts a plain-string hover", async () => {
+		const lsp = await session("hover-string");
+		try {
+			expect(await lsp.hover("file:///a.ts", 10, 3)).toBe("plain hover");
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("renders a language-tagged MarkedString as a fenced block", async () => {
+		const lsp = await session("hover-marked-array");
+		try {
+			expect(await lsp.hover("file:///a.ts", 10, 3)).toBe(
+				"```ts\nconst x: number\n```\n\ndocs here",
+			);
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("returns null when the server has no hover", async () => {
+		const lsp = await session("null");
+		try {
+			expect(await lsp.hover("file:///a.ts", 10, 3)).toBeNull();
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("bounds an oversized hover without splitting a character", async () => {
+		const lsp = await session("hover-huge");
+		try {
+			const result = await lsp.hover("file:///a.ts", 10, 3);
+			if (result === null) throw new Error("expected hover contents");
+			expect(Buffer.byteLength(result, "utf8")).toBeLessThanOrEqual(
+				LSP_LIMITS.hoverBytes + 5,
+			);
+			expect(result.endsWith("…")).toBe(true);
+			expect(result.includes("�")).toBe(false);
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("rejects an unusable hover payload", async () => {
+		const lsp = await session("hover-bad");
+		try {
+			await expect(lsp.hover("file:///a.ts", 10, 3)).rejects.toMatchObject({
+				code: "protocol_error",
+			});
+		} finally {
+			await lsp.close();
+		}
 	});
 });

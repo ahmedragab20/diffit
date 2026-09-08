@@ -4,7 +4,7 @@
  * A language server is discovered on PATH, exactly like the provider runtimes:
  * when it is absent the feature reports itself unavailable rather than
  * pretending. The client is deliberately small and defensive — it speaks only
- * the three requests it needs, correlates every response by id, bounds frames,
+ * the few requests it needs, correlates every response by id, bounds frames,
  * bytes and time, and never grants the server authority: a server-initiated
  * request is answered with "method not found" and its notifications are
  * dropped. No workspace edit, command or file write is ever accepted.
@@ -17,6 +17,7 @@ export const LSP_LIMITS = Object.freeze({
 	totalBytes: 16 * 1024 * 1024,
 	pendingRequests: 32,
 	locations: 500,
+	hoverBytes: 8 * 1024,
 	requestMs: 10_000,
 	startupMs: 20_000,
 });
@@ -135,6 +136,47 @@ function locations(result: unknown): LspLocation[] {
 	});
 }
 
+/**
+ * A hover's contents, normalized to one markdown string.
+ *
+ * Three shapes are legal and servers in the wild still emit all of them: a
+ * plain string, a `MarkedString` (or array of them, where the object form is a
+ * language-tagged code block), and the modern `MarkupContent`. Anything else is
+ * a protocol error rather than a guess.
+ */
+function hoverMarkdown(result: unknown): string | null {
+	if (result === null || result === undefined) return null;
+	const contents = (result as { contents?: unknown }).contents;
+	if (contents === null || contents === undefined) return null;
+	const parts = (Array.isArray(contents) ? contents : [contents]).map(
+		(entry) => {
+			if (typeof entry === "string") return entry;
+			if (typeof entry !== "object" || entry === null)
+				throw new LspError("protocol_error");
+			const { language, value, kind } = entry as Record<string, unknown>;
+			if (typeof value !== "string") throw new LspError("protocol_error");
+			// MarkupContent carries `kind`; a MarkedString object carries
+			// `language` and must be rendered as a fenced block to stay readable.
+			if (kind !== undefined) return value;
+			if (typeof language !== "string") throw new LspError("protocol_error");
+			return `\`\`\`${language}\n${value}\n\`\`\``;
+		},
+	);
+	const markdown = parts.join("\n\n").trim();
+	return markdown ? boundHover(markdown) : null;
+}
+
+/** Keep a tooltip from becoming a channel for flooding the client. */
+function boundHover(markdown: string): string {
+	const buffer = Buffer.from(markdown, "utf8");
+	if (buffer.byteLength <= LSP_LIMITS.hoverBytes) return markdown;
+	// Back off to the start of a UTF-8 sequence so the cut never lands inside a
+	// character, then say plainly that there was more.
+	let end = LSP_LIMITS.hoverBytes;
+	while (end > 0 && (buffer[end] & 0xc0) === 0x80) end--;
+	return `${buffer.subarray(0, end).toString("utf8").trimEnd()}\n\n…`;
+}
+
 export class LspSession {
 	private readonly decoder = new LspFrameDecoder();
 	private readonly pending = new Map<
@@ -188,6 +230,7 @@ export class LspSession {
 						textDocument: {
 							definition: { linkSupport: true },
 							references: {},
+							hover: { contentFormat: ["markdown", "plaintext"] },
 						},
 					},
 					workspaceFolders: null,
@@ -226,6 +269,20 @@ export class LspSession {
 				textDocument: { uri },
 				position: { line: line - 1, character },
 				context: { includeDeclaration },
+			}),
+		);
+	}
+
+	/** Hover markdown for a position, or null when the server has nothing to say. */
+	async hover(
+		uri: string,
+		line: number,
+		character: number,
+	): Promise<string | null> {
+		return hoverMarkdown(
+			await this.request("textDocument/hover", {
+				textDocument: { uri },
+				position: { line: line - 1, character },
 			}),
 		);
 	}
