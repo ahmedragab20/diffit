@@ -1,6 +1,11 @@
 ---
 name: diffing
 description: Use diffing as an agent cookbook for local code review, GitHub pull requests, plans and HTML mockups. Route session setup, bounded reads, feedback, approvals and headless operations to reliable MCP, CLI or authenticated HTTP recipes.
+license: MIT
+metadata:
+  author: ahmedragab20
+  version: "0.20.0"
+user_invocable: true
 ---
 
 # Diffing agent cookbook
@@ -20,6 +25,7 @@ The task involves diffing: choosing a session, reading/reviewing a diff, submitt
 | Read/summarize a PR | [PR reads](../diffing-pr-read/SKILL.md) |
 | Implement reviewer feedback | [Address PR feedback](../diffing-pr-address/SKILL.md) |
 | Publish a diffing product release | [Release](../diffing-release/SKILL.md) (contributors only) |
+| Cite a retained review capture | [Headless API — AI evidence](references/headless-api.md#opt-in-ai-integration-not-an-agent-inference-loop) |
 | API-only operation or embedding | [Headless API](references/headless-api.md) |
 | Install/select/reconnect/troubleshoot | [Sessions and transports](references/sessions-and-transports.md) |
 
@@ -65,7 +71,7 @@ Share returned plan/mockup/review URLs and **park by default**. Await when the h
 
 `comment-only` forbids edits. Clear change requests get verified fixes, replies and resolution; questions remain open. Keep scratch under `~/.diffing/`, never in the consumer tree. Never edit diffing's storage JSON directly.
 
-Local PR drafts are not publication. GitHub writes, design publication, destructive operations and releases need specific human authorization. Use dry-run where the operation offers it. `--model` is provenance, not inference or authority; UI Ask AI is not an automatic agent step.
+Local PR drafts are not publication. GitHub writes, design publication, destructive operations and releases need specific human authorization. Use dry-run where the operation offers it. `--model` is provenance, not inference or authority. The human Ask AI rail is opt-in UI, not an agent loop: never call `POST /api/ai/run`. Read-only capture navigation uses `ai_evidence_*` / `diffing evidence`; notebook writes use `ai_notebook_add` / `ai_notebook_decide`.
 
 ## Recovery
 

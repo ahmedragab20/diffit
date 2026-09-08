@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
+import { scrollBehavior } from "../lib/motion.js";
 import { Search, X, Check, Type } from 'lucide-react'
 import { Modal } from '../primitives/Modal'
 
@@ -105,7 +106,7 @@ export function FontPickerModal({
   useEffect(() => {
     if (!open) return
     const el = focusedIndex === 0 ? itemRefs.current[0] : itemRefs.current[focusedIndex]
-    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    el?.scrollIntoView({ block: 'nearest', behavior: scrollBehavior() })
   }, [focusedIndex, open])
 
   const handleSelect = (font: string | null) => {

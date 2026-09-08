@@ -175,7 +175,7 @@ describe('useSubmitPanelSize', () => {
     // rAF should have been scheduled
     expect(globalThis.requestAnimationFrame).toHaveBeenCalled()
     // Flush rAF
-    if (rafCb) act(() => rafCb())
+    act(() => rafCb?.())
     // Height should increase: clientY(500) - startY(400) = 100, default 480 + 100 = 580
     expect(div.style.getPropertyValue('--submit-panel-height')).toBe('580px')
 
@@ -256,7 +256,7 @@ describe('useSubmitPanelSize', () => {
     // rAF should have been scheduled
     expect(globalThis.requestAnimationFrame).toHaveBeenCalled()
     // Flush rAF
-    if (rafCb) act(() => rafCb())
+    act(() => rafCb?.())
     // Width should increase: startX(400) - clientX(300) = 100, default 520 + 100 = 620
     expect(div.style.getPropertyValue('--submit-panel-width')).toBe('620px')
 
@@ -309,7 +309,7 @@ describe('useSubmitPanelSize', () => {
     })
 
     expect(globalThis.requestAnimationFrame).toHaveBeenCalled()
-    if (rafCb) act(() => rafCb())
+    act(() => rafCb?.())
     // default 520×480 → 600×530
     expect(div.style.getPropertyValue('--submit-panel-width')).toBe('600px')
     expect(div.style.getPropertyValue('--submit-panel-height')).toBe('530px')
@@ -357,7 +357,7 @@ describe('useSubmitPanelSize', () => {
     act(() => {
       moveHandler(new PointerEvent('pointermove', { clientX: 5000, clientY: -5000, pointerId: 1 }))
     })
-    if (rafCb) act(() => rafCb())
+    act(() => rafCb?.())
     expect(div.style.getPropertyValue('--submit-panel-width')).toBe(`${SUBMIT_PANEL_MIN_WIDTH}px`)
     expect(div.style.getPropertyValue('--submit-panel-height')).toBe(`${SUBMIT_PANEL_MIN}px`)
 
@@ -365,7 +365,7 @@ describe('useSubmitPanelSize', () => {
     act(() => {
       moveHandler(new PointerEvent('pointermove', { clientX: -5000, clientY: 5000, pointerId: 1 }))
     })
-    if (rafCb) act(() => rafCb())
+    act(() => rafCb?.())
     expect(div.style.getPropertyValue('--submit-panel-width')).toBe(`${SUBMIT_PANEL_MAX_WIDTH}px`)
     expect(div.style.getPropertyValue('--submit-panel-height')).toBe(`${SUBMIT_PANEL_MAX}px`)
 

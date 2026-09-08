@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "./child-process.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type {
@@ -11,6 +11,19 @@ import type {
 	AiSourceId,
 } from "./types.js";
 import type { SecretStore } from "./secrets.js";
+import { consumeProviderText } from "./provider-stream.js";
+import { RuntimeTextDecoder } from "./runtime-protocol.js";
+import {
+	codexModelCatalog,
+	parseModelLines,
+	parseDirectCatalog,
+	readCatalogResponse,
+} from "./catalog.js";
+import { AiRunError, DEFAULT_AI_RUN_POLICY } from "./lifecycle.js";
+import {
+	providerCapabilities,
+	validateProviderOptions,
+} from "./capabilities.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -31,10 +44,10 @@ interface RuntimeSpec {
 
 async function commandAvailable(bin: string, args: string[]): Promise<boolean> {
 	try {
-		await execFileAsync(bin, args, { timeout: 5000 });
+		await execFileAsync(bin, args, { timeout: 5000, maxBuffer: 64 * 1024 });
 		return true;
-	} catch (error) {
-		return Boolean((error as { stdout?: string; stderr?: string }).stdout);
+	} catch {
+		return false;
 	}
 }
 
@@ -48,107 +61,8 @@ function modelName(id: string): string {
 		.join(" ");
 }
 
-function parseModelLines(output: string): string[] {
-	const ids = new Set<string>();
-	for (const raw of output.split("\n")) {
-		const line = raw.trim();
-		if (!line || /^(available models|models|provider|name|[-=]{2,})/i.test(line))
-			continue;
-		const first = line
-			.split(/\s+/)[0]
-			?.replace(/^[*✓>]+/, "")
-			.replace(/[,:]$/, "");
-		if (first && /^[a-z0-9][a-z0-9._:/\-[\]]+$/i.test(first)) ids.add(first);
-	}
-	return [...ids];
-}
-
-function extractText(value: unknown): string {
-	if (Array.isArray(value)) return value.map(extractText).join("");
-	if (!value || typeof value !== "object") return "";
-	const record = value as Record<string, unknown>;
-	if (typeof record.result === "string") return record.result;
-	if (
-		typeof record.text === "string" &&
-		["text", "agent_message", "text_delta", "output_text"].includes(
-			String(record.type),
-		)
-	)
-		return record.text;
-	if (typeof record.delta === "string") return record.delta;
-	if (record.delta && typeof record.delta === "object")
-		return extractText(record.delta);
-	if (Array.isArray(record.content))
-		return record.content.map(extractText).join("");
-	if (record.event) return extractText(record.event);
-	if (record.part) return extractText(record.part);
-	if (record.message) return extractText(record.message);
-	if (record.item) return extractText(record.item);
-	if (record.data) return extractText(record.data);
-	return "";
-}
-
-function streamDelta(
-	payload: Record<string, unknown>,
-	provider: "anthropic" | "responses",
-): string {
-	if (provider === "anthropic") {
-		if (payload.type !== "content_block_delta") return "";
-		const delta = payload.delta as Record<string, unknown> | undefined;
-		return delta?.type === "text_delta" && typeof delta.text === "string"
-			? delta.text
-			: "";
-	}
-	return payload.type === "response.output_text.delta" &&
-		typeof payload.delta === "string"
-		? payload.delta
-		: "";
-}
-
-async function consumeSseText(
-	response: Response,
-	provider: "anthropic" | "responses",
-	onEvent: (event: AiRunEvent) => void | Promise<void>,
-): Promise<string> {
-	if (!response.body) throw new Error("Provider returned no response stream.");
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let buffer = "";
-	let output = "";
-	const consumeFrame = async (frame: string) => {
-		const data = frame
-			.split("\n")
-			.filter((line) => line.startsWith("data:"))
-			.map((line) => line.slice(5).trim())
-			.join("\n");
-		if (!data || data === "[DONE]") return;
-		let payload: Record<string, unknown>;
-		try {
-			payload = JSON.parse(data) as Record<string, unknown>;
-		} catch {
-			return;
-		}
-		const delta = streamDelta(payload, provider);
-		if (!delta) return;
-		output += delta;
-		await onEvent({ type: "text-delta", text: delta });
-	};
-	while (true) {
-		const { value, done } = await reader.read();
-		buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
-		let boundary = buffer.indexOf("\n\n");
-		while (boundary >= 0) {
-			await consumeFrame(buffer.slice(0, boundary));
-			buffer = buffer.slice(boundary + 2);
-			boundary = buffer.indexOf("\n\n");
-		}
-		if (done) break;
-	}
-	if (buffer.trim()) await consumeFrame(buffer);
-	return output;
-}
-
 async function runCommand(
+	source: RuntimeSpec["id"],
 	bin: string,
 	args: string[],
 	prompt: string,
@@ -156,92 +70,134 @@ async function runCommand(
 	onEvent: (event: AiRunEvent) => void | Promise<void>,
 	promptAsArgument = false,
 ): Promise<string> {
-	return new Promise<string>((resolve, reject) => {
-		const child = spawn(bin, promptAsArgument ? [...args, prompt] : args, {
-			stdio: ["pipe", "pipe", "pipe"],
-			env: { ...process.env, NO_COLOR: "1", CI: "1" },
-		});
-		let stdoutBuffer = "";
-		let stderr = "";
-		let text = "";
-		let finalResult = "";
-		let eventChain = Promise.resolve();
-		const abort = () => child.kill("SIGTERM");
-		signal.addEventListener("abort", abort, { once: true });
-
-		const consumeLine = (line: string) => {
-			if (!line.trim()) return;
-			try {
-				const parsed = JSON.parse(line) as unknown;
-				const chunk = extractText(parsed);
-				if (!chunk) return;
-				const isFinal =
-					typeof (parsed as Record<string, unknown>).result === "string";
-				if (isFinal) finalResult = chunk;
-				else {
-					const incremental = chunk.startsWith(text)
-						? chunk.slice(text.length)
-						: text.endsWith(chunk)
-							? ""
-							: chunk;
-					if (!incremental) return;
-					text += incremental;
-					eventChain = eventChain
-						.then(() => onEvent({ type: "text-delta", text: incremental }))
-						.then(() => undefined);
-				}
-			} catch {
-				// Some runtimes emit a final plain-text line even in JSON mode.
-				text += `${line}\n`;
-				eventChain = eventChain
-					.then(() => onEvent({ type: "text-delta", text: `${line}\n` }))
-					.then(() => undefined);
-			}
-		};
-
-		child.stdout.setEncoding("utf8");
-		child.stdout.on("data", (chunk: string) => {
-			stdoutBuffer += chunk;
-			let newline = stdoutBuffer.indexOf("\n");
-			while (newline >= 0) {
-				consumeLine(stdoutBuffer.slice(0, newline));
-				stdoutBuffer = stdoutBuffer.slice(newline + 1);
-				newline = stdoutBuffer.indexOf("\n");
-			}
-		});
-		child.stderr.setEncoding("utf8");
-		child.stderr.on("data", (chunk: string) => {
-			stderr = `${stderr}${chunk}`.slice(-8000);
-		});
-		child.on("error", reject);
-		child.on("close", (code) => {
-			signal.removeEventListener("abort", abort);
-			if (stdoutBuffer) consumeLine(stdoutBuffer);
-			void eventChain.then(() => {
-				if (signal.aborted) return reject(new Error("AI request canceled."));
-				if (code !== 0)
-					return reject(
-						new Error(stderr.trim() || `${bin} exited with code ${code}`),
-					);
-				resolve((finalResult || text).trim());
-			}, reject);
-		});
-		child.stdin.end(promptAsArgument ? undefined : prompt);
+	signal.throwIfAborted();
+	const decoder = new RuntimeTextDecoder(source);
+	const child = spawn(bin, promptAsArgument ? [...args, prompt] : args, {
+		stdio: ["pipe", "pipe", "pipe"],
+		env: { ...process.env, NO_COLOR: "1", CI: "1" },
 	});
+	let failure: unknown;
+	let closed = false;
+	const stop = (error: unknown) => {
+		failure ??= error;
+		if (!closed) child.kill("SIGTERM");
+		child.stdout.destroy();
+	};
+	const abort = () => stop(signal.reason);
+	const ioError = () => stop(new AiRunError("provider_failed"));
+	const closure = new Promise<number | null>((resolve) => {
+		child.once("close", (code) => {
+			closed = true;
+			resolve(code);
+		});
+	});
+	child.on("error", ioError);
+	child.stdin.on("error", ioError);
+	child.stderr.on("error", ioError);
+	child.stderr.resume(); // Drain, but never retain or expose provider stderr.
+	signal.addEventListener("abort", abort, { once: true });
+	let buffer = "";
+	let bytes = 0;
+	let frames = 0;
+	const consumeLine = async (line: string) => {
+		signal.throwIfAborted();
+		if (
+			++frames > DEFAULT_AI_RUN_POLICY.maxEvents ||
+			Buffer.byteLength(line, "utf8") > DEFAULT_AI_RUN_POLICY.maxEventBytes
+		)
+			throw new AiRunError("resource_limit");
+		if (!line.trim()) return;
+		let parsed: Record<string, unknown>;
+		try {
+			const value: unknown = JSON.parse(line);
+			if (!value || typeof value !== "object" || Array.isArray(value))
+				throw new Error();
+			parsed = value as Record<string, unknown>;
+		} catch {
+			throw new AiRunError("protocol_error");
+		}
+		const delta = decoder.push(parsed);
+		if (!delta) return;
+		// Await delivery before pulling more stdout; the pipe provides backpressure.
+		try {
+			await onEvent({ type: "text-delta", text: delta });
+		} catch {
+			throw new AiRunError("delivery_failed");
+		}
+	};
+	try {
+		if (signal.aborted) abort();
+		signal.throwIfAborted();
+		child.stdout.setEncoding("utf8");
+		child.stdin.end(promptAsArgument ? undefined : prompt);
+		for await (const chunk of child.stdout) {
+			bytes += Buffer.byteLength(chunk as string, "utf8");
+			if (bytes > 16 * 1024 * 1024) throw new AiRunError("resource_limit");
+			buffer += chunk;
+			let newline = buffer.indexOf("\n");
+			while (newline >= 0) {
+				await consumeLine(buffer.slice(0, newline));
+				buffer = buffer.slice(newline + 1);
+				newline = buffer.indexOf("\n");
+			}
+			if (Buffer.byteLength(buffer, "utf8") > DEFAULT_AI_RUN_POLICY.maxEventBytes)
+				throw new AiRunError("resource_limit");
+		}
+		if (buffer) await consumeLine(buffer);
+		const code = await closure;
+		signal.throwIfAborted();
+		if (failure) throw failure;
+		if (code !== 0) throw new AiRunError("provider_failed");
+		return decoder.finish();
+	} catch (error) {
+		stop(error);
+		// SIGTERM is only a request. Do not release ownership until close confirms it.
+		await closure;
+		throw failure;
+	} finally {
+		signal.removeEventListener("abort", abort);
+		child.removeListener("error", ioError);
+		child.stdin.removeListener("error", ioError);
+		child.stderr.removeListener("error", ioError);
+	}
 }
 
 export class RuntimeAdapter implements AiBackendAdapter {
 	readonly id: RuntimeSpec["id"];
 	readonly supportsImages: boolean = false;
+	private runtimeVersion: string | null = null;
 	constructor(private readonly spec: RuntimeSpec) {
 		this.id = spec.id;
 	}
 
+	get capabilities() {
+		return {
+			...providerCapabilities(this.id),
+			runtimeVersion: this.runtimeVersion,
+		};
+	}
+
 	async connection(): Promise<AiConnection> {
-		const available = await commandAvailable(
-			this.spec.bin,
-			this.spec.versionArgs,
-		);
+		let available = false;
+		this.runtimeVersion = null;
+		try {
+			const { stdout } = await execFileAsync(
+				this.spec.bin,
+				this.spec.versionArgs,
+				{
+					timeout: 5000,
+					maxBuffer: 64 * 1024,
+				},
+			);
+			available = true;
+			// Retain only a bounded version token, never raw runtime diagnostics.
+			this.runtimeVersion =
+				stdout.match(
+					/(?:^|\s)(\d{1,8}\.\d{1,8}\.\d{1,8}(?:[-+][\w.-]{1,64})?)(?=\s|$)/,
+				)?.[1] ?? null;
+		} catch {
+			// An executable's error output is not a successful discovery result.
+		}
 		if (!available) {
 			return {
 				id: this.id,
@@ -250,6 +206,7 @@ export class RuntimeAdapter implements AiBackendAdapter {
 				runtimeAvailable: false,
 				credentialRoutes: this.spec.routes,
 				activeRoutes: [],
+				authentication: { evidence: "none", verified: false, configuredRoutes: [] },
 				setupCommand:
 					this.spec.setup.subscription ?? this.spec.setup["runtime-key"],
 			};
@@ -261,7 +218,15 @@ export class RuntimeAdapter implements AiBackendAdapter {
 			status: connected ? "connected" : "needs-configuration",
 			runtimeAvailable: true,
 			credentialRoutes: this.spec.routes,
-			activeRoutes: connected ? this.spec.routes : [],
+			activeRoutes: [],
+			authentication: {
+				evidence: connected ? "runtime-status" : "none",
+				verified: false,
+				configuredRoutes: [],
+			},
+			detail: connected
+				? "Runtime status command succeeded; authentication and credential route are unverified."
+				: undefined,
 			setupCommand: connected
 				? undefined
 				: (this.spec.setup.subscription ?? this.spec.setup["runtime-key"]),
@@ -272,6 +237,7 @@ export class RuntimeAdapter implements AiBackendAdapter {
 		const connection = await this.connection();
 		if (connection.status !== "connected") return [];
 		let entries = this.spec.fallbackModels ?? [];
+		let catalogSource: "runtime" | "fallback" = "fallback";
 		if (this.spec.modelArgs) {
 			try {
 				const { stdout } = await execFileAsync(this.spec.bin, this.spec.modelArgs, {
@@ -279,8 +245,10 @@ export class RuntimeAdapter implements AiBackendAdapter {
 					maxBuffer: 4 * 1024 * 1024,
 				});
 				const parsed = parseModelLines(stdout);
-				if (parsed.length)
+				if (parsed.length) {
 					entries = parsed.map((id) => ({ id, label: modelName(id) }));
+					catalogSource = "runtime";
+				}
 			} catch {
 				// Preserve the runtime's safe aliases when catalog discovery is unavailable.
 			}
@@ -297,7 +265,9 @@ export class RuntimeAdapter implements AiBackendAdapter {
 			modelId: entry.id,
 			displayName: entry.label,
 			isDefault: index === 0,
-			supportsImages: this.supportsImages,
+			supportsImages: false,
+			catalogSource,
+			capabilities: this.capabilities,
 		}));
 	}
 
@@ -326,7 +296,9 @@ export class RuntimeAdapter implements AiBackendAdapter {
 			request.modelId.split("/").slice(3).join("/") ||
 			request.modelId.split("/").at(-1) ||
 			"";
+		await validateProviderOptions(this, request, signal);
 		return runCommand(
+			this.id,
 			this.spec.bin,
 			this.spec.args(model),
 			request.prompt ?? "",
@@ -335,125 +307,6 @@ export class RuntimeAdapter implements AiBackendAdapter {
 			this.spec.promptAsArgument,
 		);
 	}
-}
-
-async function codexModelCatalog(): Promise<
-	Array<{
-		id: string;
-		displayName: string;
-		description?: string;
-		isDefault?: boolean;
-		reasoningEfforts?: string[];
-		serviceTiers?: string[];
-	}>
-> {
-	return new Promise((resolve, reject) => {
-		const child = spawn("codex", ["app-server", "--stdio"], {
-			stdio: ["pipe", "pipe", "pipe"],
-			env: { ...process.env, NO_COLOR: "1" },
-		});
-		let buffer = "";
-		let cursor: string | null = null;
-		const models: Array<{
-			id: string;
-			displayName: string;
-			description?: string;
-			isDefault?: boolean;
-			reasoningEfforts?: string[];
-			serviceTiers?: string[];
-		}> = [];
-		let requestId = 2;
-		const timeout = setTimeout(() => {
-			child.kill("SIGTERM");
-			reject(new Error("Codex model catalog timed out."));
-		}, 12000);
-		const finish = (error?: Error) => {
-			clearTimeout(timeout);
-			child.kill("SIGTERM");
-			error ? reject(error) : resolve(models);
-		};
-		const sendModelPage = () =>
-			child.stdin.write(
-				`${JSON.stringify({ jsonrpc: "2.0", id: requestId, method: "model/list", params: { cursor, limit: 100, includeHidden: false } })}\n`,
-			);
-		child.stdout.setEncoding("utf8");
-		child.stdout.on("data", (chunk: string) => {
-			buffer += chunk;
-			let newline = buffer.indexOf("\n");
-			while (newline >= 0) {
-				const line = buffer.slice(0, newline).trim();
-				buffer = buffer.slice(newline + 1);
-				newline = buffer.indexOf("\n");
-				if (!line) continue;
-				let message: Record<string, unknown>;
-				try {
-					message = JSON.parse(line) as Record<string, unknown>;
-				} catch {
-					continue;
-				}
-				if (message.id === 1 && message.result) {
-					child.stdin.write(
-						`${JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} })}\n`,
-					);
-					sendModelPage();
-					continue;
-				}
-				if (message.id !== requestId) continue;
-				if (message.error)
-					return finish(new Error("Codex model catalog request failed."));
-				const result = message.result as {
-					data?: Array<Record<string, unknown>>;
-					nextCursor?: string | null;
-				};
-				for (const model of result.data ?? []) {
-					const id =
-						typeof model.model === "string"
-							? model.model
-							: typeof model.id === "string"
-								? model.id
-								: "";
-					if (!id) continue;
-					models.push({
-						id,
-						displayName:
-							typeof model.displayName === "string"
-								? model.displayName
-								: modelName(id),
-						description:
-							typeof model.description === "string" ? model.description : undefined,
-						isDefault: model.isDefault === true,
-						reasoningEfforts: Array.isArray(model.supportedReasoningEfforts)
-							? model.supportedReasoningEfforts
-									.map((entry) =>
-										typeof entry === "string"
-											? entry
-											: String((entry as Record<string, unknown>).reasoningEffort ?? ""),
-									)
-									.filter(Boolean)
-							: undefined,
-						serviceTiers: Array.isArray(model.serviceTiers)
-							? model.serviceTiers
-									.map((entry) => String((entry as Record<string, unknown>).id ?? ""))
-									.filter(Boolean)
-							: undefined,
-					});
-				}
-				cursor = result.nextCursor ?? null;
-				if (cursor) {
-					requestId += 1;
-					sendModelPage();
-				} else finish();
-			}
-		});
-		child.on("error", finish);
-		child.on("exit", (code) => {
-			if (code && models.length === 0)
-				finish(new Error("Codex app-server exited before returning models."));
-		});
-		child.stdin.write(
-			`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "diffing", title: "diffing", version: "0.18" }, capabilities: { experimentalApi: true, requestAttestation: false } } })}\n`,
-		);
-	});
 }
 
 async function runCodexAppServer(
@@ -465,122 +318,240 @@ async function runCodexAppServer(
 	signal: AbortSignal,
 	onEvent: (event: AiRunEvent) => void | Promise<void>,
 ): Promise<string> {
-	return new Promise<string>((resolve, reject) => {
-		const child = spawn("codex", ["app-server", "--stdio"], {
-			stdio: ["pipe", "pipe", "pipe"],
-			env: { ...process.env, NO_COLOR: "1" },
+	signal.throwIfAborted();
+	const child = spawn("codex", ["app-server", "--stdio"], {
+		stdio: ["pipe", "pipe", "pipe"],
+		env: { ...process.env, NO_COLOR: "1" },
+	});
+	let failure: unknown;
+	let closed = false;
+	let terminationRequested = false;
+	let completed = false;
+	let expectedResponse = 1;
+	let threadId = "";
+	let turnId = "";
+	let output = "";
+	let outputBytes = 0;
+	let streamBytes = 0;
+	let sentBytes = 0;
+	let frames = 0;
+	let buffer = "";
+	const closure = new Promise<{
+		code: number | null;
+		signal: NodeJS.Signals | null;
+	}>((resolve) => {
+		child.once("close", (code, exitSignal) => {
+			closed = true;
+			resolve({ code, signal: exitSignal });
 		});
-		let buffer = "";
-		let stderr = "";
-		let threadId = "";
-		let output = "";
-		let settled = false;
-		let eventChain = Promise.resolve();
-		const timeout = setTimeout(
-			() => finish(new Error("Codex response timed out.")),
-			5 * 60 * 1000,
-		);
-		const abort = () => finish(new Error("AI request canceled."));
-		signal.addEventListener("abort", abort, { once: true });
-		const send = (id: number, method: string, params: Record<string, unknown>) =>
-			child.stdin.write(
-				`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`,
-			);
-		const finish = (error?: Error) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timeout);
-			signal.removeEventListener("abort", abort);
-			child.kill("SIGTERM");
-			void eventChain.finally(() =>
-				error
-					? reject(error)
-					: output
-						? resolve(output)
-						: reject(new Error(stderr.trim() || "Codex returned no text.")),
-			);
-		};
-		child.stdout.setEncoding("utf8");
-		child.stdout.on("data", (chunk: string) => {
-			buffer += chunk;
-			let newline = buffer.indexOf("\n");
-			while (newline >= 0) {
-				const line = buffer.slice(0, newline).trim();
-				buffer = buffer.slice(newline + 1);
-				newline = buffer.indexOf("\n");
-				if (!line) continue;
-				let message: Record<string, unknown>;
+	});
+	const terminate = () => {
+		if (!closed && !terminationRequested)
+			terminationRequested = child.kill("SIGTERM");
+	};
+	const stop = (error: unknown) => {
+		failure ??= error;
+		terminate();
+		child.stdout.destroy();
+	};
+	const abort = () => stop(signal.reason);
+	const ioError = () => stop(new AiRunError("provider_failed"));
+	const timeout = setTimeout(
+		() => stop(new AiRunError("total_timeout")),
+		DEFAULT_AI_RUN_POLICY.totalMs,
+	);
+	child.on("error", ioError);
+	child.stdin.on("error", ioError);
+	child.stderr.on("error", ioError);
+	child.stderr.resume();
+	signal.addEventListener("abort", abort, { once: true });
+	const check = () => {
+		signal.throwIfAborted();
+		if (failure) throw failure;
+	};
+	const record = (value: unknown): Record<string, unknown> | undefined =>
+		value !== null && typeof value === "object" && !Array.isArray(value)
+			? (value as Record<string, unknown>)
+			: undefined;
+	const send = (
+		id: number | undefined,
+		method: string,
+		params: Record<string, unknown>,
+	) => {
+		check();
+		const line = `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`;
+		sentBytes += Buffer.byteLength(line, "utf8");
+		if (sentBytes > 16 * 1024 * 1024) throw new AiRunError("resource_limit");
+		child.stdin.write(line);
+	};
+	const bindTurn = (value: unknown) => {
+		const turn = record(value);
+		if (
+			!turn ||
+			typeof turn.id !== "string" ||
+			!turn.id ||
+			turn.id.length > 512 ||
+			(turnId && turnId !== turn.id)
+		)
+			throw new AiRunError("protocol_error");
+		if (
+			turn.status === "failed" ||
+			turn.status === "interrupted" ||
+			turn.error != null
+		)
+			throw new AiRunError("provider_failed");
+		turnId = turn.id;
+		return turn;
+	};
+	const consumeLine = async (line: string) => {
+		check();
+		if (
+			++frames > DEFAULT_AI_RUN_POLICY.maxEvents ||
+			Buffer.byteLength(line, "utf8") > DEFAULT_AI_RUN_POLICY.maxEventBytes
+		)
+			throw new AiRunError("resource_limit");
+		if (!line.trim()) return;
+		let message: Record<string, unknown> | undefined;
+		try {
+			message = record(JSON.parse(line));
+		} catch {
+			throw new AiRunError("protocol_error");
+		}
+		if (!message || (message.jsonrpc !== undefined && message.jsonrpc !== "2.0"))
+			throw new AiRunError("protocol_error");
+		if ("id" in message) {
+			// Server-initiated approval/tool requests are not delegated authority.
+			if (message.method !== undefined || message.id !== expectedResponse)
+				throw new AiRunError("protocol_error");
+			if (message.error != null) throw new AiRunError("provider_failed");
+			const result = record(message.result);
+			if (!result) throw new AiRunError("protocol_error");
+			if (expectedResponse === 1) {
+				expectedResponse = 2;
+				send(undefined, "initialized", {});
+				send(2, "thread/start", {
+					model,
+					cwd: process.cwd(),
+					approvalPolicy: "never",
+					sandbox: "read-only",
+					ephemeral: true,
+					dynamicTools: [],
+					environments: [],
+				});
+			} else if (expectedResponse === 2) {
+				const thread = record(result.thread);
+				if (
+					!thread ||
+					typeof thread.id !== "string" ||
+					!thread.id ||
+					thread.id.length > 512
+				)
+					throw new AiRunError("protocol_error");
+				threadId = thread.id;
+				expectedResponse = 3;
+				send(3, "turn/start", {
+					threadId,
+					input: [
+						{ type: "text", text: prompt, text_elements: [] },
+						...(images ?? []).map((image) => ({ type: "image", url: image.dataUrl })),
+					],
+					model,
+					effort: effort || undefined,
+					serviceTier: serviceTier || undefined,
+					approvalPolicy: "never",
+					environments: [],
+				});
+			} else if (expectedResponse === 3) {
+				bindTurn(result.turn);
+				expectedResponse = 0;
+			} else throw new AiRunError("protocol_error");
+			return;
+		}
+		if (typeof message.method !== "string")
+			throw new AiRunError("protocol_error");
+		if (message.method === "error") throw new AiRunError("provider_failed");
+		if (
+			!["turn/started", "item/agentMessage/delta", "turn/completed"].includes(
+				message.method,
+			)
+		)
+			return;
+		const params = record(message.params);
+		if (!threadId || !params || params.threadId !== threadId)
+			throw new AiRunError("protocol_error");
+		if (message.method === "turn/started") {
+			// Notifications may precede the response to turn/start.
+			bindTurn(params.turn);
+			return;
+		}
+		if (!turnId) throw new AiRunError("protocol_error");
+		if (message.method === "item/agentMessage/delta") {
+			if (params.turnId !== turnId || typeof params.delta !== "string")
+				throw new AiRunError("protocol_error");
+			outputBytes += Buffer.byteLength(params.delta, "utf8");
+			if (outputBytes > DEFAULT_AI_RUN_POLICY.maxOutputBytes)
+				throw new AiRunError("resource_limit");
+			if (params.delta) {
+				output += params.delta;
+				// Pull one frame at a time: downstream delivery applies stdout backpressure.
 				try {
-					message = JSON.parse(line) as Record<string, unknown>;
+					await onEvent({ type: "text-delta", text: params.delta });
 				} catch {
-					continue;
+					throw new AiRunError("delivery_failed");
 				}
-				if (message.id === 1 && message.result) {
-					child.stdin.write(
-						`${JSON.stringify({ jsonrpc: "2.0", method: "initialized", params: {} })}\n`,
-					);
-					send(2, "thread/start", {
-						model,
-						cwd: process.cwd(),
-						approvalPolicy: "never",
-						sandbox: "read-only",
-						ephemeral: true,
-						dynamicTools: [],
-						environments: [],
-					});
-					continue;
-				}
-				if (message.id === 2 && message.result) {
-					const result = message.result as { thread?: { id?: string } };
-					threadId = result.thread?.id ?? "";
-					if (!threadId) return finish(new Error("Codex did not create a thread."));
-					send(3, "turn/start", {
-						threadId,
-						input: [
-							{ type: "text", text: prompt, text_elements: [] },
-							...(images ?? []).map((image) => ({
-								type: "image",
-								url: image.dataUrl,
-							})),
-						],
-						model,
-						effort: effort || undefined,
-						serviceTier: serviceTier || undefined,
-						approvalPolicy: "never",
-						environments: [],
-					});
-					continue;
-				}
-				if (message.id && message.error)
-					return finish(new Error("Codex app-server request failed."));
-				if (message.method === "item/agentMessage/delta") {
-					const delta = (message.params as { delta?: unknown } | undefined)?.delta;
-					if (typeof delta === "string" && delta) {
-						output += delta;
-						eventChain = eventChain
-							.then(() => onEvent({ type: "text-delta", text: delta }))
-							.then(() => undefined);
-					}
-				}
-				if (message.method === "turn/completed") finish();
+				check();
 			}
-		});
-		child.stderr.setEncoding("utf8");
-		child.stderr.on("data", (chunk: string) => {
-			stderr = `${stderr}${chunk}`.slice(-4000);
-		});
-		child.on("error", (error) => finish(error));
-		child.on("exit", (code) => {
-			if (!settled && code !== 0)
-				finish(
-					new Error(stderr.trim() || `Codex app-server exited with code ${code}.`),
-				);
-		});
+			return;
+		}
+		const turn = bindTurn(params.turn);
+		if (turn.status !== "completed") throw new AiRunError("protocol_error");
+		if (!output.trim()) throw new AiRunError("empty_output");
+		completed = true;
+		terminate();
+	};
+	try {
+		if (signal.aborted) abort();
+		check();
+		child.stdout.setEncoding("utf8");
 		send(1, "initialize", {
 			clientInfo: { name: "diffing", title: "diffing", version: "0.18" },
 			capabilities: { experimentalApi: true, requestAttestation: false },
 		});
-	});
+		for await (const chunk of child.stdout) {
+			streamBytes += Buffer.byteLength(chunk as string, "utf8");
+			if (streamBytes > 16 * 1024 * 1024) throw new AiRunError("resource_limit");
+			buffer += chunk;
+			let newline = buffer.indexOf("\n");
+			while (newline >= 0 && !completed) {
+				await consumeLine(buffer.slice(0, newline));
+				buffer = buffer.slice(newline + 1);
+				newline = buffer.indexOf("\n");
+			}
+			if (completed) break;
+			if (Buffer.byteLength(buffer, "utf8") > DEFAULT_AI_RUN_POLICY.maxEventBytes)
+				throw new AiRunError("resource_limit");
+		}
+		if (!completed && buffer) await consumeLine(buffer);
+		if (!completed) throw new AiRunError("protocol_error");
+		const exit = await closure;
+		check();
+		if (
+			exit.code !== 0 &&
+			!(terminationRequested && exit.code === null && exit.signal === "SIGTERM")
+		)
+			throw new AiRunError("provider_failed");
+		return output;
+	} catch (error) {
+		stop(error);
+		await closure;
+		throw failure;
+	} finally {
+		clearTimeout(timeout);
+		signal.removeEventListener("abort", abort);
+		child.removeListener("error", ioError);
+		child.stdin.removeListener("error", ioError);
+		child.stderr.removeListener("error", ioError);
+	}
 }
 
 class CodexAdapter extends RuntimeAdapter {
@@ -600,7 +571,9 @@ class CodexAdapter extends RuntimeAdapter {
 				isDefault: model.isDefault,
 				reasoningEfforts: model.reasoningEfforts,
 				serviceTiers: model.serviceTiers,
-				supportsImages: true,
+				supportsImages: model.supportsImages === true,
+				catalogSource: "runtime",
+				capabilities: this.capabilities,
 			}));
 		} catch {
 			return super.models();
@@ -616,6 +589,7 @@ class CodexAdapter extends RuntimeAdapter {
 			request.modelId.split("/").slice(3).join("/") ||
 			request.modelId.split("/").at(-1) ||
 			"";
+		await validateProviderOptions(this, request, signal);
 		return runCodexAppServer(
 			model,
 			request.prompt ?? "",
@@ -646,6 +620,10 @@ export class DirectProviderAdapter implements AiBackendAdapter {
 		this.id = spec.id;
 	}
 
+	get capabilities() {
+		return providerCapabilities(this.id);
+	}
+
 	private async key(): Promise<string | null> {
 		return process.env[this.spec.envKey] ?? (await this.secrets.get(this.id));
 	}
@@ -658,11 +636,14 @@ export class DirectProviderAdapter implements AiBackendAdapter {
 			status: key ? "connected" : "disconnected",
 			runtimeAvailable: true,
 			credentialRoutes: ["direct-key"],
-			activeRoutes: key ? ["direct-key"] : [],
+			activeRoutes: [],
+			authentication: {
+				evidence: key ? "key-configured" : "none",
+				verified: false,
+				configuredRoutes: key ? ["direct-key"] : [],
+			},
 			detail: key
-				? process.env[this.spec.envKey]
-					? `Using ${this.spec.envKey}`
-					: "Key configured"
+				? "Key configured; authentication has not been verified."
 				: undefined,
 		};
 	}
@@ -690,19 +671,26 @@ export class DirectProviderAdapter implements AiBackendAdapter {
 		const key = await this.key();
 		if (!key) return [];
 		const path = this.id === "xai" ? "/v1/language-models" : "/v1/models";
-		const response = await this.fetchImpl(`${this.spec.baseUrl}${path}`, {
-			headers: this.headers(key),
-			signal: AbortSignal.timeout(10000),
-		});
-		if (!response.ok)
-			throw new Error(
-				`${this.spec.label} model catalog failed (${response.status}).`,
+		const signal = AbortSignal.timeout(10000);
+		let response: Response;
+		try {
+			response = await this.fetchImpl(`${this.spec.baseUrl}${path}`, {
+				headers: this.headers(key),
+				signal,
+				redirect: "error",
+			});
+		} catch {
+			throw new AiRunError("capability_unavailable");
+		}
+		if (!response.ok) {
+			void response.body?.cancel().catch(() => {});
+			throw new AiRunError(
+				response.status === 401 || response.status === 403
+					? "authentication_failed"
+					: "capability_unavailable",
 			);
-		const payload = (await response.json()) as {
-			data?: Array<{ id: string }>;
-			models?: Array<{ id: string }>;
-		};
-		const data = payload.data ?? payload.models ?? [];
+		}
+		const data = parseDirectCatalog(await readCatalogResponse(response, signal));
 		return data
 			.filter((model) => typeof model.id === "string")
 			.filter(
@@ -720,7 +708,11 @@ export class DirectProviderAdapter implements AiBackendAdapter {
 				modelId: model.id,
 				displayName: modelName(model.id),
 				isDefault: index === 0,
-				supportsImages: true,
+				supportsImages:
+					Array.isArray(model.input_modalities) &&
+					model.input_modalities.includes("image"),
+				catalogSource: "provider",
+				capabilities: this.capabilities,
 			}));
 	}
 
@@ -729,8 +721,12 @@ export class DirectProviderAdapter implements AiBackendAdapter {
 		signal: AbortSignal,
 		onEvent: (event: AiRunEvent) => void | Promise<void>,
 	): Promise<string> {
+		signal.throwIfAborted();
+		await validateProviderOptions(this, request, signal);
+		signal.throwIfAborted();
 		const key = await this.key();
-		if (!key) throw new Error(`${this.spec.label} is not connected.`);
+		signal.throwIfAborted();
+		if (!key) throw new AiRunError("authentication_failed");
 		const model = request.modelId.split("/").slice(3).join("/");
 		const url =
 			this.id === "anthropic"
@@ -785,15 +781,24 @@ export class DirectProviderAdapter implements AiBackendAdapter {
 			signal,
 		});
 		if (!response.ok) {
-			const detail = await response.text().catch(() => "");
-			throw new Error(
-				`${this.spec.label} request failed (${response.status})${detail ? `: ${detail.slice(0, 300)}` : ""}`,
+			// Error bodies may be unbounded or contain echoed credentials and prompts.
+			await response.body?.cancel().catch(() => {});
+			signal.throwIfAborted();
+			throw new AiRunError(
+				response.status === 401 || response.status === 403
+					? "authentication_failed"
+					: response.status === 429
+						? "rate_limited"
+						: response.status >= 500
+							? "provider_failed"
+							: "request_rejected",
 			);
 		}
-		const text = await consumeSseText(
+		const text = await consumeProviderText(
 			response,
 			this.id === "anthropic" ? "anthropic" : "responses",
 			onEvent,
+			signal,
 		);
 		if (!text) throw new Error(`${this.spec.label} returned no text.`);
 		return text;
@@ -857,6 +862,7 @@ export function createDefaultAdapters(
 				"--output-format",
 				"stream-json",
 				"--include-partial-messages",
+				"--verbose",
 				"--no-session-persistence",
 				"--permission-mode",
 				"plan",
@@ -897,6 +903,7 @@ export function createDefaultAdapters(
 			statusArgs: ["status"],
 			disconnectArgs: ["logout"],
 			modelArgs: ["--list-models"],
+			fallbackModels: [{ id: "auto", label: "Auto" }],
 			routes: ["subscription", "runtime-key"],
 			setup: {
 				subscription: "cursor-agent login",

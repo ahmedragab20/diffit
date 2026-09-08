@@ -9,6 +9,7 @@ import {
   createServerAuthMiddleware,
   injectSessionTokenIntoHtml,
   isAllowedRequestHost,
+  isAllowedRequestOrigin,
   isLoopbackHost,
 } from '../lib/server-auth.js'
 import { appendSessionToken, joinSessionApiUrl, reviewSessionUrl } from '../lib/session-url.js'
@@ -120,6 +121,42 @@ describe('auth-boundary: Host/Origin checks must cover HTML routes, not only /ap
       headers: { Host: '127.0.0.1', Origin: 'http://127.0.0.1', [SESSION_TOKEN_HEADER]: 'secret-token' },
     })
     expect((await app.fetch(apiReq)).status).toBe(200)
+  })
+
+  it('accepts the Vite loopback origin when the API is on another loopback port', async () => {
+    const app = buildApp()
+    const apiReq = new Request('http://127.0.0.1:3433/api/ping', {
+      headers: {
+        Host: '127.0.0.1:3433',
+        Origin: 'http://localhost:5173',
+        [SESSION_TOKEN_HEADER]: 'secret-token',
+      },
+    })
+    expect((await app.fetch(apiReq)).status).toBe(200)
+  })
+})
+
+describe('isAllowedRequestOrigin', () => {
+  it('allows missing Origin and exact origin matches', () => {
+    expect(isAllowedRequestOrigin(undefined, 'http://127.0.0.1:3433/api/ping', '127.0.0.1')).toBe(true)
+    expect(
+      isAllowedRequestOrigin('http://127.0.0.1:3433', 'http://127.0.0.1:3433/api/ping', '127.0.0.1'),
+    ).toBe(true)
+  })
+
+  it('allows a loopback Vite origin against a loopback-bound API', () => {
+    expect(
+      isAllowedRequestOrigin('http://localhost:5173', 'http://127.0.0.1:3433/api/ai/run', '127.0.0.1'),
+    ).toBe(true)
+  })
+
+  it('rejects off-loopback Origins on a loopback bind', () => {
+    expect(
+      isAllowedRequestOrigin('http://evil.test', 'http://127.0.0.1:3433/api/ping', '127.0.0.1'),
+    ).toBe(false)
+    expect(
+      isAllowedRequestOrigin('http://192.168.1.5:5173', 'http://127.0.0.1:3433/api/ping', '127.0.0.1'),
+    ).toBe(false)
   })
 })
 

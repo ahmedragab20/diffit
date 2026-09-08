@@ -2083,3 +2083,226 @@ file-tree,
     box-shadow: none;
   }
 }
+
+/* ── AI finding cards ───────────────────────────────────────────────────── */
+/* An unverified card must read as unverified at a glance, so it carries its
+   own border and warning rather than relying on the caller to explain it. */
+.ai-finding-card {
+  border: 1px solid var(--gl-rule-subtle);
+  border-radius: 6px;
+  background: var(--gl-raised);
+  padding: 10px 12px;
+  margin-block: 8px;
+  color: var(--gl-text);
+}
+
+.ai-finding-card[data-unverified='true'] {
+  border-color: var(--gl-rule);
+  border-inline-start-width: 3px;
+}
+
+.ai-finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ai-finding-kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--gl-muted);
+}
+
+.ai-finding-title {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.ai-finding-uncertainty {
+  font-size: 11px;
+  color: var(--gl-text-subtle);
+  white-space: nowrap;
+}
+
+.ai-finding-body {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--gl-text-subtle);
+}
+
+.ai-finding-warning {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--gl-text);
+  background: var(--gl-element);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.ai-finding-citations {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
+.ai-finding-citation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.ai-finding-source {
+  color: var(--gl-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-finding-status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--gl-muted);
+}
+
+.ai-finding-citation[data-status='unverified'] .ai-finding-status {
+  color: var(--gl-text);
+  font-weight: 600;
+}
+
+.ai-finding-quote {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--gl-code);
+  background: var(--gl-element);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+
+.ai-finding-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--gl-muted);
+}
+
+.ai-finding-decision[data-decision='undecided'] {
+  font-style: italic;
+}
+
+/* ── AI run activity ────────────────────────────────────────────────────── */
+/* Terminal phases that are not success carry their own weight, so an
+   interrupted run does not read like a finished one at a glance. */
+.ai-activity {
+  border: 1px solid var(--gl-rule-subtle);
+  border-radius: 6px;
+  background: var(--gl-surface);
+  margin-block: 8px;
+  font-size: 11px;
+  color: var(--gl-text-subtle);
+}
+
+.ai-activity[data-phase='interrupted'],
+.ai-activity[data-phase='failed'],
+.ai-activity[data-phase='canceled'] {
+  border-inline-start-width: 3px;
+  border-inline-start-color: var(--gl-rule);
+}
+
+.ai-activity-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+
+.ai-activity-head:hover {
+  background: var(--gl-hover);
+}
+
+.ai-activity-phase {
+  font-weight: 600;
+  color: var(--gl-text);
+}
+
+.ai-activity-counts {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--gl-muted);
+}
+
+.ai-activity-elapsed {
+  color: var(--gl-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Visually redundant with the header, but present for assistive technology. */
+.ai-activity-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.ai-activity-steps {
+  margin: 0;
+  padding: 4px 8px 8px;
+  list-style: none;
+  display: grid;
+  gap: 3px;
+}
+
+.ai-activity-step {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.ai-activity-step-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.ai-activity-step[data-outcome='failed'] .ai-activity-step-outcome {
+  color: var(--gl-text);
+  font-weight: 600;
+}
+
+.ai-activity-warnings {
+  margin: 0;
+  padding: 0 8px 8px 24px;
+  color: var(--gl-muted);
+}
+
+/* A looping indicator in a background tab burns battery for nobody. Pausing on
+   a root attribute covers animations added later without opting each one in. */
+html[data-page-hidden='true'] *,
+html[data-page-hidden='true'] *::before,
+html[data-page-hidden='true'] *::after {
+  animation-play-state: paused !important;
+}

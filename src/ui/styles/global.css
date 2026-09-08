@@ -15553,6 +15553,34 @@ button.toolbar-last-send-btn:hover {
   justify-content: flex-start;
 }
 
+.ai-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ai-transcript-empty {
+  margin: 0;
+  color: var(--gl-text-subtle);
+  font-size: 12px;
+}
+
+.ai-transcript-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-transcript-retry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--gl-text-subtle);
+  font-size: 12px;
+}
+
 .ai-empty-state {
   max-width: 290px;
   margin: clamp(24px, 8vh, 72px) auto 0;
@@ -15684,53 +15712,59 @@ button.toolbar-last-send-btn:hover {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 34px;
-  padding: 0 10px;
-  border: 1px solid var(--gl-rule-subtle);
-  border-radius: var(--radius-md);
-  background: var(--gl-canvas);
+  padding: 0;
+  border: 0;
+  background: none;
   color: var(--gl-text-subtle);
   font-size: 12px;
 }
 
 .ai-thinking-mark {
-  width: 14px;
-  height: 14px;
-  display: grid;
-  grid-template-columns: repeat(3, 3px);
-  grid-template-rows: repeat(3, 3px);
-  gap: 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--gl-text);
 }
 
-.ai-thinking-mark i {
-  width: 3px;
-  height: 3px;
-  border-radius: 50%;
-  background: var(--gl-accent);
-  opacity: 0.26;
-  animation: ai-thinking-pulse 1.2s ease-in-out infinite;
+.ai-thinking-mark::before {
+  content: "⠋";
+  animation: ai-thinking-braille 0.8s steps(1, end) infinite;
 }
 
-.ai-thinking-mark i:nth-child(2),
-.ai-thinking-mark i:nth-child(5),
-.ai-thinking-mark i:nth-child(8) {
-  animation-delay: 0.12s;
-}
-.ai-thinking-mark i:nth-child(3),
-.ai-thinking-mark i:nth-child(6),
-.ai-thinking-mark i:nth-child(9) {
-  animation-delay: 0.24s;
-}
-
-@keyframes ai-thinking-pulse {
-  0%,
-  100% {
-    opacity: 0.24;
-    transform: scale(0.8);
+@keyframes ai-thinking-braille {
+  0% {
+    content: "⠋";
+  }
+  10% {
+    content: "⠙";
+  }
+  20% {
+    content: "⠹";
+  }
+  30% {
+    content: "⠸";
+  }
+  40% {
+    content: "⠼";
   }
   50% {
-    opacity: 1;
-    transform: scale(1);
+    content: "⠴";
+  }
+  60% {
+    content: "⠦";
+  }
+  70% {
+    content: "⠧";
+  }
+  80% {
+    content: "⠇";
+  }
+  90% {
+    content: "⠏";
   }
 }
 
@@ -16016,7 +16050,7 @@ button.toolbar-last-send-btn:hover {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ai-thinking-mark i,
+  .ai-thinking-mark::before,
   .ai-message-loading span {
     animation: none;
     opacity: 0.7;

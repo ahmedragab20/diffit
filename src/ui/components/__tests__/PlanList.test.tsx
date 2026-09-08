@@ -38,11 +38,11 @@ import { PlanList } from '../PlanList'
 import type { Plan } from '../../../lib/plan-types'
 
 const plans: Plan[] = [
-  { id: 'p1', title: 'Plan one', body: '# one', createdAt: 1, updatedAt: 1, version: 1, decision: 'pending', comments: [] },
-  { id: 'p2', title: 'Plan two', body: '# two', createdAt: 1, updatedAt: 1, version: 1, decision: 'pending', comments: [] },
+  { id: 'p1', title: 'Plan one', body: '# one', createdAt: 1, updatedAt: 1, version: 1, decision: 'pending', comments: [], versions: [] },
+  { id: 'p2', title: 'Plan two', body: '# two', createdAt: 1, updatedAt: 1, version: 1, decision: 'pending', comments: [], versions: [] },
 ]
 
-function openDeleteDialog(onDelete: ReturnType<typeof vi.fn>) {
+function openDeleteDialog(onDelete: (id: string) => void) {
   render(
     <PlanList
       plans={plans}

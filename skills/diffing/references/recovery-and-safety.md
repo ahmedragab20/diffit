@@ -89,7 +89,7 @@ Read the error body before deciding what to retry; not all endpoints use the sam
 | --- | --- |
 | 400 | Bad JSON/fields/path/anchor or unsupported suggestion; correct the request |
 | 401 | Missing/invalid session credential; reattach through the host, never disable auth |
-| 403 | Host/Origin rejection, denied filesystem path, or read-only review scope; identify which boundary failed |
+| 403 | Host/Origin rejection, denied filesystem path, or read-only review scope; identify which boundary failed. A Vite UI on another loopback port is allowed when the API is loopback-bound; a foreign website Origin is not. |
 | 404 | Missing resource/path; verify session and ID, do not invent a replacement route |
 | 409 | Stale generation/version/hash, ambiguous selector, or unmatched mockup text/region; use the specific error code |
 | 413 | Payload/file too large; respect the applicable limit |
@@ -105,7 +105,7 @@ A failed native transport stays failed until explicit reset/restart; it is not a
 
 Local PR drafts are not published reviews. Replies to published comments, pending review submission/discard, PR metadata/state/merge, Git pushes and releases need specific human authorization. Use dry-run where that operation supports it; not all mutations have a dry-run. A network timeout can follow a successful publication, so inspect remote state before repeating it.
 
-Keep credentials out of chat, screenshots, files and process logs. `--model` on submission/reply is provenance only. Do not invoke the UI's AI endpoints, store provider keys, or publish a design-system draft merely because those APIs exist.
+Keep credentials out of chat, screenshots, files and process logs. `--model` on submission/reply is provenance only. Do not invoke `POST /api/ai/run`, store provider keys, or publish a design-system draft merely because those APIs exist. Navigate retained captures with `ai_evidence_*`; notebook writes use `ai_notebook_add` / `ai_notebook_decide`. A 429 from a live provider is environmental, not permission to disable auth.
 
 Finish with verified changes, uninspected paths, unresolved questions and the selected safe review URL. A timeout, omitted source or partial mutation is not a clean completion.
 

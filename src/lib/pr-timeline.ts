@@ -39,7 +39,19 @@ function reviewTime(review: PrExistingReview): string {
   return review.submittedAt ?? "";
 }
 
-export function buildPrTimeline(session: PrSession): PrTimelineItem[] {
+/** Conversation fields only; the diff and local comments are never read here. */
+export type PrTimelineSource = Pick<
+  PrSession,
+  | "body"
+  | "createdAt"
+  | "author"
+  | "url"
+  | "issueComments"
+  | "existingReviews"
+  | "timelineEvents"
+>;
+
+export function buildPrTimeline(session: PrTimelineSource): PrTimelineItem[] {
   const items: PrTimelineItem[] = [];
   if (session.body?.trim()) {
     items.push({

@@ -8,10 +8,9 @@
     "esModuleInterop": true,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "src",
     "declaration": true,
+    "allowImportingTsExtensions": true,
     "types": ["node"]
   },
-  "include": ["src", "src/ui/env.d.ts"],
-  "exclude": ["extensions"]
+  "include": ["src", "src/ui/env.d.ts", "vite.config.ts", "extensions/pi"]
 }

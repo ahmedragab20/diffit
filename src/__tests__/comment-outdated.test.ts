@@ -14,7 +14,6 @@ function c(partial: Partial<ReviewComment> & { lineContent: string; lineNumber?:
     filePath: 'a.ts',
     side: 'additions',
     lineNumber: partial.lineNumber ?? 1,
-    lineContent: partial.lineContent,
     body: 'x',
     status: 'open',
     createdAt: 1,

@@ -12,7 +12,7 @@ vi.mock('../lib/git.js', () => ({
   getRepoRoot: () => mockGetRepoRoot(),
 }))
 
-const mockProbeLockServerSync = vi.fn(() => true)
+const mockProbeLockServerSync = vi.fn((..._args: any[]) => true)
 
 vi.mock('../lib/lock-probe.js', () => ({
   probeLockServerSync: (...args: any[]) => mockProbeLockServerSync(...args),

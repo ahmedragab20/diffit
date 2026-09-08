@@ -184,7 +184,35 @@ import {
 	classifyPrComments,
 	buildReviewPayload,
 } from "./lib/github.js";
-import { AiService } from "./lib/ai/service.js";
+import { AiService, type AiPreparedRun } from "./lib/ai/service.js";
+import { AiRunError } from "./lib/ai/lifecycle.js";
+import { AiRequestError, readAiRunRequest } from "./lib/ai/request.js";
+import { streamAiRun } from "./lib/ai/run-stream.js";
+import { AiSnapshotError } from "./lib/ai/snapshots.js";
+import { SnapshotStore } from "./lib/ai/snapshot-store.js";
+import { LanguageServers } from "./lib/ai/language-servers.js";
+import { AiStorage } from "./lib/ai/storage.js";
+import { NotebookStore } from "./lib/ai/notebook-store.js";
+import type { Decision, NotebookEntryInput } from "./lib/ai/notebook.js";
+import { sourceHistory } from "./lib/ai/history.js";
+import { sourceDiscussion } from "./lib/ai/discussion.js";
+import { lookupSymbols, type SymbolKind } from "./lib/ai/symbols.js";
+import {
+	diffRead,
+	reviewMap,
+	sourceRead,
+	sourceSearch,
+	verifyCitation,
+	type ReadRequest,
+} from "./lib/ai/tools.js";
+import { resolvePlanSnapshot } from "./lib/ai/plan-snapshot.js";
+import { capturePrReview } from "./lib/ai/pr-snapshot.js";
+import {
+	capturePrOriginals,
+	createPrOriginalsCache,
+} from "./lib/ai/pr-originals.js";
+import { captureLocalReview } from "./lib/ai/local-snapshot.js";
+import { resolveDiffSnapshot } from "./lib/ai/diff-snapshot.js";
 import { ByteLruCache } from "./lib/ai/cache.js";
 import {
 	FileAiConversationStore,
@@ -197,7 +225,6 @@ import type {
 	AiCredentialRoute,
 	AiImageAttachmentReference,
 	AiResolvedImageAttachment,
-	AiRunEvent,
 	AiRunRequest,
 	AiSourceId,
 	AiSurface,
@@ -356,6 +383,12 @@ export function createApp(
 	designSystemStore?: DesignSystemStore,
 	aiService?: AiService,
 	aiConversationStore?: AiConversationStore,
+	/**
+	 * Durable run journal. Omitted means runs are not journaled, which keeps
+	 * an embedded app from writing to a user's storage directory; the server
+	 * entry point supplies the real one.
+	 */
+	aiStorage?: AiStorage,
 ) {
 	const app = new Hono();
 	app.onError((error, c) => {
@@ -539,6 +572,40 @@ export function createApp(
 		repoRoot = process.cwd();
 	}
 	const ai = aiService ?? new AiService();
+	// Retains each run's capture so external callers can navigate the same evidence.
+	const snapshotStore = new SnapshotStore();
+	// Bounded reuse across captures of the same pull request.
+	const prOriginalsCache = createPrOriginalsCache();
+	/**
+	 * Durable record of run boundaries, when a store was supplied. Journalling
+	 * is best-effort: a storage failure never takes down a live run.
+	 */
+	const runJournal = aiStorage
+		? {
+				record: async (entry: {
+					key: string;
+					runId: string;
+					conversationId: string;
+					kind: "request" | "result" | "error";
+					payload: unknown;
+				}) => {
+					await aiStorage.append(entry.key, {
+						id: entry.key,
+						runId: entry.runId,
+						conversationId: entry.conversationId,
+						kind: entry.kind,
+						createdAt: Date.now(),
+						payload: entry.payload,
+					});
+				},
+			}
+		: undefined;
+	// No language server is presumed; symbol lookup stays unavailable until one
+	// is configured in settings.
+	const languageServers = new LanguageServers(
+		loadSettings().aiLanguageServers ?? {},
+		getRepoRoot(),
+	);
 	const aiConversations = aiConversationStore ?? new FileAiConversationStore();
 
 	// Watch the project storage dir so any write — whether from this server's own
@@ -943,15 +1010,29 @@ export function createApp(
 		return fetchPrFileContentViaGh(resolvedFromSession(session), safePath, sha);
 	};
 	const aiAttachmentCache = new ByteLruCache<Buffer>(4 * 1024 * 1024, 64);
-	const resolveAiAttachment = async (path: string): Promise<Buffer | null> => {
-		// Working-tree files must be capability-read on every request. An mtime
-		// cache would bypass access checks after a file is replaced by a symlink.
-		if (!prMode) return resolveFileVersion(path, "new");
-		const session = await prStore.get();
-		const cacheKey = `pr:${session?.headSha ?? "unknown"}:${path}`;
+	const resolveAiAttachment = async (
+		path: string,
+		session: PrSession | null,
+	): Promise<Buffer | null> => {
+		// Admission runs before cache lookup; one captured session owns key and fetch.
+		const safePath = toSafeLiteralRelativePath(path, repoRoot);
+		if (!safePath) throw new NativeFsError("invalid-path");
+		if (!prMode) return resolveFileVersion(safePath, "new");
+		if (!session) return null;
+		const cacheKey = JSON.stringify([
+			session.host ?? "github.com",
+			session.owner,
+			session.repo,
+			session.headSha,
+			safePath,
+		]);
 		const cached = aiAttachmentCache.get(cacheKey);
 		if (cached) return cached;
-		const buffer = await resolveFileVersion(path, "new");
+		const buffer = await fetchPrFileContentViaGh(
+			resolvedFromSession(session),
+			safePath,
+			session.headSha,
+		);
 		if (buffer) aiAttachmentCache.set(cacheKey, buffer);
 		return buffer;
 	};
@@ -1366,6 +1447,245 @@ export function createApp(
 		return c.json({ models: await ai.models() });
 	});
 
+	/**
+	 * Read-only evidence navigation over a retained capture. These routes serve
+	 * exactly what a run could read and nothing more: no shell, no network, no
+	 * filesystem, and no way to widen a capture after the fact.
+	 */
+	/**
+	 * Rollback lever for the evidence surface. Read per request so disabling it
+	 * takes effect without a restart, and answered as not-found so a disabled
+	 * build does not advertise the routes.
+	 */
+	const evidenceEnabled = () => loadSettings().aiEvidenceTools !== false;
+	app.use("/api/ai/evidence/*", async (c, next) => {
+		if (!evidenceEnabled())
+			return c.json({ error: "AI evidence tools are disabled." }, 404);
+		return next();
+	});
+	app.use("/api/ai/evidence", async (c, next) => {
+		if (!evidenceEnabled())
+			return c.json({ error: "AI evidence tools are disabled." }, 404);
+		return next();
+	});
+
+	const evidenceError = (c: Context, error: unknown) => {
+		if (error instanceof AiSnapshotError)
+			return c.json({ error: error.message, code: error.code }, error.status);
+		throw error;
+	};
+	const readRequests = (value: unknown): ReadRequest[] => {
+		if (!Array.isArray(value)) throw new AiSnapshotError("invalid");
+		return value.map((entry) => {
+			const item = entry as Partial<ReadRequest>;
+			if (
+				typeof item?.key !== "string" ||
+				!Number.isSafeInteger(item.startLine) ||
+				!Number.isSafeInteger(item.endLine)
+			)
+				throw new AiSnapshotError("invalid");
+			return {
+				key: item.key,
+				startLine: item.startLine as number,
+				endLine: item.endLine as number,
+			};
+		});
+	};
+	const retained = (c: Context) => {
+		const id = c.req.param("id");
+		if (!id) throw new AiSnapshotError("invalid");
+		return snapshotStore.get(id, c.req.query("revision") ?? undefined);
+	};
+	const optionalInt = (value: string | undefined): number | undefined =>
+		value === undefined ? undefined : Number(value);
+
+	/**
+	 * Notebook entries are authored against a retained capture and validated
+	 * before storage, so an entry that cannot cite the capture is never kept.
+	 * Deciding is a separate route: authoring never records an outcome.
+	 */
+	const notebook = aiStorage ? new NotebookStore(aiStorage) : null;
+	const requireNotebook = () => {
+		if (!notebook) throw new AiSnapshotError("unsupported");
+		return notebook;
+	};
+
+	app.get("/api/ai/evidence/:id/notebook", (c) => {
+		try {
+			const snapshot = retained(c);
+			return c.json(requireNotebook().read(snapshot.manifest.id));
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/notebook", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as { entry?: unknown };
+			const snapshot = retained(c);
+			const entry = await requireNotebook().author(
+				snapshot,
+				body.entry as NotebookEntryInput,
+			);
+			return c.json({ entry });
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/decide", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as { entryId?: unknown; decision?: unknown; decidedBy?: unknown };
+			const snapshot = retained(c);
+			const entry = await requireNotebook().decide(
+				snapshot.manifest.id,
+				typeof body.entryId === "string" ? body.entryId : "",
+				body.decision as Decision,
+				typeof body.decidedBy === "string" ? body.decidedBy : "",
+			);
+			return c.json({ entry });
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.get("/api/ai/evidence", (c) =>
+		c.json({ snapshots: snapshotStore.list() }),
+	);
+
+	app.get("/api/ai/evidence/:id/map", (c) => {
+		try {
+			return c.json(
+				reviewMap(retained(c), {
+					cursor: c.req.query("cursor") ?? undefined,
+					limit: optionalInt(c.req.query("limit")),
+				}),
+			);
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/read", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as { requests?: unknown; maxBytes?: unknown; representation?: unknown };
+			const snapshot = retained(c);
+			const requests = readRequests(body.requests);
+			const maxBytes =
+				body.maxBytes === undefined ? undefined : Number(body.maxBytes);
+			const read = body.representation === "unified-patch" ? diffRead : sourceRead;
+			return c.json(read(snapshot, requests, maxBytes));
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.get("/api/ai/evidence/:id/history", async (c) => {
+		try {
+			const snapshot = retained(c);
+			return c.json(
+				await sourceHistory(snapshot, getRepoRoot(), {
+					key: c.req.query("key") ?? "",
+					limit: optionalInt(c.req.query("limit")),
+					cursor: c.req.query("cursor") ?? undefined,
+				}),
+			);
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.get("/api/ai/evidence/:id/discussion", async (c) => {
+		try {
+			const snapshot = retained(c);
+			const key = c.req.query("key");
+			return c.json(
+				sourceDiscussion(snapshot, await store.getAll(), {
+					key: key ?? undefined,
+					limit: optionalInt(c.req.query("limit")),
+					cursor: c.req.query("cursor") ?? undefined,
+				}),
+			);
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/verify", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as { reference?: unknown; revision?: unknown };
+			const snapshot = retained(c);
+			return c.json(
+				verifyCitation(
+					snapshot,
+					body.reference,
+					typeof body.revision === "string" ? body.revision : "",
+				),
+			);
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/symbols", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as {
+				key?: unknown;
+				line?: unknown;
+				character?: unknown;
+				kind?: unknown;
+				includeDeclaration?: unknown;
+			};
+			const snapshot = retained(c);
+			return c.json(
+				await lookupSymbols(snapshot, languageServers, getRepoRoot(), {
+					key: typeof body.key === "string" ? body.key : "",
+					line: Number(body.line),
+					character: Number(body.character),
+					kind: body.kind as SymbolKind,
+					includeDeclaration: body.includeDeclaration === true,
+				}),
+			);
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/search", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as {
+				query?: unknown;
+				key?: unknown;
+				limit?: unknown;
+				ignoreCase?: unknown;
+				cursor?: unknown;
+			};
+			if (typeof body.query !== "string") throw new AiSnapshotError("invalid");
+			return c.json(
+				sourceSearch(retained(c), body.query, {
+					key: typeof body.key === "string" ? body.key : undefined,
+					limit: body.limit === undefined ? undefined : Number(body.limit),
+					ignoreCase: body.ignoreCase === true,
+					cursor: typeof body.cursor === "string" ? body.cursor : undefined,
+				}),
+			);
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
 	app.post("/api/ai/connections/:source/key", async (c) => {
 		try {
 			const source = c.req.param("source") as AiSourceId;
@@ -1503,12 +1823,13 @@ export function createApp(
 	});
 
 	app.post("/api/ai/run", async (c) => {
-		const body = (await c.req.json().catch(() => null)) as AiRunRequest | null;
-		if (!body || body.trigger !== "user") {
-			return c.json(
-				{ error: "AI inference requires an explicit user trigger." },
-				400,
-			);
+		let body: AiRunRequest;
+		try {
+			body = await readAiRunRequest(c.req.raw);
+		} catch (error) {
+			const failure =
+				error instanceof AiRequestError ? error : new AiRequestError(400);
+			return c.json({ error: failure.message }, failure.status);
 		}
 		if (!body.modelId || !body.action || !body.surface || !body.context) {
 			return c.json(
@@ -1568,105 +1889,201 @@ export function createApp(
 					413,
 				);
 		}
-		const requestedImages = Array.isArray(body.context.imageAttachments)
-			? body.context.imageAttachments
-			: [];
-		if (requestedImages.length > MAX_AI_IMAGE_COUNT) {
-			return c.json(
-				{
-					error: `At most ${MAX_AI_IMAGE_COUNT} images can be attached to one AI request.`,
+		let prepared: AiPreparedRun;
+		try {
+			prepared = await ai.prepareRun(
+				body,
+				async (signal) => {
+					signal.throwIfAborted();
+					let capturedPr: PrSession | null = null;
+					let prCapture: ReturnType<typeof capturePrReview> | undefined;
+					let planCapture:
+						| Awaited<ReturnType<typeof resolvePlanSnapshot>>
+						| undefined;
+					let localCapture:
+						| Awaited<ReturnType<typeof captureLocalReview>>
+						| undefined;
+					const capturedOptions = JSON.stringify(diffOpts);
+					if (prMode) {
+						const current = await prStore.get();
+						signal.throwIfAborted();
+						capturedPr = current ? { ...current } : null;
+						prCapture = capturePrReview(capturedPr);
+					}
+					if (body.surface === "pr-diff" && !prCapture)
+						throw new AiSnapshotError("invalid");
+					if ("planId" in body.context) {
+						if (body.surface !== "plan") throw new AiSnapshotError("invalid");
+						planCapture = await resolvePlanSnapshot(body.context, plans);
+						signal.throwIfAborted();
+						body.context = planCapture.context;
+						body.snapshot = planCapture.snapshot.manifest;
+						body.snapshotReader = planCapture.snapshot;
+						snapshotStore.put(planCapture.snapshot);
+					} else if (body.surface === "plan") throw new AiSnapshotError("invalid");
+					else if (!("mockupId" in body.context)) {
+						if (body.surface !== (prMode ? "pr-diff" : "diff"))
+							throw new AiSnapshotError("invalid");
+						if (!prCapture)
+							localCapture = await captureLocalReview(
+								getRepoRoot(),
+								diffOpts,
+								executeDiffWithMeta,
+							);
+						signal.throwIfAborted();
+						// A PR capture holds only the patch, so its originals are fetched
+						// here; a local capture already read them.
+						const prOriginals = prCapture
+							? await capturePrOriginals(
+									prCapture.identity,
+									prCapture.patch,
+									fetchPrFileContentViaGh,
+									prOriginalsCache,
+								)
+							: undefined;
+						signal.throwIfAborted();
+						const source = prCapture
+							? {
+									...prCapture,
+									originals: prOriginals!.sources,
+									omissions: [
+										...prCapture.omissions,
+										...prOriginals!.omissions,
+									],
+								}
+							: localCapture!;
+						const captured = resolveDiffSnapshot(
+							body.context,
+							source,
+							getRepoRoot(),
+						);
+						body.context = captured.context;
+						body.snapshot = captured.snapshot.manifest;
+						body.snapshotReader = captured.snapshot;
+						snapshotStore.put(captured.snapshot);
+					}
+					const requestedImages = Array.isArray(body.context.imageAttachments)
+						? body.context.imageAttachments
+						: [];
+					if (requestedImages.length > MAX_AI_IMAGE_COUNT)
+						throw new AiRequestError(400, "Too many image attachments.");
+					const resolvedImages: AiResolvedImageAttachment[] = [];
+					for (const reference of requestedImages) {
+						if (
+							!reference ||
+							typeof reference.url !== "string" ||
+							typeof reference.name !== "string" ||
+							typeof reference.mimeType !== "string"
+						) {
+							throw new AiRequestError(
+								400,
+								"An image attachment reference is invalid.",
+							);
+						}
+						signal.throwIfAborted();
+						const resolvedImage = await resolveAiImageAttachment(reference);
+						signal.throwIfAborted();
+						if (!resolvedImage)
+							throw new AiRequestError(
+								404,
+								"An image attachment is unavailable or invalid.",
+							);
+						resolvedImages.push(resolvedImage);
+					}
+					const requestedPaths = [
+						...new Set(
+							(body.context.attachmentPaths ?? []).filter(
+								(path): path is string =>
+									typeof path === "string" && path.trim().length > 0,
+							),
+						),
+					];
+					if (requestedPaths.length > 8)
+						throw new AiRequestError(
+							400,
+							"At most 8 files can be attached to one AI request.",
+						);
+					const attachments: AiAttachment[] = [];
+					let remainingAttachmentBytes = 64 * 1024;
+					for (const path of requestedPaths) {
+						signal.throwIfAborted();
+						const buffer = await resolveAiAttachment(path, capturedPr);
+						signal.throwIfAborted();
+						if (!buffer)
+							throw new AiRequestError(404, "An attached file is unavailable.");
+						const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
+						if (sample.includes(0))
+							throw new AiRequestError(415, "Binary files cannot be attached.");
+						if (remainingAttachmentBytes <= 0) break;
+						const take = Math.min(buffer.length, 32 * 1024, remainingAttachmentBytes);
+						attachments.push({
+							path,
+							content: buffer.subarray(0, take).toString("utf8"),
+							truncated: take < buffer.length,
+						});
+						remainingAttachmentBytes -= take;
+					}
+					body.context = {
+						...body.context,
+						attachmentPaths: requestedPaths,
+						attachments,
+						imageAttachments: resolvedImages.map(({ url, name, mimeType, size }) => ({
+							url,
+							name,
+							mimeType,
+							size,
+						})),
+					};
+					body.resolvedImages = resolvedImages;
+					signal.throwIfAborted();
+					await planCapture?.assertFresh();
+					signal.throwIfAborted();
+					await localCapture?.assertFresh();
+					signal.throwIfAborted();
+					if (localCapture && capturedOptions !== JSON.stringify(diffOpts))
+						throw new AiSnapshotError("stale");
+					if (prCapture) prCapture.assertFresh(await prStore.get());
+					signal.throwIfAborted();
+					return body;
 				},
-				400,
+				c.req.raw.signal,
 			);
-		}
-		const resolvedImages: AiResolvedImageAttachment[] = [];
-		for (const reference of requestedImages) {
-			if (
-				!reference ||
-				typeof reference.url !== "string" ||
-				typeof reference.name !== "string" ||
-				typeof reference.mimeType !== "string"
-			) {
-				return c.json({ error: "An image attachment reference is invalid." }, 400);
-			}
-			const resolvedImage = await resolveAiImageAttachment(reference);
-			if (!resolvedImage)
+		} catch (error) {
+			if (error instanceof AiSnapshotError || error instanceof AiRequestError)
+				return c.json({ error: error.message }, error.status);
+			if (error instanceof AiRunError)
 				return c.json(
-					{
-						error: `Image attachment was not found or is invalid: ${reference.name}`,
-					},
-					404,
+					{ error: error.message, code: error.code },
+					error.code === "capacity"
+						? 503
+						: error.code.endsWith("timeout")
+							? 408
+							: error.code === "cancelled"
+								? 409
+								: error.code === "preparation_failed"
+									? 500
+									: 400,
 				);
-			resolvedImages.push(resolvedImage);
+			throw error;
 		}
-		const requestedPaths = [
-			...new Set(
-				(body.context.attachmentPaths ?? []).filter(
-					(path): path is string =>
-						typeof path === "string" && path.trim().length > 0,
-				),
-			),
-		];
-		if (requestedPaths.length > 8) {
-			return c.json(
-				{ error: "At most 8 files can be attached to one AI request." },
-				400,
+		try {
+			return streamSSE(c, (stream) =>
+				streamAiRun(ai, body, stream, c.req.raw.signal, prepared, runJournal),
 			);
+		} catch (error) {
+			ai.cancel(prepared.runId);
+			throw error;
 		}
-		const attachments: AiAttachment[] = [];
-		let remainingAttachmentBytes = 64 * 1024;
-		for (const path of requestedPaths) {
-			const buffer = await resolveAiAttachment(path);
-			if (!buffer)
-				return c.json({ error: `Attached file was not found: ${path}` }, 404);
-			const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
-			if (sample.includes(0))
-				return c.json({ error: `Binary files cannot be attached: ${path}` }, 415);
-			if (remainingAttachmentBytes <= 0) break;
-			const take = Math.min(buffer.length, 32 * 1024, remainingAttachmentBytes);
-			attachments.push({
-				path,
-				content: buffer.subarray(0, take).toString("utf8"),
-				truncated: take < buffer.length,
-			});
-			remainingAttachmentBytes -= take;
-		}
-		body.context = {
-			...body.context,
-			attachmentPaths: requestedPaths,
-			attachments,
-			imageAttachments: resolvedImages.map(({ url, name, mimeType, size }) => ({
-				url,
-				name,
-				mimeType,
-				size,
-			})),
-		};
-		body.resolvedImages = resolvedImages;
-		return streamSSE(c, async (stream) => {
-			let runId: string | null = null;
-			stream.onAbort(() => {
-				if (runId) ai.cancel(runId);
-			});
-			try {
-				await ai.run(body, async (event: AiRunEvent) => {
-					if (event.type === "start") runId = event.runId;
-					await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
-				});
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				await stream
-					.writeSSE({
-						event: "error",
-						data: JSON.stringify({ type: "error", message }),
-					})
-					.catch(() => {});
-			}
-		});
 	});
 
 	app.post("/api/ai/runs/:id/cancel", (c) => {
-		return c.json({ canceled: ai.cancel(c.req.param("id")) });
+		const requested = ai.cancel(c.req.param("id"));
+		return c.json({
+			canceled: requested, // Legacy acceptance flag, not a termination confirmation.
+			cancellationRequested: requested,
+			cancellationConfirmed: false,
+			status: requested ? "cancel-requested" : "not-active",
+		});
 	});
 
 	app.put("/api/settings", async (c) => {
@@ -4956,6 +5373,11 @@ export async function startServer(options: {
 		prStoreForApp,
 		prMode,
 		options.security,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		new AiStorage(getProjectStorageDir(getRepoRoot())),
 	);
 
 	return new Promise((resolve, reject) => {

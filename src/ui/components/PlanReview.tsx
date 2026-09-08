@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react'
+import { scrollBehavior } from "../lib/motion.js";
 import { File as DiffsFile } from '@pierre/diffs/react'
 import type { LineAnnotation, SelectedLineRange } from '@pierre/diffs'
 import {
@@ -1050,7 +1051,7 @@ export function PlanReview({
   const scrollToPlanElement = useCallback(
     (el: HTMLElement, align: 'start' | 'center' = 'start') => {
       el.scrollIntoView({
-        behavior: 'smooth',
+        behavior: scrollBehavior(),
         block: align === 'center' ? 'center' : 'start',
       })
     },

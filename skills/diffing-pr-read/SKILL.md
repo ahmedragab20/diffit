@@ -1,6 +1,11 @@
 ---
 name: diffing-pr-read
 description: Read or summarize a GitHub pull request through diffing using slim overview, bounded diff pages and paginated discussion. Use for PR context gathering without full-patch dumps, unsolicited draft creation or remote publication.
+license: MIT
+metadata:
+  author: ahmedragab20
+  version: "0.20.0"
+user_invocable: true
 ---
 
 # Read a GitHub PR
@@ -69,4 +74,4 @@ On stale generation, refresh summary and restart the affected traversal. If the 
 
 Summarize the requested PR scope, material changes and actionable discussion. State pagination/body/patch limitations. Do not create drafts, reply, resolve, submit reviews or mutate PR state merely to read it.
 
-[Sessions and transports](../diffing/references/sessions-and-transports.md)
+[Router](../diffing/SKILL.md) · [Review changes](../diffing-review/SKILL.md) · [Address PR feedback](../diffing-pr-address/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md)

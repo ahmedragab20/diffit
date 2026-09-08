@@ -58,9 +58,11 @@ Read the current input schema before a call. MCP returns `structuredContent` whe
 | Mockup threads | `reply_to_mockup_comment`, `resolve_mockup_comment`, `unresolve_mockup_comment`, `apply_mockup_suggestion` | `mockup reply/resolve/unresolve/apply-suggestion` |
 | Design | `get_design_system`, `extract_design_system`, `propose_design_system`, `publish_design_system` | `design show/extract/propose/publish`; `design list` is CLI/HTTP |
 | PR reads/drafts | `gh_overview`, `gh_list_threads`, `gh_list_reviews`, `gh_list_draft_comments`, `gh_create_draft_comment`, `gh_refresh` | `gh overview/threads/reviews/pr-list-comments/pr-fetch`; create draft via MCP/HTTP |
+| AI evidence | `ai_evidence_list`, `ai_evidence_map`, `ai_evidence_read`, `ai_evidence_search`, `ai_evidence_symbols`, `ai_evidence_verify`, `ai_evidence_history`, `ai_evidence_discussion` | `diffing evidence list/map/read/search/symbols/verify/history/discussion`; read-only navigation of a retained capture |
+| AI notebook | `ai_notebook`, `ai_notebook_add`, `ai_notebook_decide` | `diffing evidence notebook/decide`; authoring and deciding are writes, not `ai_evidence_*` |
 | Authorized GitHub writes | `gh_submit_review`, `gh_submit_pending_review`, `gh_discard_pending_review`, `gh_update_pr`, `gh_set_pr_state`, `gh_merge_pr` | `gh pr-review`, `gh pending submit/discard`, `gh pr-update/pr-close/pr-reopen/pr-merge` |
 
-MCP also advertises prompts `review_local_changes` and `submit_plan_for_review`, plus resource `diffing://agent-guide`. These help discovery; they do not replace schemas or grant authority. File editing/search, attachments, UI state, AI and published-comment CRUD have HTTP-only surfaces described below.
+MCP also advertises prompts `review_local_changes` and `submit_plan_for_review`, plus resource `diffing://agent-guide`. These help discovery; they do not replace schemas or grant authority. File editing/search, attachments, UI state, AI runs and published-comment CRUD have HTTP-only surfaces described below; AI evidence navigation is the one AI surface with registered MCP tools.
 
 ## Bounded diff inspection
 
@@ -304,6 +306,17 @@ These routes support the human UI. Their presence does not authorize inference, 
 | --- | --- | --- |
 | GET | `/api/ai/connections` | Connection status |
 | GET | `/api/ai/models` | Connected model choices |
+| GET | `/api/ai/evidence` | Review snapshots a recent run retained; ids and revisions, no source content |
+| GET | `/api/ai/evidence/:id/map` | Sources, omissions and coverage of one capture; listing is not reading |
+| POST | `/api/ai/evidence/:id/read` | Batched, budgeted reads of cited line ranges; per-item errors |
+| POST | `/api/ai/evidence/:id/search` | Literal substring positions only; a match must be read to be cited |
+| POST | `/api/ai/evidence/:id/symbols` | Definitions/references via a configured language server; out-of-capture locations are named, never readable |
+| POST | `/api/ai/evidence/:id/verify` | Re-check a stored citation against a capture; invalid or stale is never silently accepted |
+| GET | `/api/ai/evidence/:id/history` | Commits touching one captured source, addressed by key; metadata only, never a patch |
+| GET | `/api/ai/evidence/:id/discussion` | Review threads on captured paths; out-of-capture threads are counted, not returned |
+| GET | `/api/ai/evidence/:id/notebook` | Cited findings, proposals and questions for a capture, with any decision recorded |
+| POST | `/api/ai/evidence/:id/notebook` | Author a cited entry; a quote that does not match the capture is rejected |
+| POST | `/api/ai/evidence/:id/decide` | Accept, reject or defer one entry, recording who decided |
 | POST | `/api/ai/connections/:source/key` | Human credential setup; not an agent recipe |
 | POST | `/api/ai/connections/:source/login` | Human setup instructions |
 | POST | `/api/ai/connections/:source/configure-runtime-key` | Human runtime-key setup instructions |

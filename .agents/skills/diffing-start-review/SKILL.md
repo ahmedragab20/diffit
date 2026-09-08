@@ -1,6 +1,11 @@
 ---
 name: diffing-start-review
 description: Start or reopen a diffing UI for local changes or a GitHub pull request and hand it to the human. Use when the user asks to open diffing, start a review, or send changes for human review without reviewing or editing them yourself.
+license: MIT
+metadata:
+  author: ahmedragab20
+  version: "0.20.0"
+user_invocable: true
 ---
 
 # Start a review
@@ -61,4 +66,4 @@ If MCP is bound to another repository, use CLI from the consumer or ask the host
 
 The selected session is reachable, its mode/scope is stated, and its safe human URL is shared (or TUI status reported). Park unless the user requested a synchronous loop; then use [Finish review](../diffing-finish-review/SKILL.md).
 
-[Headless API](../diffing/references/headless-api.md) · [Recovery and safety](../diffing/references/recovery-and-safety.md)
+[Router](../diffing/SKILL.md) · [Review changes](../diffing-review/SKILL.md) · [Finish review](../diffing-finish-review/SKILL.md) · [Headless API](../diffing/references/headless-api.md) · [Recovery](../diffing/references/recovery-and-safety.md)

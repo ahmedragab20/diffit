@@ -1,6 +1,11 @@
 ---
 name: diffing-pr-address
 description: Turn GitHub PR feedback into a human-approved local implementation through diffing. Use to address reviewer requests, plan fixes or map unresolved threads to local changes; remote replies, resolution, pushes and publication require separate authorization.
+license: MIT
+metadata:
+  author: ahmedragab20
+  version: "0.20.0"
+user_invocable: true
 ---
 
 # Address PR feedback locally
@@ -79,4 +84,4 @@ If checkout or PR identity is uncertain, stop instead of guessing. If source/hea
 
 Report verified local changes mapped to feedback, the implementation review URL and remaining questions. If authorized remote actions were performed, name the actual outcome; otherwise explicitly leave GitHub unchanged.
 
-[Sessions and transports](../diffing/references/sessions-and-transports.md)
+[Router](../diffing/SKILL.md) · [PR reads](../diffing-pr-read/SKILL.md) · [Plan review](../diffing-plan-review/SKILL.md) · [Start review](../diffing-start-review/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md)

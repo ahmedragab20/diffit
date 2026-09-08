@@ -58,6 +58,8 @@ const DEFAULTS = {
   aiRailWidth: 360,
   aiPrivacyAcknowledged: false,
   aiSettingsExpanded: false,
+  aiLanguageServers: {},
+  aiEvidenceTools: true,
 }
 
 describe('settings', () => {

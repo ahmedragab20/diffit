@@ -1,6 +1,11 @@
 ---
 name: diffing-release
 description: Prepare and publish a new diffing product release through its release script and CI. Use when a contributor asks to bump, tag, ship or release diffing itself; preview first and require explicit approval before pushing or publishing.
+license: MIT
+metadata:
+  author: ahmedragab20
+  version: "0.20.0"
+user_invocable: true
 ---
 
 # Release diffing (contributors only)
@@ -78,4 +83,4 @@ Never force-push, recreate a published tag, or bypass failed verification as an 
 
 Report the released version and evidence that the intended CI run, npm package and GitHub release succeeded. If one is missing, state the remaining blocker instead of claiming completion.
 
-[Sessions and transports](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md)
+[Router](../diffing/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md) · [Recovery](../diffing/references/recovery-and-safety.md)

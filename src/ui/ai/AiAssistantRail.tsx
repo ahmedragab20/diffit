@@ -7,6 +7,7 @@ import {
 	useState,
 	type MouseEvent as ReactMouseEvent,
 } from "react";
+import { clampRailWidth, railWidthBounds } from "./railWidth.js";
 import {
 	Check,
 	Copy,
@@ -36,7 +37,12 @@ import type {
 	AiConversation,
 	AiConversationSummary,
 } from "../../lib/ai/conversations";
-import { Markdown } from "../components/Markdown";
+import {
+	EMPTY_ACTIVITY,
+	type RunActivity,
+} from "../../lib/ai/activity";
+import type { NotebookEntry } from "../../lib/ai/notebook";
+import { TranscriptShell } from "./TranscriptShell";
 import { FileMentionDropdown } from "../components/FileMentionDropdown";
 import { useFileMention } from "../hooks/useFileMention";
 import { useOptionalAi } from "./AiContext";
@@ -129,28 +135,91 @@ function localConversation(
 	};
 }
 
-function UserMessage({ turn }: { turn: AiConversationTurn }) {
-	const images = turn.context?.imageAttachments ?? [];
-	return (
-		<div className="ai-message ai-message-user">
-			<span>{turn.text}</span>
-			{images.length > 0 && (
-				<div className="ai-message-images">
-					{images.map((image) => (
-						<img
-							key={image.url}
-							src={image.url}
-							alt={image.name}
-							title={image.name}
-						/>
-					))}
-				</div>
-			)}
-		</div>
-	);
+type RunPhase =
+	| "idle"
+	| "thinking"
+	| "streaming"
+	| "stopping"
+	| "error"
+	| "canceled"
+	| "interrupted";
+
+function isRunBusy(phase: RunPhase): boolean {
+	return phase === "thinking" || phase === "streaming" || phase === "stopping";
 }
 
-type RunPhase = "idle" | "thinking" | "streaming" | "stopping" | "error";
+function deriveRailActivity(
+	phase: RunPhase,
+	pending: PendingTurn | null,
+	elapsedMs: number,
+	hasTurns: boolean,
+): RunActivity {
+	const warnings = pending?.warnings ?? [];
+	const text = pending?.assistantText ?? "";
+	if (phase === "thinking")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "preparing",
+			warnings,
+			text,
+			partial: true,
+			elapsedMs,
+		};
+	if (phase === "streaming")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "responding",
+			warnings,
+			text,
+			partial: true,
+			elapsedMs,
+		};
+	if (phase === "stopping")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "cancel-requested",
+			warnings,
+			text,
+			partial: true,
+			elapsedMs,
+		};
+	if (phase === "error")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "failed",
+			warnings,
+			text,
+			partial: Boolean(text),
+			errorCode: "provider_failed",
+			elapsedMs,
+		};
+	if (phase === "canceled")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "canceled",
+			warnings,
+			text,
+			partial: true,
+			elapsedMs,
+		};
+	if (phase === "interrupted")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "interrupted",
+			warnings,
+			text,
+			partial: true,
+			elapsedMs,
+		};
+	if (hasTurns)
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "complete",
+			succeeded: true,
+			elapsedMs,
+		};
+	return EMPTY_ACTIVITY;
+}
 
 interface PendingTurn {
 	user: AiConversationTurn;
@@ -207,7 +276,9 @@ function AiAssistantRailOpen({
 	const [previewAttaching, setPreviewAttaching] = useState(false);
 	const [imageError, setImageError] = useState<string | null>(null);
 	const [draggingImage, setDraggingImage] = useState(false);
+	const [findings, setFindings] = useState<NotebookEntry[]>([]);
 	const runId = useRef<string | null>(null);
+	const runStartedAt = useRef<number | null>(null);
 	const abortController = useRef<AbortController | null>(null);
 	const resizeCleanup = useRef<(() => void) | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -345,6 +416,20 @@ function AiAssistantRailOpen({
 		if (ai.railWidth) setLocalWidth(ai.railWidth);
 	}, [ai.railWidth]);
 
+	// A width persisted on a wide display must not overflow a narrower window.
+	useEffect(() => {
+		if (typeof window === "undefined") return;
+		const reclamp = () => {
+			setLocalWidth((current) => {
+				const next = clampRailWidth(current, window.innerWidth);
+				return next === null ? current : next;
+			});
+		};
+		reclamp();
+		window.addEventListener("resize", reclamp);
+		return () => window.removeEventListener("resize", reclamp);
+	}, []);
+
 	useEffect(() => {
 		latestConversationRef.current = conversation;
 	}, [conversation]);
@@ -436,6 +521,36 @@ function AiAssistantRailOpen({
 		};
 	}, [scopeKey, surface]);
 
+	useEffect(() => {
+		let alive = true;
+		const loadFindings = async () => {
+			try {
+				const list = await fetch("/api/ai/evidence");
+				if (!list.ok) return;
+				const body = (await list.json()) as { snapshots?: { id: string }[] };
+				const id = body.snapshots?.at(-1)?.id;
+				if (!id) {
+					if (alive) setFindings((current) => (current.length === 0 ? current : []));
+					return;
+				}
+				const notebookResponse = await fetch(
+					`/api/ai/evidence/${encodeURIComponent(id)}/notebook`,
+				);
+				if (!notebookResponse.ok) return;
+				const notebook = (await notebookResponse.json()) as {
+					entries?: NotebookEntry[];
+				};
+				if (alive) setFindings(notebook.entries ?? []);
+			} catch {
+				if (alive) setFindings((current) => (current.length === 0 ? current : []));
+			}
+		};
+		void loadFindings();
+		return () => {
+			alive = false;
+		};
+	}, [conversation?.id, conversation?.turns.length, scopeKey, surface]);
+
 	const { run, cancel, selectedModel, setRailWidth } = ai;
 
 	const queueDelta = (text: string) => {
@@ -509,7 +624,7 @@ function AiAssistantRailOpen({
 		if (
 			(!requested && requestedImages.length === 0) ||
 			!selectedModel ||
-			(phase !== "idle" && phase !== "error")
+			isRunBusy(phase)
 		)
 			return;
 		if (requestedImages.length && !imageCapable) {
@@ -541,6 +656,7 @@ function AiAssistantRailOpen({
 		abortController.current = controller;
 		setPending({ user: userTurn, assistantText: "", warnings: [] });
 		setPhase("thinking");
+		runStartedAt.current = Date.now();
 		forceScrollRef.current = true;
 		try {
 			const result = await run({
@@ -577,8 +693,7 @@ function AiAssistantRailOpen({
 				},
 			});
 			if (result.canceled || controller.signal.aborted) {
-				setPending(null);
-				setPhase("idle");
+				setPhase("canceled");
 				return;
 			}
 			const assistantTurn: AiConversationTurn = {
@@ -636,20 +751,24 @@ function AiAssistantRailOpen({
 			requestAnimationFrame(() => textareaRef.current?.focus());
 		} catch (nextError) {
 			if (controller.signal.aborted) {
-				setPending(null);
-				setPhase("idle");
+				setPhase("canceled");
 				return;
 			}
+			const message =
+				nextError instanceof Error ? nextError.message : String(nextError);
 			setPending((current) =>
 				current
 					? {
 							...current,
-							error:
-								nextError instanceof Error ? nextError.message : String(nextError),
+							error: message,
 						}
 					: current,
 			);
-			setPhase("error");
+			setPhase(
+				/incomplete|ended before completion/i.test(message)
+					? "interrupted"
+					: "error",
+			);
 		} finally {
 			runId.current = null;
 			abortController.current = null;
@@ -668,7 +787,14 @@ function AiAssistantRailOpen({
 		const startWidth = localWidth;
 		let latest = startWidth;
 		const move = (next: MouseEvent) => {
-			latest = Math.max(320, Math.min(720, startWidth + startX - next.clientX));
+			// Same rule as the keyboard path: a drag must not overflow the window
+			// or squeeze out the diff either.
+			const width = clampRailWidth(
+				startWidth + startX - next.clientX,
+				window.innerWidth,
+			);
+			if (width === null) return;
+			latest = width;
 			setLocalWidth(latest);
 			document.documentElement.style.setProperty("--ai-rail-width", `${latest}px`);
 		};
@@ -687,19 +813,32 @@ function AiAssistantRailOpen({
 		document.body.style.userSelect = "none";
 	};
 
+	// The announced range must match what a resize can really produce in this
+	// window, not the nominal bounds.
+	const announcedBounds = railWidthBounds(
+		typeof window === "undefined" ? Number.NaN : window.innerWidth,
+	);
+
 	const setKeyboardWidth = (next: number) => {
-		const width = Math.max(320, Math.min(720, next));
+		const width = clampRailWidth(
+			next,
+			typeof window === "undefined" ? Number.NaN : window.innerWidth,
+		);
+		// A window too narrow for a usable rail keeps the last width rather than
+		// rendering something unreadable; the rail itself is hidden instead.
+		if (width === null) return;
 		setLocalWidth(width);
 		void setRailWidth(width);
 	};
 
 	const newConversation = async () => {
-		if (phase !== "idle") return;
+		if (isRunBusy(phase)) return;
 		setDeletePending(false);
 		setRenaming(false);
 		setPrompt("");
 		setImageAttachments([]);
 		setPending(null);
+		setPhase("idle");
 		try {
 			const created = await createConversation({
 				surface,
@@ -727,7 +866,9 @@ function AiAssistantRailOpen({
 	};
 
 	const selectConversation = async (id: string) => {
-		if (phase !== "idle" || id === conversation?.id) return;
+		if (isRunBusy(phase) || id === conversation?.id) return;
+		setPending(null);
+		setPhase("idle");
 		setConversationLoading(true);
 		try {
 			const loaded = await getConversation(id);
@@ -770,7 +911,9 @@ function AiAssistantRailOpen({
 	};
 
 	const removeCurrentConversation = async () => {
-		if (!conversation || phase !== "idle") return;
+		if (!conversation || isRunBusy(phase)) return;
+		setPending(null);
+		setPhase("idle");
 		if (conversation.id.startsWith("local-")) {
 			setConversation(null);
 			setDeletePending(false);
@@ -791,7 +934,13 @@ function AiAssistantRailOpen({
 		setDeletePending(false);
 	};
 
-	const copyMarkdown = async (turn: AiConversationTurn) => {
+	/**
+	 * Stable across renders on purpose: a completed turn is memoized on its
+	 * props, so a fresh handler each render would re-render every turn on each
+	 * streamed token and the memoization would buy nothing. It closes over
+	 * nothing but `setCopiedId`, which React keeps stable.
+	 */
+	const copyMarkdown = useCallback(async (turn: AiConversationTurn) => {
 		try {
 			await navigator.clipboard.writeText(turn.text);
 			setCopiedId(turn.id ?? null);
@@ -802,7 +951,14 @@ function AiAssistantRailOpen({
 		} catch {
 			/* clipboard access is optional in embedded browsers */
 		}
-	};
+	}, []);
+
+	const handleCopy = useCallback(
+		(turn: AiConversationTurn) => {
+			void copyMarkdown(turn);
+		},
+		[copyMarkdown],
+	);
 
 	const isMockup = surface === "mockup";
 	const isPlan = surface === "plan";
@@ -870,8 +1026,14 @@ function AiAssistantRailOpen({
 	];
 
 	const turns = conversation?.turns ?? [];
-	const isBusy =
-		phase === "thinking" || phase === "streaming" || phase === "stopping";
+	const isBusy = isRunBusy(phase);
+	const activity = deriveRailActivity(
+		phase,
+		pending,
+		runStartedAt.current ? Date.now() - runStartedAt.current : 0,
+		turns.length > 0,
+	);
+	const showComposed = turns.length > 0 || pending !== null || findings.length > 0;
 
 	return (
 		<aside
@@ -895,8 +1057,8 @@ function AiAssistantRailOpen({
 				role="separator"
 				aria-label="Resize AI assistant"
 				aria-orientation="vertical"
-				aria-valuemin={320}
-				aria-valuemax={720}
+				aria-valuemin={announcedBounds.min}
+				aria-valuemax={announcedBounds.max}
 				aria-valuenow={localWidth}
 				tabIndex={0}
 			>
@@ -1105,7 +1267,7 @@ function AiAssistantRailOpen({
 			</div>
 
 			<div
-				className={`ai-conversation ${!turns.length && !pending ? "is-empty" : ""}`}
+				className={`ai-conversation ${!showComposed ? "is-empty" : ""}`}
 				ref={conversationRef}
 				onScroll={(event) => {
 					const element = event.currentTarget;
@@ -1117,7 +1279,7 @@ function AiAssistantRailOpen({
 				}}
 				aria-live="polite"
 			>
-				{!turns.length && !pending && (
+				{!showComposed && (
 					<div className="ai-empty-state">
 						<div>
 							<Sparkles size={20} />
@@ -1129,76 +1291,38 @@ function AiAssistantRailOpen({
 						</p>
 					</div>
 				)}
-				{turns.map((turn) =>
-					turn.role === "user" ? (
-						<UserMessage key={turn.id} turn={turn} />
-					) : (
-						<article className="ai-response-document" key={turn.id}>
-							<Markdown
-								content={turn.text}
-								className="markdown-body ai-response-markdown"
-							/>
-							<div className="ai-message-actions">
-								<button
-									type="button"
-									onClick={() => void copyMarkdown(turn)}
-									aria-label={`Copy response ${turn.id}`}
-								>
-									{copiedId === turn.id ? <Check size={12} /> : <Copy size={12} />}{" "}
-									{copiedId === turn.id ? "Copied" : "Copy Markdown"}
-								</button>
-							</div>
-						</article>
-					),
-				)}
-				{pending && (
-					<>
-						<UserMessage turn={pending.user} />
-						{pending.assistantText ? (
-							<article className="ai-response-document">
-								<Markdown
-									content={pending.assistantText}
-									className="markdown-body ai-response-markdown"
-								/>
-							</article>
-						) : phase === "thinking" || phase === "stopping" ? (
-							<div className="ai-thinking" role="status">
-								<span className="ai-thinking-mark" aria-hidden="true">
-									{Array.from({ length: 9 }, (_, index) => (
-										<i key={index} />
-									))}
-								</span>
-								<span>
-									{phase === "stopping"
-										? "Stopping this request"
-										: "Thinking about your request"}
-								</span>
-							</div>
-						) : null}
-						{pending.warnings.map((warning) => (
-							<div className="ai-run-warning" key={warning} role="status">
-								{warning}
-							</div>
-						))}
-						{pending.error && (
-							<div className="ai-run-error" role="alert">
-								<span>{pending.error}</span>
-								<button
-									type="button"
-									onClick={() => {
+				{showComposed && (
+					<TranscriptShell
+						turns={turns}
+						activity={activity}
+						streaming={
+							pending
+								? { turn: pending.user, text: pending.assistantText }
+								: null
+						}
+						findings={findings}
+						copiedId={copiedId}
+						onCopy={handleCopy}
+						onRetry={
+							pending &&
+							(phase === "error" ||
+								phase === "canceled" ||
+								phase === "interrupted")
+								? () => {
 										const retry = pending.user.text;
 										const retryImages = pending.user.context?.imageAttachments;
 										setPending(null);
 										setPhase("idle");
 										void start("ask", retry, retryImages);
-									}}
-									aria-label="Retry AI request"
-								>
-									Retry
-								</button>
-							</div>
-						)}
-					</>
+									}
+								: undefined
+						}
+					/>
+				)}
+				{pending?.error && (
+					<div className="ai-run-error" role="alert">
+						<span>{pending.error}</span>
+					</div>
 				)}
 				{!pending &&
 					runWarnings.map((warning) => (

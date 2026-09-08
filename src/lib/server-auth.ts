@@ -76,6 +76,31 @@ export function isAllowedRequestHost(
 }
 
 /**
+ * CSRF Origin check. Same-origin is always allowed. A loopback-bound server
+ * also accepts another loopback http(s) origin so the Vite client
+ * (`localhost:5173`) can proxy `/api` to the backend (`127.0.0.1:3433`).
+ * Off-loopback Origins still have to match the request URL exactly.
+ */
+export function isAllowedRequestOrigin(
+  originHeader: string | undefined,
+  requestUrl: string,
+  bindHost: string,
+): boolean {
+  if (originHeader === undefined) return true;
+  let origin: URL;
+  let request: URL;
+  try {
+    origin = new URL(originHeader);
+    request = new URL(requestUrl);
+  } catch {
+    return false;
+  }
+  if (origin.origin === request.origin) return true;
+  if (origin.protocol !== "http:" && origin.protocol !== "https:") return false;
+  return isLoopbackHost(origin.hostname) && isLoopbackHost(bindHost);
+}
+
+/**
  * Read the session token from the header or HttpOnly cookie.
  *
  * The query param is only honored when `allowQuery` is set, which is reserved
@@ -146,13 +171,12 @@ export function createServerAuthMiddleware(config: ServerAuthConfig) {
     }
     const origin = c.req.header("origin");
     if (origin !== undefined) {
-      let requestOrigin: string;
       try {
-        requestOrigin = new URL(c.req.url).origin;
+        new URL(c.req.url);
       } catch {
         return c.json({ error: "invalid request URL" }, 400);
       }
-      if (origin !== requestOrigin) {
+      if (!isAllowedRequestOrigin(origin, c.req.url, config.bindHost)) {
         return c.json({ error: "request Origin is not allowed" }, 403);
       }
     }

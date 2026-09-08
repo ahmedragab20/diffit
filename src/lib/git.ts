@@ -525,7 +525,7 @@ export async function getGitDiffAsync(
       }).then(({ stdout }) => stdout)
     : Promise.resolve("");
 
-  const untrackedPromise = options.untracked
+  const untrackedPromise: Promise<UntrackedDiffResult> = options.untracked
     ? getUntrackedFilesDiffAsync().catch(() => ({
         patch: "",
         omitted: [] as string[],

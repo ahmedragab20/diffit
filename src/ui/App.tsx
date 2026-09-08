@@ -6,6 +6,7 @@ import {
 	useEffect,
 	useTransition,
 } from "react";
+import { scrollBehavior } from "./lib/motion.js";
 import { parsePatchFiles, preloadHighlighter } from "@pierre/diffs";
 import type { FileDiffMetadata } from "@pierre/diffs";
 import { EditProvider, useWorkerPool } from "@pierre/diffs/react";
@@ -668,7 +669,7 @@ export function App() {
 		if (target.comment) {
 			requestAnimationFrame(() => {
 				document.getElementById(`comment-${target.comment}`)?.scrollIntoView({
-					behavior: "smooth",
+					behavior: scrollBehavior(),
 					block: "center",
 				});
 			});

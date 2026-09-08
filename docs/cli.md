@@ -1529,6 +1529,7 @@ declared explicitly.
 | Comment lifecycle | `edit_comment`, `delete_comment`, `edit_reply`, `delete_reply`, `apply_suggestion`, `resolve_all_comments` | Edit/delete threads and replies; apply ```suggestion fences; bulk-resolve |
 | Progress / history | `report_progress`, `get_review_history` | Live agent progress toast; multi-round handoff history |
 | Plan review | `submit_plan`, `await_plan_review`, `list_plans`, `get_plan`, `get_plan_versions`, `get_plan_version`, `reply_to_plan_comment`, `resolve_plan_comment` | Gate implementation on a versioned human-reviewed plan |
+| AI evidence | `ai_evidence_list`, `ai_evidence_map`, `ai_evidence_read`, `ai_evidence_search` | Navigate the review snapshot a recent AI run captured: list and map sources, batch-read cited line ranges under a shared budget, and locate literal matches by position |
 | GitHub PR | `gh_overview`, `gh_list_threads`, `gh_list_reviews`, `gh_list_draft_comments`, `gh_create_draft_comment`, `gh_refresh`, `gh_submit_review`, `gh_submit_pending_review`, `gh_discard_pending_review`, `gh_update_pr`, `gh_set_pr_state`, `gh_merge_pr` | Slim PR reads, local drafts, pending-review resume, refresh, and explicitly authorized publication / author actions |
 
 `start_review_session` accepts an optional array of safe git-diff scope,
@@ -1842,9 +1843,25 @@ User-specific preferences, layout options, editor choices, and themes are persis
   "aiServiceTier": null,             // Optional model-specific service tier
   "aiRailWidth": 360,                // Shared diff/plan assistant rail width
   "aiPrivacyAcknowledged": false,    // Context-sharing notice acknowledged
-  "aiSettingsExpanded": false        // AI Connections section expanded/collapsed
+  "aiSettingsExpanded": false,       // AI Connections section expanded/collapsed
+  "aiLanguageServers": {},           // Symbol lookup servers, keyed by file extension
+  "aiEvidenceTools": true            // Read-only AI evidence navigation; false rolls it back
 }
 ```
+
+`aiLanguageServers` maps a file extension (no dot) to a language server, e.g.
+`{"ts": {"command": "typescript-language-server", "args": ["--stdio"]}}`. It is
+empty by default: diffing presumes no toolchain, so definition and reference
+lookups report themselves unavailable until a server is configured. The command
+is resolved on PATH and never run through a shell, and a malformed entry is
+dropped rather than repaired. A language server answers about the working tree,
+so any location it returns that falls outside the captured review snapshot is
+named but marked out of scope and is never readable.
+
+`aiEvidenceTools` gates the `/api/ai/evidence*` routes and the `ai_evidence_*`
+MCP tools that call them. It is read per request, so setting it false rolls the
+surface back immediately without restarting the server. See
+[Operating the AI review surface](ai-operations.md).
 
 AI provider secrets are never stored in this JSON file. Direct BYOK secrets use
 the OS credential vault or session memory. OpenCode/Cursor-managed BYOK remains

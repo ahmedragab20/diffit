@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
+import { scrollBehavior } from "../lib/motion.js";
 import { Search, X, Check, Moon, Sun } from 'lucide-react'
 import { Modal } from '../primitives/Modal'
 import { BrandMark } from './BrandMark'
@@ -142,7 +143,7 @@ export function ThemeModal({ open, activeTheme, onThemeChange, onClose }: ThemeM
     if (open && itemRefs.current[focusedIndex]) {
       itemRefs.current[focusedIndex]?.scrollIntoView({
         block: 'nearest',
-        behavior: 'smooth',
+        behavior: scrollBehavior(),
       })
     }
   }, [focusedIndex, open])

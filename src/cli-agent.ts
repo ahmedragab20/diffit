@@ -1072,6 +1072,319 @@ async function completion(args: string[]): Promise<number> {
 	return EXIT_OK;
 }
 
+/**
+ * CLI mirror of the AI evidence surface, so HTTP, MCP and CLI reach the same
+ * bounded evidence. Every subcommand is read-only.
+ */
+async function evidence(args: string[]): Promise<number> {
+	let parsed: ReturnType<typeof parseArgs>;
+	try {
+		parsed = parseArgs({
+			args,
+			options: {
+				revision: { type: "string" },
+				cursor: { type: "string" },
+				limit: { type: "string" },
+				key: { type: "string" },
+				range: { type: "string", multiple: true },
+				"max-bytes": { type: "string" },
+				representation: { type: "string" },
+				query: { type: "string", short: "q" },
+				"ignore-case": { type: "boolean" },
+				line: { type: "string" },
+				character: { type: "string" },
+				kind: { type: "string" },
+				"include-declaration": { type: "boolean" },
+				reference: { type: "string" },
+				entry: { type: "string" },
+				"entry-id": { type: "string" },
+				decision: { type: "string" },
+				by: { type: "string" },
+				pretty: { type: "boolean" },
+				help: { type: "boolean", short: "h" },
+			},
+			allowPositionals: true,
+		});
+	} catch (error: any) {
+		console.error(error?.message ?? error);
+		return EXIT_USAGE;
+	}
+
+	const [resource, positional, ...extra] = parsed.positionals;
+	const values = parsed.values;
+	if (values.help || !resource || extra.length > 0) {
+		console.error(`Usage: diffing evidence <list|map|read|search|symbols|verify|history|discussion|notebook|decide> [<id>] [options]
+
+Read the review snapshot a recent AI run captured. Read-only; no run is started.
+  list
+  map        <id> [--revision R] [--cursor N] [--limit N]
+  read       <id> --range KEY:START:END [--range ...] [--representation original|unified-patch] [--max-bytes N]
+  search     <id> <text>|--query T [--key K] [--limit N] [--ignore-case] [--cursor N]
+  symbols    <id> --key K --line N --character N --kind definitions|references [--include-declaration]
+  verify     <id> --revision R --reference JSON
+  history    <id> --key K [--limit N] [--cursor N]
+  discussion <id> [--key K] [--limit N] [--cursor N]
+  notebook   <id> [--entry JSON]
+  decide     <id> --entry-id E --decision accepted|rejected|deferred --by WHO
+
+Listing and searching are not reading: they add nothing to returned-line coverage.
+Add --pretty for indented JSON. Compact JSON is the token-efficient default.`);
+		return values.help ? EXIT_OK : EXIT_USAGE;
+	}
+
+	const known = new Set([
+		"list",
+		"map",
+		"read",
+		"search",
+		"symbols",
+		"verify",
+		"history",
+		"discussion",
+		"notebook",
+		"decide",
+	]);
+	if (!known.has(resource)) {
+		console.error(`Unknown evidence resource: ${resource}`);
+		return EXIT_USAGE;
+	}
+	if (resource !== "list" && !positional) {
+		console.error(`diffing evidence ${resource}: a snapshot id is required`);
+		return EXIT_USAGE;
+	}
+
+	const integer = (name: string): number | undefined | null => {
+		const raw = values[name as keyof typeof values];
+		if (typeof raw !== "string") return undefined;
+		if (!/^\d+$/.test(raw)) {
+			console.error(`--${name} must be a non-negative integer`);
+			return null;
+		}
+		return Number(raw);
+	};
+
+	const params = new URLSearchParams();
+	if (typeof values.revision === "string")
+		params.set("revision", values.revision);
+
+	let path: string;
+	let init: RequestInit | undefined;
+	const id = encodeURIComponent(positional ?? "");
+
+	switch (resource) {
+		case "list":
+			path = "/api/ai/evidence";
+			break;
+		case "map": {
+			for (const name of ["cursor", "limit"]) {
+				const value = integer(name);
+				if (value === null) return EXIT_USAGE;
+				if (value !== undefined) params.set(name, String(value));
+			}
+			path = `/api/ai/evidence/${id}/map`;
+			break;
+		}
+		case "read": {
+			const ranges = (Array.isArray(values.range) ? values.range : []).filter(
+				(range): range is string => typeof range === "string",
+			);
+			if (!ranges.length) {
+				console.error("diffing evidence read: at least one --range is required");
+				return EXIT_USAGE;
+			}
+			const requests = [];
+			for (const range of ranges) {
+				// KEY may contain colons, so split from the right.
+				const match = /^(.*):(\d+):(\d+)$/.exec(range);
+				if (!match) {
+					console.error(`--range must be KEY:START:END, got ${range}`);
+					return EXIT_USAGE;
+				}
+				requests.push({
+					key: match[1],
+					startLine: Number(match[2]),
+					endLine: Number(match[3]),
+				});
+			}
+			const maxBytes = integer("max-bytes");
+			if (maxBytes === null) return EXIT_USAGE;
+			path = `/api/ai/evidence/${id}/read`;
+			init = {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					requests,
+					maxBytes,
+					representation: values.representation,
+				}),
+			};
+			break;
+		}
+		case "search": {
+			const query =
+				typeof values.query === "string" ? values.query : parsed.positionals[2];
+			if (!query) {
+				console.error("diffing evidence search: provide search text or --query");
+				return EXIT_USAGE;
+			}
+			const limit = integer("limit");
+			if (limit === null) return EXIT_USAGE;
+			path = `/api/ai/evidence/${id}/search`;
+			init = {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					query,
+					key: values.key,
+					limit,
+					ignoreCase: values["ignore-case"] === true,
+					cursor: values.cursor,
+				}),
+			};
+			break;
+		}
+		case "symbols": {
+			const line = integer("line");
+			const character = integer("character");
+			if (line === null || character === null) return EXIT_USAGE;
+			if (
+				typeof values.key !== "string" ||
+				line === undefined ||
+				character === undefined ||
+				(values.kind !== "definitions" && values.kind !== "references")
+			) {
+				console.error(
+					"diffing evidence symbols: --key, --line, --character and --kind definitions|references are required",
+				);
+				return EXIT_USAGE;
+			}
+			path = `/api/ai/evidence/${id}/symbols`;
+			init = {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					key: values.key,
+					line,
+					character,
+					kind: values.kind,
+					includeDeclaration: values["include-declaration"] === true,
+				}),
+			};
+			break;
+		}
+		case "verify": {
+			if (
+				typeof values.reference !== "string" ||
+				typeof values.revision !== "string"
+			) {
+				console.error(
+					"diffing evidence verify: --reference JSON and --revision are required",
+				);
+				return EXIT_USAGE;
+			}
+			let reference: unknown;
+			try {
+				reference = JSON.parse(values.reference);
+			} catch {
+				console.error("--reference must be JSON");
+				return EXIT_USAGE;
+			}
+			path = `/api/ai/evidence/${id}/verify`;
+			init = {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ reference, revision: values.revision }),
+			};
+			break;
+		}
+		case "notebook": {
+			path = `/api/ai/evidence/${id}/notebook`;
+			if (typeof values.entry === "string") {
+				let entry: unknown;
+				try {
+					entry = JSON.parse(values.entry);
+				} catch {
+					console.error("--entry must be JSON");
+					return EXIT_USAGE;
+				}
+				init = {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ entry }),
+				};
+			}
+			break;
+		}
+		case "decide": {
+			const decision = values.decision;
+			if (
+				typeof values["entry-id"] !== "string" ||
+				typeof values.by !== "string" ||
+				!values.by ||
+				(decision !== "accepted" &&
+					decision !== "rejected" &&
+					decision !== "deferred")
+			) {
+				console.error(
+					"diffing evidence decide: --entry-id, --decision accepted|rejected|deferred and --by are required",
+				);
+				return EXIT_USAGE;
+			}
+			path = `/api/ai/evidence/${id}/decide`;
+			init = {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					entryId: values["entry-id"],
+					decision,
+					decidedBy: values.by,
+				}),
+			};
+			break;
+		}
+		default: {
+			// history and discussion share a shape.
+			if (resource === "history" && typeof values.key !== "string") {
+				console.error("diffing evidence history: --key is required");
+				return EXIT_USAGE;
+			}
+			if (typeof values.key === "string") params.set("key", values.key);
+			for (const name of ["cursor", "limit"]) {
+				const value = integer(name);
+				if (value === null) return EXIT_USAGE;
+				if (value !== undefined) params.set(name, String(value));
+			}
+			path = `/api/ai/evidence/${id}/${resource}`;
+			break;
+		}
+	}
+
+	const queryString = params.toString();
+	let response: Response;
+	try {
+		response = await apiFetch(
+			`${baseUrl()}${path}${queryString ? `?${queryString}` : ""}`,
+			init,
+		);
+	} catch (error) {
+		console.error(
+			`Failed to reach diffing server: ${connectionErrorMessage(error)}`,
+		);
+		return EXIT_NO_SERVER;
+	}
+	const body = await response
+		.json()
+		.catch(() => ({ error: response.statusText }));
+	if (!response.ok) {
+		console.error((body as any).error ?? response.statusText);
+		return response.status === 404 ? EXIT_NOT_FOUND : 1;
+	}
+	process.stdout.write(
+		`${JSON.stringify(body, null, values.pretty ? 2 : undefined)}\n`,
+	);
+	return EXIT_OK;
+}
+
 async function inspect(args: string[]): Promise<number> {
 	let parsed: ReturnType<typeof parseArgs>;
 	try {
@@ -2412,6 +2725,8 @@ export async function runSubcommand(
 			return progress(args);
 		case "inspect":
 			return inspect(args);
+		case "evidence":
+			return evidence(args);
 		case "mode":
 			return mode(args);
 		case "sessions": {
