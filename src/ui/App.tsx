@@ -143,6 +143,7 @@ export function App() {
 		createEditor,
 	} = useEditSessions({
 		diagnosticsEnabled: settings.editDiagnostics === true,
+		codeIntelEnabled: settings.codeIntel === true,
 	});
 
 	// Scope gate: in-place edits mutate the working tree, so they are only

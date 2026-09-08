@@ -36,6 +36,7 @@ export type LiveEvent =
 	| "pr-session"
 	| "agent-progress"
 	| "viewed"
+	| "code-intel-diagnostics"
 	| "heartbeat";
 
 type Handler = (data: string) => void;

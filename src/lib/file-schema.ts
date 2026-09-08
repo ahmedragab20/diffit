@@ -42,6 +42,18 @@ export const codeIntelSchema = z.object({
   staged: z.boolean().optional(),
 });
 
+// A draft the reviewer is editing, pushed so diagnostics describe what they
+// are actually looking at rather than what is still on disk.
+export const codeIntelDocumentSchema = z.discriminatedUnion("op", [
+  z.object({
+    op: z.enum(["open", "change"]),
+    path: filePath,
+    text: z.string(),
+    version: z.number().int().positive(),
+  }),
+  z.object({ op: z.literal("close"), path: filePath }),
+]);
+
 export const editSaveSchema = z.object({
   filePath,
   content: z.string(),

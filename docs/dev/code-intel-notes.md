@@ -77,12 +77,12 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified
 
 ### Stage 2 — diagnostics while editing
 
-- [ ] 2.1 `src/lib/ai/lsp.ts` — document sync, accept `publishDiagnostics`
-- [ ] 2.2 `src/lib/code-intel.ts` — open-document registry, `Diagnostic` → marker
-- [ ] 2.3 `src/server.ts` — `POST /api/code-intel/document`, SSE broadcast
-- [ ] 2.4 `src/ui/hooks/useEditSessions.ts` — push versions, consume diagnostics
-- [ ] 2.5 `src/ui/lib/mergeMarkers.ts` — merge, dedupe, cap at 500
-- [ ] 2.6 Status affordance in the toolbar
+- [x] 2.1 `src/lib/ai/lsp.ts` — document sync, accept `publishDiagnostics`
+- [x] 2.2 `src/lib/code-intel.ts` — draft registry, `Diagnostic` → marker
+- [x] 2.3 `src/server.ts` — `POST /api/code-intel/document`, SSE broadcast
+- [~] 2.4 `src/ui/hooks/useEditSessions.ts` — push versions, consume diagnostics
+- [x] 2.5 `src/ui/lib/mergeMarkers.ts` — merge, dedupe, cap at 500
+- [x] 2.6 Status affordance (see the note below on what this became)
 
 ### Stage 3 — act on the code
 
@@ -150,8 +150,49 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified
   DOM queries from outside must hop `shadowRoot` explicitly.
 - **`scrollIntoView` drags the horizontal axis too.** In the peek panel that hid
   the start of every line; the fix resets `scrollLeft` after the scroll settles.
+- **`typescript-language-server` publishes diagnostics with no `version`.**
+  Verified against the real binary. The plan leaned on the version to drop a
+  stale batch, and the mechanism is implemented and honoured when a server does
+  send one — but it cannot be relied on. Two guards carry the weight instead:
+  a version-less batch is only accepted while the draft still equals the text
+  that was pushed, and **every push drops the markers already held**, so between
+  a keystroke settling and the server answering, the file shows only the
+  built-in checks rather than squiggles describing text that has moved. The
+  residual window is a batch for push N arriving after push N+1 went out; the
+  next batch corrects it.
+- **Drafts and disk must not fight over one document.** A document opened from a
+  browser draft is stamped `draft:` and the disk-sync path leaves it alone —
+  otherwise a hover lookup would push disk contents over the text the reviewer
+  is typing. `closeDraft` on exiting edit mode hands the file back to disk.
+- **2.6 became a tooltip, not a widget.** The plan sketched a server
+  connected/starting/unavailable indicator. In practice the settings toggle
+  already carries the availability reason, and the markers themselves are the
+  feedback that a server is answering. What was actually missing was that
+  server diagnostics need **both** `codeIntel` and `editDiagnostics`, so the
+  Code intel toggle now says so. A live status widget was deliberately not
+  built rather than adding UI nobody asked for.
 
 ## Verification log
+
+### Stage 2
+
+`npx vitest run` — all green (see the run below).
+
+Real diagnostics over the live channel, against `typescript-language-server`,
+for a draft that exists only in memory (no such file on disk):
+
+```
+POST /api/code-intel/document
+  {"op":"change","path":"src/lib/code-intel-draft-probe.ts","version":41,
+   "text":"const n: number = \"not a number\";\nexport function f(a: string) { return a.nope() }\n"}
+  → {"ok":true}
+
+/api/live  event: code-intel-diagnostics
+  → path src/lib/code-intel-draft-probe.ts, version undefined, 3 markers
+      error typescript 0:6  Type 'string' is not assignable to type 'number'.
+      error typescript 1:40 Property 'nope' does not exist on type 'string'.
+      hint  typescript 0:6  'n' is declared but its value is never read.
+```
 
 ### Stage 1
 

@@ -526,7 +526,9 @@ export function ReviewSettingsPopover({
 					title={
 						codeIntelUnavailable
 							? `Code intel is unavailable for this review: ${codeIntelUnavailable}`
-							: "Hover a token for its type and docs, and modifier-click to jump to its declaration. Needs a language server configured for the file's extension."
+							: editDiagnostics
+								? "Hover a token for its type and docs, and modifier-click to jump to its declaration. While editing, the language server's diagnostics are merged into the markers."
+								: "Hover a token for its type and docs, and modifier-click to jump to its declaration. Turn on Edit diagnostics as well to see the language server's diagnostics while editing."
 					}
 				>
 					<input

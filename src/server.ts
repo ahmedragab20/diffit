@@ -12,6 +12,7 @@ import {
 	saveFileSchema,
 	editSaveSchema,
 	codeIntelSchema,
+	codeIntelDocumentSchema,
 	MAX_FILE_REQUEST_BYTES,
 } from "./lib/file-schema.js";
 import { serve } from "@hono/node-server";
@@ -198,7 +199,12 @@ import type { Decision, NotebookEntryInput } from "./lib/ai/notebook.js";
 import { sourceHistory } from "./lib/ai/history.js";
 import { sourceDiscussion } from "./lib/ai/discussion.js";
 import { lookupSymbols, type SymbolKind } from "./lib/ai/symbols.js";
-import { codeIntel, codeIntelCapabilities } from "./lib/code-intel.js";
+import {
+	closeDraft,
+	codeIntel,
+	codeIntelCapabilities,
+	syncDraft,
+} from "./lib/code-intel.js";
 import {
 	diffRead,
 	reviewMap,
@@ -1701,6 +1707,31 @@ export function createApp(
 				request,
 			),
 		);
+	});
+
+	/**
+	 * The draft an open editor holds, pushed so diagnostics describe what the
+	 * reviewer is looking at rather than what is still on disk. Diagnostics come
+	 * back over the existing `/api/live` channel, carrying the version they were
+	 * computed against so a stale batch can be recognised and dropped.
+	 */
+	app.post("/api/code-intel/document", async (c) => {
+		const parsed = codeIntelDocumentSchema.safeParse(await readCommentJson(c));
+		if (!parsed.success)
+			return c.json({ error: "Invalid code-intel document request" }, 400);
+		const body = parsed.data;
+		if (body.op === "close") {
+			await closeDraft(languageServers, repoRoot, body.path);
+			return c.json({ ok: true });
+		}
+		const result = await syncDraft(
+			languageServers,
+			repoRoot,
+			{ customMode, prMode, staged: diffOpts.staged },
+			body,
+			(published) => broadcast("code-intel-diagnostics", JSON.stringify(published)),
+		);
+		return c.json(result);
 	});
 
 	app.post("/api/ai/evidence/:id/search", async (c) => {

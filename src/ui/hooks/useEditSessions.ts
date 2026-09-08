@@ -27,7 +27,10 @@ import type {
 } from "@pierre/diffs";
 import type { Editor, EditorFactory } from "@pierre/diffs/edit";
 import { ensureEditModuleLoaded, getEditorClass } from "../lib/editModule";
-import { computeEditMarkers } from "../lib/editMarkers";
+import { computeEditMarkers, type EditMarker } from "../lib/editMarkers";
+import { mergeMarkers } from "../lib/mergeMarkers";
+import { subscribeLive } from "../live";
+import type { PublishedMarkers } from "../../lib/code-intel.js";
 import type { ReviewComment } from "../../lib/types";
 import type { PrExistingComment } from "../../lib/pr-session";
 
@@ -78,10 +81,16 @@ function isDiffAnnotationCollection(
 export interface UseEditSessionsOptions {
   /** Opt-in diagnostic markers (Settings → Diff → "Edit diagnostics"). */
   diagnosticsEnabled: boolean;
+  /**
+   * Opt-in language-server diagnostics on top of the built-in checks. Requires
+   * `diagnosticsEnabled` too: this only decides whether a server is asked.
+   */
+  codeIntelEnabled?: boolean;
 }
 
 export function useEditSessions({
   diagnosticsEnabled,
+  codeIntelEnabled = false,
 }: UseEditSessionsOptions) {
   const [sessions, setSessions] = useState<
     ReadonlyMap<string, EditSessionView>
@@ -96,6 +105,15 @@ export function useEditSessions({
   );
   const diagnosticsRef = useRef(diagnosticsEnabled);
   diagnosticsRef.current = diagnosticsEnabled;
+  const codeIntelRef = useRef(codeIntelEnabled);
+  codeIntelRef.current = codeIntelEnabled;
+  /** Markers a language server published, by path, with the version they describe. */
+  const serverMarkersRef = useRef<Map<string, PublishedMarkers>>(new Map());
+  /** The draft text last pushed to the server, and the version it was sent as. */
+  const pushedRef = useRef<Map<string, { text: string; version: number }>>(
+    new Map(),
+  );
+  const versionRef = useRef(0);
 
   useEffect(() => {
     sessionsRef.current = sessions;
@@ -103,16 +121,100 @@ export function useEditSessions({
 
   const dirtyCount = [...sessions.values()].filter((s) => s.dirty).length;
 
-  const refreshMarkers = useCallback((path: string) => {
-    const editor = editorsRef.current.get(path);
+  /**
+   * A batch is kept when it names the version we last sent. Servers are not
+   * obliged to report one — typescript-language-server does not — so a
+   * version-less batch is accepted only while the draft still matches the text
+   * that was pushed, and any batch is discarded outright the moment a new push
+   * goes out.
+   */
+  const currentServerMarkers = useCallback((path: string): EditMarker[] => {
+    const published = serverMarkersRef.current.get(path);
+    if (!published) return [];
+    const pushed = pushedRef.current.get(path);
+    if (!pushed) return [];
     const session = sessionsRef.current.get(path);
-    if (!editor || !session) return;
-    if (!diagnosticsRef.current) {
-      editor.setMarkers([]);
-      return;
-    }
-    editor.setMarkers(computeEditMarkers(session.draft, path));
+    if (session && session.draft !== pushed.text) return [];
+    if (published.version !== undefined && published.version !== pushed.version)
+      return [];
+    return published.markers;
   }, []);
+
+  const refreshMarkers = useCallback(
+    (path: string) => {
+      const editor = editorsRef.current.get(path);
+      const session = sessionsRef.current.get(path);
+      if (!editor || !session) return;
+      if (!diagnosticsRef.current) {
+        editor.setMarkers([]);
+        return;
+      }
+      const builtIn = computeEditMarkers(session.draft, path);
+      editor.setMarkers(
+        codeIntelRef.current
+          ? mergeMarkers(builtIn, currentServerMarkers(path))
+          : builtIn,
+      );
+    },
+    [currentServerMarkers],
+  );
+
+  /**
+   * Hand the current draft to the language server, versioned.
+   *
+   * Markers already held for this file are dropped first. They describe the
+   * text as it was before this keystroke, and showing them against the new
+   * text is exactly the "squiggles on lines that moved" failure the version
+   * carried below exists to prevent — so between a push and its answer the
+   * file shows only the built-in checks, which are always true of what is on
+   * screen.
+   */
+  const pushDraft = useCallback((path: string) => {
+    if (!codeIntelRef.current || !diagnosticsRef.current) return;
+    const session = sessionsRef.current.get(path);
+    if (!session) return;
+    const version = ++versionRef.current;
+    serverMarkersRef.current.delete(path);
+    pushedRef.current.set(path, { text: session.draft, version });
+    void fetch("/api/code-intel/document", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        op: "change",
+        path,
+        text: session.draft,
+        version,
+      }),
+      // A draft the server never receives just means no server markers.
+    }).catch(() => {});
+  }, []);
+
+  const dropDraft = useCallback((path: string) => {
+    serverMarkersRef.current.delete(path);
+    if (!pushedRef.current.delete(path)) return;
+    void fetch("/api/code-intel/document", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ op: "close", path }),
+    }).catch(() => {});
+  }, []);
+
+  useEffect(
+    () =>
+      subscribeLive("code-intel-diagnostics", (raw) => {
+        let published: PublishedMarkers;
+        try {
+          published = JSON.parse(raw) as PublishedMarkers;
+        } catch {
+          return;
+        }
+        if (!published?.path || !Array.isArray(published.markers)) return;
+        if (!pushedRef.current.has(published.path)) return;
+        serverMarkersRef.current.set(published.path, published);
+        refreshMarkers(published.path);
+      }),
+    [refreshMarkers],
+  );
 
   const scheduleMarkers = useCallback(
     (path: string) => {
@@ -122,6 +224,7 @@ export function useEditSessions({
         path,
         setTimeout(() => {
           markerTimersRef.current.delete(path);
+          pushDraft(path);
           refreshMarkers(path);
         }, 300),
       );
@@ -202,9 +305,14 @@ export function useEditSessions({
       // would find the map without this file and skip the markers silently.
       // Defer to the next macrotask so refreshMarkers sees the session (and
       // typing re-triggers markers anyway as a backstop).
-      setTimeout(() => refreshMarkers(path), 0);
+      setTimeout(() => {
+        // Open the document immediately so diagnostics appear on entering edit
+        // mode rather than only after the first keystroke.
+        pushDraft(path);
+        refreshMarkers(path);
+      }, 0);
     },
-    [refreshMarkers],
+    [pushDraft, refreshMarkers],
   );
 
   // The diagnostics toggle must take effect immediately for sessions already
@@ -214,7 +322,7 @@ export function useEditSessions({
     for (const path of editorsRef.current.keys()) {
       refreshMarkers(path);
     }
-  }, [diagnosticsEnabled, refreshMarkers]);
+  }, [diagnosticsEnabled, codeIntelEnabled, refreshMarkers]);
 
   const saveEdit = useCallback(async (path: string) => {
     const current = sessionsRef.current.get(path);
@@ -334,12 +442,13 @@ export function useEditSessions({
     const timer = markerTimersRef.current.get(path);
     if (timer) clearTimeout(timer);
     markerTimersRef.current.delete(path);
+    dropDraft(path);
     setSessions((prev) => {
       const next = new Map(prev);
       next.delete(path);
       return next;
     });
-  }, []);
+  }, [dropDraft]);
 
   const createEditor = useCallback<
     EditorFactory<EditSessionMetadata, undefined>

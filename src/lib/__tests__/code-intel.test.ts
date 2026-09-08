@@ -15,6 +15,9 @@ import { LanguageServers } from "../ai/language-servers.js";
 import {
 	codeIntel,
 	codeIntelCapabilities,
+	closeDraft,
+	markersFromDiagnostics,
+	syncDraft,
 	type CodeIntelRequest,
 } from "../code-intel.js";
 
@@ -440,5 +443,253 @@ describe("codeIntelCapabilities", () => {
 			extensions: ["ts"],
 			unavailable: "pull-request",
 		});
+	});
+});
+
+describe("syncDraft", () => {
+	it("refuses when no language server is configured", async () => {
+		const servers = new LanguageServers({}, ROOT);
+		try {
+			const result = await syncDraft(
+				servers,
+				ROOT,
+				clean,
+				{ path: "src/a.ts", text: "test", version: 1 },
+				() => {},
+			);
+			expect(result).toEqual({ ok: false, reason: "not-configured" });
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("refuses a pull-request review", async () => {
+		const servers = configured();
+		try {
+			const result = await syncDraft(
+				servers,
+				ROOT,
+				{ ...clean, prMode: true },
+				{ path: "src/a.ts", text: "test", version: 1 },
+				() => {},
+			);
+			expect(result).toEqual({ ok: false, reason: "pull-request" });
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("refuses a path that escapes the repository", async () => {
+		const servers = configured();
+		try {
+			const result = await syncDraft(
+				servers,
+				ROOT,
+				clean,
+				{ path: "../evil.ts", text: "test", version: 1 },
+				() => {},
+			);
+			expect(result).toEqual({ ok: false, reason: "outside-repository" });
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("refuses a language with no configured server", async () => {
+		const servers = configured();
+		try {
+			const result = await syncDraft(
+				servers,
+				ROOT,
+				clean,
+				{ path: "src/a.rs", text: "test", version: 1 },
+				() => {},
+			);
+			expect(result).toEqual({ ok: false, reason: "unsupported-language" });
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("refuses a draft past the document size limit", async () => {
+		const servers = configured();
+		try {
+			const result = await syncDraft(
+				servers,
+				ROOT,
+				clean,
+				{ path: "src/a.ts", text: "x".repeat(4 * 1024 * 1024 + 1), version: 1 },
+				() => {},
+			);
+			expect(result).toEqual({ ok: false, reason: "file-too-large" });
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("opens the draft on first sync and changes it after", async () => {
+		useEchoServer();
+		const servers = configured();
+		try {
+			const result1 = await syncDraft(
+				servers,
+				ROOT,
+				clean,
+				{ path: "src/a.ts", text: "test1", version: 1 },
+				() => {},
+			);
+			expect(result1).toEqual({ ok: true });
+
+			const result2 = await syncDraft(
+				servers,
+				ROOT,
+				clean,
+				{ path: "src/a.ts", text: "test2", version: 2 },
+				() => {},
+			);
+			expect(result2).toEqual({ ok: true });
+
+			const codeIntelResult = await codeIntel(servers, ROOT, clean, request());
+			if (codeIntelResult.available && codeIntelResult.op === "hover") {
+				expect(codeIntelResult.hover).toContain("textDocument/didOpen");
+				expect(codeIntelResult.hover).toContain("textDocument/didChange");
+			} else {
+				throw new Error("Expected available hover result");
+			}
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("leaves a draft alone when a lookup syncs from disk", async () => {
+		useEchoServer();
+		const servers = configured();
+		try {
+			const result = await syncDraft(
+				servers,
+				ROOT,
+				clean,
+				{ path: "src/a.ts", text: "draft text", version: 1 },
+				() => {},
+			);
+			expect(result).toEqual({ ok: true });
+
+			const codeIntelResult = await codeIntel(servers, ROOT, clean, request());
+			if (codeIntelResult.available && codeIntelResult.op === "hover" && codeIntelResult.hover) {
+				const openCount = codeIntelResult.hover.split("textDocument/didOpen").length - 1;
+				const changeCount = codeIntelResult.hover.split("textDocument/didChange").length - 1;
+				expect(openCount).toBe(1);
+				expect(changeCount).toBe(0);
+			} else {
+				throw new Error("Expected available hover result");
+			}
+		} finally {
+			await servers.close();
+		}
+	});
+});
+
+describe("markersFromDiagnostics", () => {
+	it("maps a diagnostic onto a repository-relative marker", () => {
+		const published = {
+			uri: pathToFileURL(join(ROOT, "src/a.ts")).href,
+			version: 7,
+			diagnostics: [
+				{
+					severity: "warning" as const,
+					message: "hm",
+					source: "ts",
+					startLine: 3,
+					startCharacter: 1,
+					endLine: 3,
+					endCharacter: 5,
+				},
+			],
+		};
+		const result = markersFromDiagnostics(ROOT, published);
+		expect(result).toEqual({
+			path: "src/a.ts",
+			version: 7,
+			markers: [
+				{
+					severity: "warning",
+					message: "hm",
+					source: "ts",
+					start: { line: 3, character: 1 },
+					end: { line: 3, character: 5 },
+				},
+			],
+		});
+	});
+
+	it("defaults a missing source", () => {
+		const published = {
+			uri: pathToFileURL(join(ROOT, "src/a.ts")).href,
+			version: 7,
+			diagnostics: [
+				{
+					severity: "warning" as const,
+					message: "hm",
+					startLine: 3,
+					startCharacter: 1,
+					endLine: 3,
+					endCharacter: 5,
+				},
+			],
+		};
+		const result = markersFromDiagnostics(ROOT, published);
+		expect(result).toEqual({
+			path: "src/a.ts",
+			version: 7,
+			markers: [
+				{
+					severity: "warning",
+					message: "hm",
+					source: "lsp",
+					start: { line: 3, character: 1 },
+					end: { line: 3, character: 5 },
+				},
+			],
+		});
+	});
+
+	it("ignores diagnostics for a file outside the repository", () => {
+		const published = {
+			uri: "file:///usr/lib/x.ts",
+			version: 7,
+			diagnostics: [
+				{
+					severity: "warning" as const,
+					message: "hm",
+					source: "ts",
+					startLine: 3,
+					startCharacter: 1,
+					endLine: 3,
+					endCharacter: 5,
+				},
+			],
+		};
+		const result = markersFromDiagnostics(ROOT, published);
+		expect(result).toBeUndefined();
+	});
+
+	it("ignores a non-file uri", () => {
+		const published = {
+			uri: "untitled:Untitled-1",
+			version: 7,
+			diagnostics: [
+				{
+					severity: "warning" as const,
+					message: "hm",
+					source: "ts",
+					startLine: 3,
+					startCharacter: 1,
+					endLine: 3,
+					endCharacter: 5,
+				},
+			],
+		};
+		const result = markersFromDiagnostics(ROOT, published);
+		expect(result).toBeUndefined();
 	});
 });

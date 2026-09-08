@@ -14,7 +14,12 @@
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { LspError, type LspLocation, type LspSession } from "./ai/lsp.js";
+import {
+	LspError,
+	type LspDiagnostics,
+	type LspLocation,
+	type LspSession,
+} from "./ai/lsp.js";
 import type { LanguageServers } from "./ai/language-servers.js";
 
 /** Files above this are not worth pushing at a language server for a tooltip. */
@@ -195,6 +200,147 @@ function toCodeIntelLocation(
 }
 
 /**
+ * A document owned by an open editor in the browser rather than by disk.
+ *
+ * Drafts and disk syncing must not fight over the same document: while a
+ * reviewer is typing, disk is stale by definition, so the stamp says who owns
+ * it and the disk path leaves a draft alone.
+ */
+const DRAFT_PREFIX = "draft:";
+
+/** Positions are zero-based, matching `Editor.setMarkers`. */
+export interface CodeIntelMarker {
+	severity: "error" | "warning" | "info" | "hint";
+	message: string;
+	source: string;
+	start: { line: number; character: number };
+	end: { line: number; character: number };
+}
+
+export interface PublishedMarkers {
+	/** Repository-relative path the diagnostics belong to. */
+	path: string;
+	/**
+	 * The draft version they were computed against, when the server said. The
+	 * client drops anything that does not match what it last sent.
+	 */
+	version?: number;
+	markers: CodeIntelMarker[];
+}
+
+export interface DraftDocument {
+	path: string;
+	text: string;
+	/** The client's own version, echoed back with any diagnostics. */
+	version: number;
+}
+
+export type DraftResult =
+	| { ok: true }
+	| { ok: false; reason: CodeIntelUnavailable };
+
+/** Turn a published diagnostic batch into markers the editor can render. */
+export function markersFromDiagnostics(
+	repositoryRoot: string,
+	published: LspDiagnostics,
+): PublishedMarkers | undefined {
+	let absolute: string;
+	try {
+		absolute = fileURLToPath(published.uri);
+	} catch {
+		return undefined;
+	}
+	const rel = relative(resolve(repositoryRoot), absolute);
+	if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+		return undefined;
+	return {
+		path: rel,
+		version: published.version,
+		markers: published.diagnostics.map((diagnostic) => ({
+			severity: diagnostic.severity,
+			message: diagnostic.message,
+			source: diagnostic.source ?? "lsp",
+			start: {
+				line: diagnostic.startLine,
+				character: diagnostic.startCharacter,
+			},
+			end: { line: diagnostic.endLine, character: diagnostic.endCharacter },
+		})),
+	};
+}
+
+/**
+ * Hand the language server the text the reviewer is actually looking at.
+ *
+ * Called on entering an edit session and on every debounced change. The
+ * version travels with the text so a diagnostic batch computed against an
+ * older draft can be recognised and dropped rather than painting squiggles on
+ * lines that have since moved.
+ */
+export async function syncDraft(
+	servers: LanguageServers,
+	repositoryRoot: string,
+	scope: CodeIntelScope,
+	draft: DraftDocument,
+	onDiagnostics: (published: PublishedMarkers) => void,
+): Promise<DraftResult> {
+	if (!servers.configured) return { ok: false, reason: "not-configured" };
+	const scoped = scopeReason(scope);
+	if (scoped) return { ok: false, reason: scoped };
+	const absolute = resolveInRepository(repositoryRoot, draft.path);
+	if (!absolute) return { ok: false, reason: "outside-repository" };
+	if (!servers.supports(draft.path))
+		return { ok: false, reason: "unsupported-language" };
+	if (Buffer.byteLength(draft.text, "utf8") > MAX_DOCUMENT_BYTES)
+		return { ok: false, reason: "file-too-large" };
+
+	const uri = pathToFileURL(absolute).href;
+	try {
+		const session = await servers.sessionFor(draft.path);
+		session.onDiagnostics((published) => {
+			const markers = markersFromDiagnostics(repositoryRoot, published);
+			if (markers) onDiagnostics(markers);
+		});
+		const stamp = `${DRAFT_PREFIX}${draft.version}`;
+		if (session.documentStamp(uri) === undefined)
+			session.openDocument(
+				uri,
+				languageIdFor(draft.path),
+				draft.text,
+				stamp,
+				draft.version,
+			);
+		else session.changeDocument(uri, draft.text, stamp, draft.version);
+		return { ok: true };
+	} catch (error) {
+		if (error instanceof LspError)
+			return { ok: false, reason: "server-error" };
+		throw error;
+	}
+}
+
+/**
+ * Forget a draft. The next lookup re-opens the file from disk, which is what
+ * it should describe once the editor is closed.
+ */
+export async function closeDraft(
+	servers: LanguageServers,
+	repositoryRoot: string,
+	path: string,
+): Promise<void> {
+	if (!servers.configured || !servers.supports(path)) return;
+	const absolute = resolveInRepository(repositoryRoot, path);
+	if (!absolute) return;
+	try {
+		const session = await servers.sessionFor(path);
+		session.closeDocument(pathToFileURL(absolute).href);
+	} catch (error) {
+		// A server that is already gone has nothing to forget.
+		if (!(error instanceof LspError)) throw error;
+	}
+}
+
+/**
  * Make sure the server holds the file's current text before it is asked about.
  *
  * Servers of the tsserver family answer nothing about a document they were
@@ -219,6 +365,9 @@ function syncDocument(
 		return "file-unreadable";
 	}
 	const known = session.documentStamp(uri);
+	// An open editor owns this document; disk is stale by definition while the
+	// reviewer is typing, and overwriting the draft would erase their text.
+	if (known?.startsWith(DRAFT_PREFIX)) return undefined;
 	if (known === stamp) return undefined;
 	let text: string;
 	try {

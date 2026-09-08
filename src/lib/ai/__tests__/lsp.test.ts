@@ -69,6 +69,50 @@ function useServer(mode = "normal") {
 	);
 }
 
+/** Answers initialize, then publishes diagnostics for any document opened. */
+function useDiagnosticsServer(payload: string) {
+	const serverScript = `
+let buffer = Buffer.alloc(0);
+const send = (message) => {
+	const body = JSON.stringify(message);
+	process.stdout.write('Content-Length: ' + Buffer.byteLength(body) + '\\r\\n\\r\\n' + body);
+};
+process.stdin.on('data', (chunk) => {
+	buffer = Buffer.concat([buffer, chunk]);
+	while (true) {
+		const split = buffer.indexOf('\\r\\n\\r\\n');
+		if (split === -1) return;
+		const length = Number(/content-length:\\s*(\\d+)/i.exec(buffer.slice(0, split).toString())[1]);
+		const start = split + 4;
+		if (buffer.length < start + length) return;
+		const message = JSON.parse(buffer.slice(start, start + length).toString());
+		buffer = buffer.slice(start + length);
+		if (message.method === 'initialize') {
+			send({ jsonrpc: '2.0', id: message.id, result: { capabilities: {} } });
+		} else if (message.method === 'textDocument/didOpen') {
+			send({ jsonrpc: '2.0', method: 'textDocument/publishDiagnostics', params: ${payload} });
+		}
+	}
+});
+`;
+	mocks.spawn.mockImplementation(() =>
+		realSpawn(process.execPath, ["-e", serverScript], {
+			stdio: ["pipe", "pipe", "pipe"],
+		}),
+	);
+}
+
+/** Wait for the next published batch, or resolve undefined after 2s. */
+function nextDiagnostics(lsp: LspSession) {
+	return new Promise<unknown>((resolve) => {
+		const timer = setTimeout(() => resolve(undefined), 2000);
+		lsp.onDiagnostics((published) => {
+			clearTimeout(timer);
+			resolve(published);
+		});
+	});
+}
+
 async function session(mode = "normal") {
 	useServer(mode);
 	return LspSession.start("synthetic-lsp", [], "file:///repo");
@@ -331,6 +375,272 @@ describe("LspSession", () => {
 			await expect(lsp.hover("file:///a.ts", 10, 3)).rejects.toMatchObject({
 				code: "protocol_error",
 			});
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("publishes diagnostics for a document it opened", async () => {
+		useDiagnosticsServer(
+			JSON.stringify({
+				uri: "file:///a.ts",
+				version: 3,
+				diagnostics: [
+					{
+						severity: 1,
+						message: "boom",
+						source: "ts",
+						range: {
+							start: { line: 4, character: 2 },
+							end: { line: 4, character: 8 },
+						},
+					},
+				],
+			}),
+		);
+		const lsp = await LspSession.start("synthetic-lsp", [], "file:///repo");
+		try {
+			const wait = nextDiagnostics(lsp);
+			lsp.openDocument("file:///a.ts", "typescript", "x", "s1");
+			expect(await wait).toEqual({
+				uri: "file:///a.ts",
+				version: 3,
+				diagnostics: [
+					{
+						severity: "error",
+						message: "boom",
+						source: "ts",
+						startLine: 4,
+						startCharacter: 2,
+						endLine: 4,
+						endCharacter: 8,
+					},
+				],
+			});
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("ignores diagnostics for a document it never opened", async () => {
+		useDiagnosticsServer(
+			JSON.stringify({
+				uri: "file:///other.ts",
+				version: 1,
+				diagnostics: [
+					{
+						severity: 1,
+						message: "boom",
+						range: {
+							start: { line: 0, character: 0 },
+							end: { line: 0, character: 1 },
+						},
+					},
+				],
+			}),
+		);
+		const lsp = await LspSession.start("synthetic-lsp", [], "file:///repo");
+		try {
+			const wait = nextDiagnostics(lsp);
+			lsp.openDocument("file:///a.ts", "typescript", "x", "s1");
+			expect(await wait).toBeUndefined();
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("maps every severity", async () => {
+		useDiagnosticsServer(
+			JSON.stringify({
+				uri: "file:///a.ts",
+				diagnostics: [
+					{
+						severity: 1,
+						message: "error",
+						range: {
+							start: { line: 0, character: 0 },
+							end: { line: 0, character: 1 },
+						},
+					},
+					{
+						severity: 2,
+						message: "warning",
+						range: {
+							start: { line: 1, character: 0 },
+							end: { line: 1, character: 1 },
+						},
+					},
+					{
+						severity: 3,
+						message: "info",
+						range: {
+							start: { line: 2, character: 0 },
+							end: { line: 2, character: 1 },
+						},
+					},
+					{
+						severity: 4,
+						message: "hint",
+						range: {
+							start: { line: 3, character: 0 },
+							end: { line: 3, character: 1 },
+						},
+					},
+				],
+			}),
+		);
+		const lsp = await LspSession.start("synthetic-lsp", [], "file:///repo");
+		try {
+			const wait = nextDiagnostics(lsp);
+			lsp.openDocument("file:///a.ts", "typescript", "x", "s1");
+			const batch = await wait;
+			expect((batch as any).diagnostics.map((d: any) => d.severity)).toEqual([
+				"error",
+				"warning",
+				"info",
+				"hint",
+			]);
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("treats an unknown severity as an error", async () => {
+		useDiagnosticsServer(
+			JSON.stringify({
+				uri: "file:///a.ts",
+				diagnostics: [
+					{
+						severity: 99,
+						message: "unknown",
+						range: {
+							start: { line: 0, character: 0 },
+							end: { line: 0, character: 1 },
+						},
+					},
+				],
+			}),
+		);
+		const lsp = await LspSession.start("synthetic-lsp", [], "file:///repo");
+		try {
+			const wait = nextDiagnostics(lsp);
+			lsp.openDocument("file:///a.ts", "typescript", "x", "s1");
+			const batch = await wait;
+			expect((batch as any).diagnostics[0].severity).toBe("error");
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("drops a malformed diagnostic without losing the batch", async () => {
+		useDiagnosticsServer(
+			JSON.stringify({
+				uri: "file:///a.ts",
+				diagnostics: [
+					{
+						message: "ok",
+						range: {
+							start: { line: 1, character: 0 },
+							end: { line: 1, character: 2 },
+						},
+					},
+					{
+						message: "bad",
+					},
+				],
+			}),
+		);
+		const lsp = await LspSession.start("synthetic-lsp", [], "file:///repo");
+		try {
+			const wait = nextDiagnostics(lsp);
+			lsp.openDocument("file:///a.ts", "typescript", "x", "s1");
+			const batch = await wait;
+			expect((batch as any).diagnostics).toHaveLength(1);
+			expect((batch as any).diagnostics[0].message).toBe("ok");
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("reports no version when the server sends none", async () => {
+		useDiagnosticsServer(
+			JSON.stringify({
+				uri: "file:///a.ts",
+				diagnostics: [
+					{
+						severity: 1,
+						message: "test",
+						range: {
+							start: { line: 0, character: 0 },
+							end: { line: 0, character: 1 },
+						},
+					},
+				],
+			}),
+		);
+		const lsp = await LspSession.start("synthetic-lsp", [], "file:///repo");
+		try {
+			const wait = nextDiagnostics(lsp);
+			lsp.openDocument("file:///a.ts", "typescript", "x", "s1");
+			const batch = await wait;
+			expect((batch as any).version).toBeUndefined();
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("caps a flood of diagnostics", async () => {
+		const payload = JSON.stringify({
+			uri: "file:///a.ts",
+			diagnostics: Array.from(
+				{ length: LSP_LIMITS.diagnostics + 25 },
+				(_, i) => ({
+					severity: 2,
+					message: "m" + i,
+					range: {
+						start: { line: i, character: 0 },
+						end: { line: i, character: 1 },
+					},
+				}),
+			),
+		});
+		useDiagnosticsServer(payload);
+		const lsp = await LspSession.start("synthetic-lsp", [], "file:///repo");
+		try {
+			const wait = nextDiagnostics(lsp);
+			lsp.openDocument("file:///a.ts", "typescript", "x", "s1");
+			const batch = await wait;
+			expect((batch as any).diagnostics).toHaveLength(LSP_LIMITS.diagnostics);
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("stops delivering after the document is closed", async () => {
+		useDiagnosticsServer(
+			JSON.stringify({
+				uri: "file:///a.ts",
+				diagnostics: [
+					{
+						severity: 1,
+						message: "boom",
+						range: {
+							start: { line: 0, character: 0 },
+							end: { line: 0, character: 1 },
+						},
+					},
+				],
+			}),
+		);
+		const lsp = await LspSession.start("synthetic-lsp", [], "file:///repo");
+		try {
+			const wait1 = nextDiagnostics(lsp);
+			lsp.openDocument("file:///a.ts", "typescript", "x", "s1");
+			await wait1;
+			lsp.closeDocument("file:///a.ts");
+			const wait2 = nextDiagnostics(lsp);
+			lsp.openDocument("file:///b.ts", "typescript", "y", "s2");
+			expect(await wait2).toBeUndefined();
 		} finally {
 			await lsp.close();
 		}

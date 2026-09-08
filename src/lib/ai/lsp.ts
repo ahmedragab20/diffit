@@ -1,13 +1,15 @@
 /**
- * Bounded LSP client for definition and reference lookups.
+ * Bounded LSP client for definition, reference, hover and diagnostic work.
  *
  * A language server is discovered on PATH, exactly like the provider runtimes:
  * when it is absent the feature reports itself unavailable rather than
  * pretending. The client is deliberately small and defensive — it speaks only
  * the few requests it needs, correlates every response by id, bounds frames,
  * bytes and time, and never grants the server authority: a server-initiated
- * request is answered with "method not found" and its notifications are
- * dropped. No workspace edit, command or file write is ever accepted.
+ * request is answered with "method not found", and of everything the server
+ * volunteers only `textDocument/publishDiagnostics` is listened to, and only
+ * for documents this client opened. No workspace edit, command or file write
+ * is ever accepted.
  *
  * Documents are pushed, never pulled: servers of the tsserver family answer
  * nothing about a file they were not given, even one sitting in the project on
@@ -28,6 +30,8 @@ export const LSP_LIMITS = Object.freeze({
 	pendingRequests: 32,
 	locations: 500,
 	hoverBytes: 8 * 1024,
+	/** Diagnostics kept from one publish; a broken build can report thousands. */
+	diagnostics: 1000,
 	requestMs: 10_000,
 	startupMs: 20_000,
 });
@@ -58,6 +62,84 @@ export interface LspLocation {
 	startCharacter: number;
 	endLine: number;
 	endCharacter: number;
+}
+
+export type LspSeverity = "error" | "warning" | "info" | "hint";
+
+export interface LspDiagnostic {
+	severity: LspSeverity;
+	message: string;
+	source?: string;
+	/** Zero-based, as the wire carries them and as editor markers want them. */
+	startLine: number;
+	startCharacter: number;
+	endLine: number;
+	endCharacter: number;
+}
+
+export interface LspDiagnostics {
+	uri: string;
+	/**
+	 * The document version these were computed against, when the server says.
+	 * Undefined means it did not, and the caller has to decide what to trust.
+	 */
+	version?: number;
+	diagnostics: LspDiagnostic[];
+}
+
+const SEVERITIES: Record<number, LspSeverity> = {
+	1: "error",
+	2: "warning",
+	3: "info",
+	4: "hint",
+};
+
+/**
+ * Parse a publishDiagnostics payload, dropping anything unusable rather than
+ * failing the session: a malformed diagnostic is worth losing, a live editing
+ * session is not.
+ */
+function parseDiagnostics(params: unknown): LspDiagnostics | undefined {
+	if (typeof params !== "object" || params === null) return undefined;
+	const { uri, version, diagnostics } = params as Record<string, unknown>;
+	if (typeof uri !== "string" || !uri || uri.length > 4096) return undefined;
+	if (!Array.isArray(diagnostics)) return undefined;
+	const parsed: LspDiagnostic[] = [];
+	for (const entry of diagnostics.slice(0, LSP_LIMITS.diagnostics)) {
+		if (typeof entry !== "object" || entry === null) continue;
+		const item = entry as Record<string, unknown>;
+		const range = item.range as
+			| {
+					start?: { line?: unknown; character?: unknown };
+					end?: { line?: unknown; character?: unknown };
+			  }
+			| undefined;
+		const start = range?.start;
+		const end = range?.end;
+		if (
+			typeof item.message !== "string" ||
+			!Number.isSafeInteger(start?.line) ||
+			!Number.isSafeInteger(start?.character) ||
+			!Number.isSafeInteger(end?.line) ||
+			!Number.isSafeInteger(end?.character)
+		)
+			continue;
+		parsed.push({
+			// An unknown or absent severity is an error by LSP convention.
+			severity: SEVERITIES[item.severity as number] ?? "error",
+			message: item.message.slice(0, 2048),
+			source: typeof item.source === "string" ? item.source : undefined,
+			startLine: start!.line as number,
+			startCharacter: start!.character as number,
+			endLine: end!.line as number,
+			endCharacter: end!.character as number,
+		});
+	}
+	return {
+		uri,
+		version: Number.isSafeInteger(version) ? (version as number) : undefined,
+		diagnostics: parsed,
+	};
 }
 
 /**
@@ -197,6 +279,7 @@ export class LspSession {
 	/** Open documents, by uri, holding the caller's freshness stamp. */
 	private readonly documents = new Map<string, string>();
 	private readonly versions = new Map<string, number>();
+	private diagnosticsListener?: (published: LspDiagnostics) => void;
 
 	private constructor(private readonly child: ChildProcessWithoutNullStreams) {
 		const fail = () => this.abort(new LspError("unavailable"));
@@ -245,6 +328,7 @@ export class LspSession {
 							// Full-text sync only. The server is told what a file
 							// contains; it is never asked to change one.
 							synchronization: { dynamicRegistration: false },
+							publishDiagnostics: { relatedInformation: false },
 						},
 					},
 					workspaceFolders: null,
@@ -300,23 +384,41 @@ export class LspSession {
 		return this.documents.get(uri);
 	}
 
+	/**
+	 * Observe published diagnostics. Only one listener is kept, and it is only
+	 * ever called for documents this client opened.
+	 */
+	onDiagnostics(listener: (published: LspDiagnostics) => void): void {
+		this.diagnosticsListener = listener;
+	}
+
+	/** The version last sent for a document, or undefined when not open. */
+	documentVersion(uri: string): number | undefined {
+		return this.versions.get(uri);
+	}
+
 	/** Tell the server a document exists and what it contains. */
 	openDocument(
 		uri: string,
 		languageId: string,
 		text: string,
 		stamp: string,
+		version = 1,
 	): void {
 		this.notify("textDocument/didOpen", {
-			textDocument: { uri, languageId, version: 1, text },
+			textDocument: { uri, languageId, version, text },
 		});
 		this.documents.set(uri, stamp);
-		this.versions.set(uri, 1);
+		this.versions.set(uri, version);
 	}
 
 	/** Replace an open document's contents wholesale. */
-	changeDocument(uri: string, text: string, stamp: string): void {
-		const version = (this.versions.get(uri) ?? 1) + 1;
+	changeDocument(
+		uri: string,
+		text: string,
+		stamp: string,
+		version = (this.versions.get(uri) ?? 1) + 1,
+	): void {
 		this.notify("textDocument/didChange", {
 			textDocument: { uri, version },
 			contentChanges: [{ text }],
@@ -414,7 +516,7 @@ export class LspSession {
 			if (message?.jsonrpc !== "2.0") return this.abort(new LspError("protocol_error"));
 			if (typeof message.method === "string") {
 				// The server may not ask us to do anything; requests get a refusal.
-				if (message.id !== undefined)
+				if (message.id !== undefined) {
 					this.write(
 						encode({
 							jsonrpc: "2.0",
@@ -422,6 +524,18 @@ export class LspSession {
 							error: { code: -32601, message: "Method not found" },
 						}),
 					);
+					continue;
+				}
+				// Exactly one notification is listened to, and only for a document
+				// this client opened. Everything else the server says is dropped.
+				if (
+					message.method === "textDocument/publishDiagnostics" &&
+					this.diagnosticsListener
+				) {
+					const parsed = parseDiagnostics(message.params);
+					if (parsed && this.documents.has(parsed.uri))
+						this.diagnosticsListener(parsed);
+				}
 				continue;
 			}
 			const slot = this.pending.get(message.id as number);
