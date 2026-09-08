@@ -19,8 +19,19 @@ First-call timing excludes module imports and fixture generation. Warm timing do
 
 Observed byte baseline:
 
-- Small: 4,976 full versus 6,305 prompt; required evidence preserved.
-- Large: 1,986,404 full versus 100,967 prompt (94.9% reduction), but unchanged-conversion is **MISSING**. These savings are not an acceptable optimization.
+- Small: 4,976 full versus 6,627 prompt; required evidence preserved.
+- Large: 1,986,404 full versus 101,214 prompt (94.9% reduction), but unchanged-conversion is **MISSING**. These savings are not an acceptable optimization.
+
+## Retrieval benchmark
+
+`src/lib/ai/evaluation/retrieval-baseline.ts` reports version `retrieval-baseline-v1` over the same two fixtures, so the two implementations are comparable rather than separately reported. Instead of serializing the whole context, it maps the capture, locates each required text, and reads only those lines — the path the typed evidence tools make possible.
+
+Observed against the legacy prompt on identical fixtures:
+
+- Small: 1,764 bytes retrieved versus 6,627 prompt; required evidence preserved.
+- Large: 1,794 bytes retrieved versus 101,214 prompt; **required evidence preserved**, including the `unchanged-conversion` line the legacy prompt drops.
+
+The large-fixture result is the one that matters: the legacy path buys its reduction by discarding required evidence, and retrieval does not. `returnedLines` counts lines a read actually returned — it is evidence coverage, never a claim about model attention. Byte counts are measurements on synthetic fixtures, not approved thresholds; `humanApprovedThresholds` stays false and browser/UI responsiveness remains unmeasured.
 
 ## Replay evaluation
 

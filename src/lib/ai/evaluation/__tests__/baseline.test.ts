@@ -7,6 +7,7 @@ import {
 	makeContextFixtures,
 	percentile,
 } from "../context-baseline.js";
+import { benchmarkRetrieval } from "../retrieval-baseline.js";
 import { CORPUS_VERSION, makeReplayCorpus } from "../corpus.js";
 import {
 	contentHash,
@@ -229,4 +230,55 @@ describe("offline context baseline", () => {
 			expect(() => percentile([1], fraction)).toThrow();
 		}
 	});
+});
+
+describe("offline retrieval baseline", () => {
+	const fixtures = makeContextFixtures();
+
+	it.each(fixtures.map((fixture) => [fixture.id, fixture] as const))(
+		"%s preserves every required evidence item",
+		(_id, fixture) => {
+			const report = benchmarkRetrieval(fixture, 3);
+			// The whole point of retrieval: nothing required may be dropped.
+			expect(report.missingEvidence).toEqual([]);
+			expect(report.requiredEvidence.length).toBeGreaterThan(0);
+		},
+	);
+
+	it("retrieves far less than the full evidence for a large capture", () => {
+		const large = fixtures.find((fixture) => fixture.id === "focused-large-diff");
+		const report = benchmarkRetrieval(large!, 3);
+		expect(report.retrievedBytes).toBeLessThan(report.fullEvidenceBytes);
+		expect(report.byteReduction).toBeGreaterThan(0.9);
+	});
+
+	it("keeps the evidence the legacy prompt drops on the large fixture", () => {
+		const large = fixtures.find((fixture) => fixture.id === "focused-large-diff");
+		const legacy = benchmarkContext(large!, 3);
+		const retrieval = benchmarkRetrieval(large!, 3);
+		// This is the regression the retrieval path exists to fix.
+		expect(legacy.missingEvidence).toContain("unchanged-conversion");
+		expect(retrieval.missingEvidence).toEqual([]);
+		expect(retrieval.retrievedBytes).toBeLessThan(legacy.serializedPromptBytes);
+	});
+
+	it("reports reproducible results and claims no approved threshold", () => {
+		const [fixture] = fixtures;
+		const first = benchmarkRetrieval(fixture, 3);
+		const second = benchmarkRetrieval(fixture, 3);
+		expect(second.retrievedBytes).toBe(first.retrievedBytes);
+		expect(second.fixtureHash).toBe(first.fixtureHash);
+		expect(first.remoteFetches).toBe(0);
+		expect(first.humanApprovedThresholds).toBe(false);
+	});
+
+	it("counts only lines a read actually returned", () => {
+		const report = benchmarkRetrieval(fixtures[0], 3);
+		expect(report.returnedLines).toBeGreaterThan(0);
+		expect(report.returnedLines).toBeLessThanOrEqual(report.availableLines);
+	});
+
+	it.each([0, 1001, 1.5])("rejects invalid iteration count %j", (iterations) =>
+		expect(() => benchmarkRetrieval(fixtures[0], iterations)).toThrow(),
+	);
 });

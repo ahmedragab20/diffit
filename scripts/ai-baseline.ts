@@ -3,6 +3,7 @@ import {
 	benchmarkContext,
 	makeContextFixtures,
 } from "../src/lib/ai/evaluation/context-baseline.js";
+import { benchmarkRetrieval } from "../src/lib/ai/evaluation/retrieval-baseline.js";
 import {
 	CORPUS_VERSION,
 	makeReplayCorpus,
@@ -35,6 +36,11 @@ if ((mode !== "bench" && mode !== "eval") || extra.length) {
 					mode: "offline-context-baseline",
 					runtime,
 					results: makeContextFixtures().map((fixture) => benchmarkContext(fixture)),
+					// The same fixtures under evidence-driven retrieval, so the two
+					// implementations are comparable rather than separately reported.
+					retrievalResults: makeContextFixtures().map((fixture) =>
+						benchmarkRetrieval(fixture),
+					),
 					browserMeasurements: null,
 					performanceThresholdsApproved: false,
 				}
