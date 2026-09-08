@@ -1,3 +1,4 @@
+import { scrollBehavior } from "./motion.js";
 /**
  * Helpers for facing the Read pane to the active Source line while editing
  * a plan in Split mode.
@@ -219,7 +220,7 @@ export function faceReadToSourceLine(
   if (Math.abs(container.scrollTop - next) < 1) return false
 
   if (behavior === 'smooth' && typeof container.scrollTo === 'function') {
-    container.scrollTo({ top: next, behavior: 'smooth' })
+    container.scrollTo({ top: next, behavior: scrollBehavior() })
   } else {
     container.scrollTop = next
   }

@@ -6,6 +6,7 @@ import {
   useState,
   useTransition,
 } from "react";
+import { scrollBehavior } from "../lib/motion.js";
 import {
   getFiletypeFromFileName,
   parsePatchFiles,
@@ -301,7 +302,7 @@ export function PrReviewApp() {
         requestAnimationFrame(() => {
           document
             .getElementById(`file-${next.name}`)
-            ?.scrollIntoView({ block: "start", behavior: "smooth" });
+            ?.scrollIntoView({ block: "start", behavior: scrollBehavior() });
         }),
       );
     },

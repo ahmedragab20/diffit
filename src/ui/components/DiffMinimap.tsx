@@ -1,4 +1,5 @@
 import { useMemo, useCallback, memo, useState } from "react";
+import { scrollBehavior } from "../lib/motion.js";
 import type { FileDiffMetadata } from "@pierre/diffs";
 import { Map as MapIcon } from "lucide-react";
 import { Tooltip } from "../primitives/Tooltip";
@@ -137,7 +138,7 @@ export const DiffMinimap = memo(function DiffMinimap({
       const card =
         document.getElementById(`file-${CSS.escape(filePath)}`) ??
         document.querySelector(`[data-file-path="${CSS.escape(filePath)}"]`);
-      card?.scrollIntoView({ behavior: "smooth", block: "start" });
+      card?.scrollIntoView({ behavior: scrollBehavior(), block: "start" });
     },
     [filePath, onJump],
   );

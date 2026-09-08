@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import type { FileDiffMetadata } from "@pierre/diffs";
 import { scheduleDiffNavigation } from "../lib/diffNavigation";
+import { prefersReducedMotion } from "../lib/motion.js";
 
 export interface ScrollDecisionViewport {
   top: number;
@@ -60,7 +61,7 @@ export function useScrollToNextFile(_files: FileDiffMetadata[]) {
     lastTarget.current = { id, at: now };
     const reduce =
       opts?.reduce ??
-      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
+      prefersReducedMotion() ??
       false;
     let frame = 0;
     cancelRef.current = scheduleDiffNavigation(() => {

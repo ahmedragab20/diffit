@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, useRef, useCallback } from 'react'
+import { scrollBehavior } from "../lib/motion.js";
 import { preloadHighlighter } from '@pierre/diffs'
 import { useWorkerPool } from '@pierre/diffs/react'
 import {
@@ -805,7 +806,7 @@ export function PlanReviewApp() {
             requestAnimationFrame(() => {
               document
                 .getElementById(`plan-comment-${agentActivity.commentId}`)
-                ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                ?.scrollIntoView({ behavior: scrollBehavior(), block: 'center' })
             })
           }}
         />
