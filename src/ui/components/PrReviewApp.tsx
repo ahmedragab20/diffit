@@ -1,3 +1,4 @@
+import { CommentActionsProvider, type CommentActions } from "./CommentActionsProvider";
 import {
   useCallback,
   useEffect,
@@ -97,8 +98,7 @@ export function PrReviewApp() {
     resolveComment,
     unresolveComment,
     editComment,
-    editReply,
-    removeReply,
+
   } = usePrComments(sessionLoaded && !!session);
   const { patch, loading, error } = useDiff(
     { staged: false, untracked: false },
@@ -809,8 +809,6 @@ export function PrReviewApp() {
                       await addReply({ id, body });
                     }}
                     editComment={editComment}
-                    editReply={editReply}
-                    removeReply={removeReply}
                   />
                 </div>
               </>
@@ -898,6 +896,7 @@ export function PrReviewApp() {
               </div>
             ) : (
               <PrDiffSurface
+                commentActions={{ addReply: (id, body) => addReply({ id, body }), resolveComment, unresolveComment, editComment }}
                 files={filteredFiles}
                 fileAnnotations={fileAnnotations}
                 existingCommentsByFile={existingCommentsByFile}
@@ -1000,6 +999,7 @@ export function PrReviewApp() {
 }
 
 function PrDiffSurface({
+  commentActions,
   files,
   fileAnnotations,
   existingCommentsByFile,
@@ -1018,6 +1018,7 @@ function PrDiffSurface({
   onApplyExisting,
   expectedHeadSha,
 }: {
+  commentActions: CommentActions;
   files: FileDiffMetadata[];
   fileAnnotations: Map<
     string,
@@ -1052,6 +1053,7 @@ function PrDiffSurface({
 }) {
   return (
     <div className="pr-diff-surface">
+      <CommentActionsProvider actions={commentActions}>
       <DiffViewer
         files={files}
         diffStyle={settings.diffStyle}
@@ -1103,6 +1105,7 @@ function PrDiffSurface({
         fileSearch={fileSearch}
         onOpenFileSearch={onOpenFileSearch}
       />
+      </CommentActionsProvider>
     </div>
   );
 }

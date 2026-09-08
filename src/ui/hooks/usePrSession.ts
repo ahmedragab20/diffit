@@ -278,28 +278,18 @@ export function usePrComments(enabled: boolean) {
 
   const resolveComment = useCallback(
     (id: string) => {
-      updateMutation.mutate({ id, status: "resolved" });
+      return updateMutation.mutateAsync({ id, status: "resolved" });
     },
     [updateMutation],
   );
 
   const unresolveComment = useCallback(
     (id: string) => {
-      updateMutation.mutate({ id, status: "open" });
+      return updateMutation.mutateAsync({ id, status: "open" });
     },
     [updateMutation],
   );
 
-  // Reply edit/delete are local-only draft helpers; PR drafts don't yet have
-  // dedicated reply routes for edit/delete, so no-op until those land.
-  const editReply = useCallback(
-    (_commentId: string, _replyId: string, _body: string) => {},
-    [],
-  );
-  const removeReply = useCallback(
-    (_commentId: string, _replyId: string) => {},
-    [],
-  );
 
   return {
     comments,
@@ -310,9 +300,8 @@ export function usePrComments(enabled: boolean) {
     resolveComment,
     unresolveComment,
     editComment: (id: string, body: string) =>
-      updateMutation.mutate({ id, body }),
-    editReply,
-    removeReply,
+      updateMutation.mutateAsync({ id, body }),
+
   };
 }
 

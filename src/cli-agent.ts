@@ -1,3 +1,4 @@
+import { commentApiPath } from "./lib/comment-api.js";
 import { parseArgs } from "node:util";
 import { readFile, mkdir, writeFile, readdir, stat } from "node:fs/promises";
 import { basename, join, resolve as resolvePath } from "node:path";
@@ -57,6 +58,7 @@ export function validateInspectSelectors(
 
 let activeCapability: string | undefined;
 let activeAuthToken: string | undefined;
+let activeMode: "web" | "tui" | "gh-pr" | undefined;
 
 /** Resolve the running server's base URL from the lockfile, or exit cleanly. */
 function baseUrl(): string {
@@ -73,7 +75,14 @@ function baseUrl(): string {
 		lock.host === "0.0.0.0" || lock.host === "::" ? "127.0.0.1" : lock.host;
 	activeCapability = lock.mode === "tui" ? lock.capability : undefined;
 	activeAuthToken = lock.authToken;
+	activeMode = lock.mode;
 	return `http://${host}:${lock.port}`;
+}
+
+/** Resolve scope and credentials together; never fall back to another comment store. */
+function commentUrl(id?: string, suffix?: "replies"): string {
+ const base = baseUrl();
+ return base + commentApiPath(activeMode, id, suffix);
 }
 
 /** Attach session credentials while preserving ordinary web calls. */
@@ -271,7 +280,7 @@ async function reply(args: string[]): Promise<number> {
 	}
 
 	const res = await tryApiFetch(
-		`${baseUrl()}/api/comments/${commentId}/replies`,
+		commentUrl(commentId, "replies"),
 		{
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -302,7 +311,7 @@ async function resolve(args: string[]): Promise<number> {
 		console.error("Usage: diffing resolve <commentId>");
 		return EXIT_USAGE;
 	}
-	const res = await tryApiFetch(`${baseUrl()}/api/comments/${commentId}`, {
+	const res = await tryApiFetch(commentUrl(commentId), {
 		method: "PUT",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ status: "resolved" }),
@@ -331,7 +340,7 @@ async function unresolve(args: string[]): Promise<number> {
 		console.error("Usage: diffing unresolve <commentId>");
 		return EXIT_USAGE;
 	}
-	const res = await tryApiFetch(`${baseUrl()}/api/comments/${commentId}`, {
+	const res = await tryApiFetch(commentUrl(commentId), {
 		method: "PUT",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ status: "open" }),
@@ -374,7 +383,7 @@ async function commentEdit(args: string[]): Promise<number> {
 		console.error("A body is required (--body <text> or stdin).");
 		return EXIT_USAGE;
 	}
-	const res = await tryApiFetch(`${baseUrl()}/api/comments/${commentId}`, {
+	const res = await tryApiFetch(commentUrl(commentId), {
 		method: "PUT",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ body }),
@@ -403,7 +412,7 @@ async function commentDelete(args: string[]): Promise<number> {
 		console.error("Usage: diffing comment delete <commentId>");
 		return EXIT_USAGE;
 	}
-	const res = await tryApiFetch(`${baseUrl()}/api/comments/${commentId}`, {
+	const res = await tryApiFetch(commentUrl(commentId), {
 		method: "DELETE",
 	});
 	if (!res) return EXIT_NO_SERVER;
@@ -456,7 +465,7 @@ async function comments(args: string[]): Promise<number> {
 		},
 		allowPositionals: false,
 	});
-	const res = await tryApiFetch(`${baseUrl()}/api/comments`);
+	const res = await tryApiFetch(commentUrl());
 	if (!res) return EXIT_NO_SERVER;
 	if (!res.ok) {
 		console.error(`Failed to fetch comments: HTTP ${res.status}`);

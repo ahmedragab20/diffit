@@ -353,6 +353,14 @@ diffing comment delete <commentId>
   - `4`: Comment not found.
   - `5`: Usage (missing body for edit).
 
+In a `gh-pr` session, `comments`, `reply`, `resolve`, `unresolve`, and
+`comment edit/delete` operate on **local unpublished PR drafts**. Their MCP
+counterparts (`list_comments`, `reply_to_comment`, `resolve_comment`,
+`unresolve_comment`, `edit_comment`, `delete_comment`) use the same session scope.
+They never publish or modify GitHub review threads. Web and TUI sessions keep
+using the ordinary local comment store. Missing IDs fail within the selected
+store; commands do not search or fall back to another store.
+
 Prefer `reply` for conversation turns. Use `comment edit` only when correcting a mis-posted finding; use `comment delete` sparingly (it is destructive and cannot be undone from the CLI).
 
 ---

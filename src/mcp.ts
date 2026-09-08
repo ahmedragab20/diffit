@@ -1,3 +1,4 @@
+import { commentApiPath } from "./lib/comment-api.js";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -660,6 +661,11 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 
 	function requestBaseJson<T>(path: string, init?: RequestInit): Promise<T> {
 		return requestSessionJson<T>(requireWebSession(), path, init);
+	}
+
+	function requestCommentJson<T>(id?: string, init?: RequestInit, suffix?: "replies"): Promise<T> {
+		const session = requireAnySession();
+		return requestSessionJson<T>(session, commentApiPath(session.lock.mode, id, suffix), init);
 	}
 
 	/** Bounded inspect works for web, tui, and gh-pr sessions. */
@@ -1808,7 +1814,7 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 			annotations: READ_ONLY,
 		},
 		async ({ openOnly }) => {
-			const all = await requestBaseJson<ReviewComment[]>("/api/comments");
+			const all = await requestCommentJson<ReviewComment[]>();
 			const comments = openOnly
 				? all.filter((comment) => comment.status === "open")
 				: all;
@@ -1821,12 +1827,12 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 		{
 			title: "Reply to a code review comment",
 			description:
-				"Post an agent reply to an existing code-review thread. Include concise evidence of the answer or applied change.",
+				"Post an agent reply to a local code-review thread or unpublished PR draft; never publishes to GitHub. Include concise evidence of the answer or applied change.",
 			inputSchema: {
 				commentId: z
 					.string()
 					.min(1)
-					.describe("Comment id from list_comments or await_review."),
+					.describe("Comment id from list_comments, gh_list_draft_comments or await_review."),
 				body: z.string().min(1).describe("Reply body in Markdown."),
 				model: z
 					.string()
@@ -1837,13 +1843,14 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 			annotations: MUTATING,
 		},
 		async ({ commentId, body, model }) => {
-			await requestBaseJson<unknown>(
-				`/api/comments/${encodeURIComponent(commentId)}/replies`,
+			await requestCommentJson<unknown>(
+				commentId,
 				{
 					method: "POST",
 					headers: { "Content-Type": "application/json" },
 					body: JSON.stringify({ body, role: "agent", model }),
 				},
+				"replies",
 			);
 			return textResult(`Replied to ${commentId}.`, {
 				status: "replied",
@@ -1865,8 +1872,8 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 			annotations: IDEMPOTENT_MUTATION,
 		},
 		async ({ commentId }) => {
-			await requestBaseJson<unknown>(
-				`/api/comments/${encodeURIComponent(commentId)}`,
+			await requestCommentJson<unknown>(
+				commentId,
 				{
 					method: "PUT",
 					headers: { "Content-Type": "application/json" },
@@ -1893,8 +1900,8 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 			annotations: IDEMPOTENT_MUTATION,
 		},
 		async ({ commentId }) => {
-			await requestBaseJson<unknown>(
-				`/api/comments/${encodeURIComponent(commentId)}`,
+			await requestCommentJson<unknown>(
+				commentId,
 				{
 					method: "PUT",
 					headers: { "Content-Type": "application/json" },
@@ -1922,8 +1929,8 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 			annotations: MUTATING,
 		},
 		async ({ commentId, body }) => {
-			await requestBaseJson<unknown>(
-				`/api/comments/${encodeURIComponent(commentId)}`,
+			await requestCommentJson<unknown>(
+				commentId,
 				{
 					method: "PUT",
 					headers: { "Content-Type": "application/json" },
@@ -1949,8 +1956,8 @@ export function createMcpServer(options: CreateMcpServerOptions): McpServer {
 			annotations: MUTATING,
 		},
 		async ({ commentId }) => {
-			await requestBaseJson<unknown>(
-				`/api/comments/${encodeURIComponent(commentId)}`,
+			await requestCommentJson<unknown>(
+				commentId,
 				{
 					method: "DELETE",
 				},
