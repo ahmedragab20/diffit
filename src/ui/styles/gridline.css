@@ -2085,3 +2085,121 @@ file-tree,
     box-shadow: none;
   }
 }
+
+/* ── AI finding cards ───────────────────────────────────────────────────── */
+/* An unverified card must read as unverified at a glance, so it carries its
+   own border and warning rather than relying on the caller to explain it. */
+.ai-finding-card {
+  border: 1px solid var(--gl-rule-subtle);
+  border-radius: 6px;
+  background: var(--gl-raised);
+  padding: 10px 12px;
+  margin-block: 8px;
+  color: var(--gl-text);
+}
+
+.ai-finding-card[data-unverified='true'] {
+  border-color: var(--gl-rule);
+  border-inline-start-width: 3px;
+}
+
+.ai-finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ai-finding-kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--gl-muted);
+}
+
+.ai-finding-title {
+  flex: 1 1 auto;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+}
+
+.ai-finding-uncertainty {
+  font-size: 11px;
+  color: var(--gl-text-subtle);
+  white-space: nowrap;
+}
+
+.ai-finding-body {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--gl-text-subtle);
+}
+
+.ai-finding-warning {
+  margin: 8px 0 0;
+  font-size: 11px;
+  color: var(--gl-text);
+  background: var(--gl-element);
+  border-radius: 4px;
+  padding: 6px 8px;
+}
+
+.ai-finding-citations {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+}
+
+.ai-finding-citation {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 11px;
+  min-width: 0;
+}
+
+.ai-finding-source {
+  color: var(--gl-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-finding-status {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--gl-muted);
+}
+
+.ai-finding-citation[data-status='unverified'] .ai-finding-status {
+  color: var(--gl-text);
+  font-weight: 600;
+}
+
+.ai-finding-quote {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--gl-code);
+  background: var(--gl-element);
+  border-radius: 3px;
+  padding: 2px 6px;
+}
+
+.ai-finding-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--gl-muted);
+}
+
+.ai-finding-decision[data-decision='undecided'] {
+  font-style: italic;
+}

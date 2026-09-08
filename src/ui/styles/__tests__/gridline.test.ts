@@ -342,3 +342,25 @@ describe('Gridline Web design-system contract', () => {
     }
   })
 })
+
+describe('AI finding cards', () => {
+  const block = gridline.slice(gridline.indexOf('.ai-finding-card'))
+
+  it('uses Gridline tokens rather than literal colors', () => {
+    // A literal color would drift from the theme and break dark mode.
+    const literals = block.match(/#[0-9a-fA-F]{3,8}\b|\brgb\(/g) ?? []
+    expect(literals).toEqual([])
+    expect(block).toContain('var(--gl-')
+  })
+
+  it('distinguishes an unverified card structurally, not only by color', () => {
+    // Color alone would be invisible under forced colors or to many readers.
+    expect(block).toContain("[data-unverified='true']")
+    expect(block).toMatch(/border-inline-start-width/)
+  })
+
+  it('keeps a long quote scrollable instead of overflowing the rail', () => {
+    expect(block).toContain('overflow-x: auto')
+    expect(block).toMatch(/min-width:\s*0/)
+  })
+})
