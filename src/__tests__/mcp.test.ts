@@ -558,6 +558,76 @@ describe('diffing MCP', () => {
     }
   })
 
+  it('routes generic comment tools to PR drafts in gh-pr mode', async () => {
+    const calls: Array<{ url: string; method: string; body?: string }> = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        const url = String(
+          typeof input === 'object' && input !== null && 'url' in input
+            ? (input as { url: string }).url
+            : input,
+        )
+        calls.push({
+          url,
+          method: (init?.method ?? 'GET').toUpperCase(),
+          body: typeof init?.body === 'string' ? init.body : undefined,
+        })
+        if (url.endsWith('/api/gh/pr-session/comments') && !init?.method) {
+          return new Response(JSON.stringify([{ id: 'comment/id', filePath: 'src/a.ts', side: 'additions', lineNumber: 1, lineContent: 'const draft = true', body: 'draft', status: 'open', createdAt: 10, replies: [] }]), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        return new Response('{}', { status: 200 })
+      }),
+    )
+    const lock: ServerLock = {
+      port: 43135,
+      host: '127.0.0.1',
+      pid: process.pid,
+      repoRoot,
+      startedAt: Date.now(),
+      version: MCP_VERSION,
+      mode: 'gh-pr',
+      authToken: 'session-token',
+      prRef: 'acme/widget#12',
+    }
+    const session = await connect({
+      repoRoot,
+      readLock: () => lock,
+      lockIsAlive: () => true,
+    })
+    try {
+      const listed = await session.client.callTool({ name: 'list_comments', arguments: {} })
+      expect(listed.isError, JSON.stringify(listed.content)).not.toBe(true)
+      expect(listed.structuredContent).toMatchObject({ comments: [{ id: 'comment/id' }] })
+
+      for (const [name, args] of [
+        ['reply_to_comment', { commentId: 'comment/id', body: 'reply', model: 'gpt-test' }],
+        ['resolve_comment', { commentId: 'comment/id' }],
+        ['unresolve_comment', { commentId: 'comment/id' }],
+        ['edit_comment', { commentId: 'comment/id', body: 'edited' }],
+        ['delete_comment', { commentId: 'comment/id' }],
+      ] as const) {
+        const result = await session.client.callTool({ name, arguments: args })
+        expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
+      }
+
+      const prefix = '/api/gh/pr-session/comments'
+      expect(calls.map((call) => `${call.method} ${call.url.replace('http://127.0.0.1:43135', '')}`)).toEqual([
+        `GET ${prefix}`,
+        `POST ${prefix}/comment%2Fid/replies`,
+        `PUT ${prefix}/comment%2Fid`,
+        `PUT ${prefix}/comment%2Fid`,
+        `PUT ${prefix}/comment%2Fid`,
+        `DELETE ${prefix}/comment%2Fid`,
+      ])
+      expect(JSON.parse(calls[1].body!)).toMatchObject({ body: 'reply', role: 'agent', model: 'gpt-test' })
+    } finally {
+      await session.close()
+    }
+  })
+
   it('rejects output and runtime arguments before starting and never creates an output file', async () => {
     const outputPath = join(repoRoot, 'attacker-controlled.patch')
     const startServerFn = vi.fn(async (_opts: { diffOpts?: DiffOptions }) => ({ port: 43125, prMode: false }))

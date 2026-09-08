@@ -29,8 +29,8 @@ interface CommentTrackerProps {
   removeComment: (id: string) => void;
   addReply: (id: string, body: string) => unknown | Promise<unknown>;
   editComment: (id: string, body: string) => void;
-  editReply: (commentId: string, replyId: string, body: string) => void;
-  removeReply: (commentId: string, replyId: string) => void;
+  editReply?: (commentId: string, replyId: string, body: string) => void;
+  removeReply?: (commentId: string, replyId: string) => void;
 }
 
 type Status = "open" | "replied" | "resolved";
@@ -224,6 +224,7 @@ function CommentCard({
   const [replying, setReplying] = useState(false);
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
 
   const jump = useCallback(() => {
     if (comment.lineNumber > 0) {
@@ -307,15 +308,13 @@ function CommentCard({
         </button>
         <button
           className={`cmt-act ${resolved ? "cmt-act-resolved" : ""}`}
-          onClick={() => {
-            if (resolved) {
-              unresolveComment(comment.id);
-              haptic("light");
-              sound("toggle");
-            } else {
-              resolveComment(comment.id);
-              haptic("success");
-              sound("resolve");
+          onClick={async () => {
+            setStatusError(null);
+            try {
+              if (resolved) { await unresolveComment(comment.id); haptic("light"); }
+              else { await resolveComment(comment.id); haptic("success"); sound("resolve"); }
+            } catch (error) {
+              setStatusError(error instanceof Error ? error.message : "Could not update conversation");
             }
           }}
           title={resolved ? "Reopen" : "Resolve"}
@@ -358,6 +357,7 @@ function CommentCard({
         )}
       </div>
 
+      {statusError && <p role="alert">{statusError}</p>}
       {replyCount > 0 && (
         <button
           className="cmt-thread-toggle"
@@ -379,8 +379,8 @@ function CommentCard({
             <ReplyRow
               key={r.id}
               reply={r}
-              onEdit={(body) => editReply(comment.id, r.id, body)}
-              onRemove={() => removeReply(comment.id, r.id)}
+              onEdit={editReply ? (body) => editReply(comment.id, r.id, body) : undefined}
+              onRemove={removeReply ? () => removeReply(comment.id, r.id) : undefined}
             />
           ))}
         </ul>
@@ -409,8 +409,8 @@ function ReplyRow({
   onRemove,
 }: {
   reply: CommentReply;
-  onEdit: (body: string) => void;
-  onRemove: () => void;
+  onEdit?: (body: string) => void;
+  onRemove?: () => void;
 }) {
   const isAgent =
     reply.role === "agent" || (reply.role == null && !!reply.model);
@@ -426,7 +426,7 @@ function ReplyRow({
           {isAgent ? reply.model || "Agent" : "You"}
         </span>
         <span className="cmt-time">{timeAgo(reply.createdAt)}</span>
-        {!isAgent && (
+        {!isAgent && onEdit && (
           <button
             className="cmt-reply-act"
             onClick={() => setEditing((v) => !v)}
@@ -435,13 +435,13 @@ function ReplyRow({
             <Pencil size={11} aria-hidden="true" />
           </button>
         )}
-        <button
+        {onRemove && <button
           className="cmt-reply-act cmt-act-del"
           onClick={onRemove}
           title="Delete reply"
         >
           <Trash2 size={11} aria-hidden="true" />
-        </button>
+        </button>}
       </div>
       {editing ? (
         <CommentForm
@@ -449,7 +449,7 @@ function ReplyRow({
           initialBody={reply.body}
           onCancel={() => setEditing(false)}
           onSubmit={async (body) => {
-            await onEdit(body);
+            await onEdit?.(body);
             setEditing(false);
           }}
         />

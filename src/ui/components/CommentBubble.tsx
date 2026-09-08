@@ -18,6 +18,8 @@ import { useComments } from "../hooks/useComments";
 import { CommentForm } from "./CommentForm";
 import { NoticeDialog } from "../primitives/NoticeDialog";
 
+import { useScopedCommentActions, type CommentActions } from "./CommentActionsProvider";
+
 interface CommentBubbleProps {
   comment: ReviewComment;
   onDelete: (id: string) => void;
@@ -48,17 +50,25 @@ function AvatarIcon({
   );
 }
 
-export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
+export function CommentBubble(props: CommentBubbleProps) {
+  const actions = useScopedCommentActions();
+  return actions ? <CommentBubbleContent {...props} actions={actions} /> : <LocalCommentBubble {...props} />;
+}
+
+function LocalCommentBubble(props: CommentBubbleProps) {
+  const actions = useComments();
+  return <CommentBubbleContent {...props} actions={actions} />;
+}
+
+function CommentBubbleContent({ comment, onDelete, actions }: CommentBubbleProps & { actions: CommentActions }) {
   const [, setTick] = useState(0);
-  const {
-    resolveComment,
-    unresolveComment,
-    addReply,
-    removeReply,
-    editReply,
-    applySuggestion,
-    editComment,
-  } = useComments();
+  const { resolveComment, unresolveComment, addReply, removeReply, editReply, applySuggestion, editComment } = actions;
+  const [actionError, setActionError] = useState<string | null>(null);
+  const runStatusAction = async (action: () => void | Promise<unknown>) => {
+    try { await action(); } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not update conversation");
+    }
+  };
   const isResolved = comment.status === "resolved";
   /** Open threads start expanded; resolved start collapsed. User can toggle either. */
   const [collapsed, setCollapsed] = useState(isResolved);
@@ -87,15 +97,15 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
     return () => clearInterval(timer);
   }, []);
 
-  const handleResolve = () => resolveComment(comment.id);
-  const handleUnresolve = () => unresolveComment(comment.id);
+  const handleResolve = () => { void runStatusAction(() => resolveComment(comment.id)); };
+  const handleUnresolve = () => { void runStatusAction(() => unresolveComment(comment.id)); };
 
   const handleStartEditReply = (replyId: string) => {
     setEditingReplyId(replyId);
   };
 
   const handleDeleteReply = (replyId: string) => {
-    removeReply(comment.id, replyId);
+    removeReply?.(comment.id, replyId);
   };
 
   const locationBits = (
@@ -396,7 +406,7 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                     <span className="suggestion-applied">
                       <CheckCircle2 size={12} /> Applied
                     </span>
-                  ) : (
+                  ) : applySuggestion ? (
                     <button
                       type="button"
                       className="btn btn-primary btn-sm"
@@ -404,7 +414,7 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                       onClick={async () => {
                         setApplyingSuggestion(true);
                         try {
-                          await applySuggestion(comment.id);
+                          await applySuggestion?.(comment.id);
                         } catch (err) {
                           setSuggestionError(
                             err instanceof Error
@@ -418,7 +428,7 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                     >
                       {applyingSuggestion ? "Applying…" : "Apply Suggestion"}
                     </button>
-                  )}
+                  ) : null}
                 </div>
                 <div className="suggestion-diff">
                   <div className="suggestion-diff-line suggestion-diff-line-deletion">
@@ -473,7 +483,7 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                       {timeAgo(reply.createdAt)}
                     </span>
 
-                    {!isResolved && (
+                    {!isResolved && editReply && removeReply && (
                       <div className="comment-node-actions">
                         <button
                           className="comment-node-btn"
@@ -515,7 +525,7 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
                         draftKey={`reply-edit:${comment.id}:${reply.id}`}
                         initialBody={reply.body}
                         onSubmit={async (body) => {
-                          await editReply(comment.id, reply.id, body);
+                          await editReply?.(comment.id, reply.id, body);
                           setEditingReplyId(null);
                         }}
                         onCancel={() => setEditingReplyId(null)}
@@ -618,6 +628,7 @@ export function CommentBubble({ comment, onDelete }: CommentBubbleProps) {
           </div>
         )}
       </div>
+      <NoticeDialog open={actionError !== null} title="Could not update conversation" description={actionError ?? "The conversation could not be updated."} closeLabel="Return to review" onClose={() => setActionError(null)} />
       <NoticeDialog
         open={suggestionError !== null}
         title="Could not apply suggestion"
