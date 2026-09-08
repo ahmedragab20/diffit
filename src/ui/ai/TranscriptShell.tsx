@@ -118,11 +118,7 @@ function TranscriptShellView({
 						</article>
 					) : waiting ? (
 						<div className="ai-thinking" role="status">
-							<span className="ai-thinking-mark" aria-hidden="true">
-								{Array.from({ length: 9 }, (_, index) => (
-									<i key={index} />
-								))}
-							</span>
+							<span className="ai-thinking-mark" aria-hidden="true" />
 							<span>
 								{activity.phase === "cancel-requested"
 									? "Stopping this request"

@@ -106,6 +106,21 @@ describe("composition", () => {
     );
     expect(screen.getByLabelText("Run activity")).toBeInTheDocument();
   });
+
+  it("shows a braille thinking mark without nested dots", () => {
+    const { container } = render(
+      <TranscriptShell
+        turns={[]}
+        activity={activity({ phase: "preparing" })}
+        streaming={{ turn: turn("u2", "user", "next"), text: "" }}
+        onCopy={() => {}}
+      />,
+    );
+    expect(screen.getByText("Thinking about your request")).toBeInTheDocument();
+    const mark = container.querySelector(".ai-thinking-mark");
+    expect(mark).not.toBeNull();
+    expect(mark?.querySelectorAll("i")).toHaveLength(0);
+  });
 });
 
 describe("retry is offered only after a terminal failure", () => {
