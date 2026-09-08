@@ -282,3 +282,33 @@ describe("offline retrieval baseline", () => {
 		expect(() => benchmarkRetrieval(fixtures[0], iterations)).toThrow(),
 	);
 });
+
+describe("v2 retrieval target", () => {
+	// The approved plan states: at least 50% fewer serialized evidence bytes
+	// than sending the full patch plus relevant full files on the focused
+	// large-diff fixture, while preserving labeled task evidence.
+	const TARGET_REDUCTION = 0.5;
+
+	it("meets the stated byte target on the focused large diff", () => {
+		const large = makeContextFixtures().find(
+			(fixture) => fixture.id === "focused-large-diff",
+		);
+		const report = benchmarkRetrieval(large!, 3);
+		expect(report.byteReduction).toBeGreaterThanOrEqual(TARGET_REDUCTION);
+	});
+
+	it("meets the target without dropping required evidence", () => {
+		// The target is explicitly not permission to drop necessary context, so
+		// the reduction only counts while every labeled item survives.
+		for (const fixture of makeContextFixtures()) {
+			const report = benchmarkRetrieval(fixture, 3);
+			expect(report.missingEvidence, fixture.id).toEqual([]);
+		}
+	});
+
+	it("does not claim the threshold is human-approved", () => {
+		const report = benchmarkRetrieval(makeContextFixtures()[0], 3);
+		// Meeting a stated target is not the same as a human adjudicating it.
+		expect(report.humanApprovedThresholds).toBe(false);
+	});
+});
