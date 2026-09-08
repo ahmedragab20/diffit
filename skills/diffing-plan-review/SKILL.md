@@ -1,6 +1,11 @@
 ---
 name: diffing-plan-review
 description: Submit an implementation plan to diffing for human approval and obey the verdict before writing code. Use for design sign-off, risky work, plan revisions, or any request to let the human review an implementation approach first.
+license: MIT
+metadata:
+  author: ahmedragab20
+  version: "0.20.0"
+user_invocable: true
 ---
 
 # Review an implementation plan
@@ -93,4 +98,4 @@ A timeout is a park signal. If a different plan was released, preserve it but do
 
 The plan is either parked with its URL, returned for revision/discussion, or approved with the reviewed content identified. Implementation starts only for the approved scope.
 
-[Sessions and transports](../diffing/references/sessions-and-transports.md)
+[Router](../diffing/SKILL.md) · [Start review](../diffing-start-review/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md) · [Recovery](../diffing/references/recovery-and-safety.md)

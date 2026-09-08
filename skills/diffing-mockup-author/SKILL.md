@@ -1,6 +1,11 @@
 ---
 name: diffing-mockup-author
 description: Author product-grounded HTML mockup screens for diffing visual review. Use only when a mockup is requested or accepted, before submit_mockup, or when revising screen states and stable data-diffing regions from human feedback.
+license: MIT
+metadata:
+  author: ahmedragab20
+  version: "0.20.0"
+user_invocable: true
 ---
 
 # Author a reviewable mockup
@@ -74,4 +79,4 @@ Use [mockup review](../diffing-mockup-review/SKILL.md) for `inspect_mockup` and 
 
 The state set is reviewable, product-grounded and submitted with stable anchors. Share its returned URL and park for human approval; do not implement the product UI yet.
 
-[Sessions and transports](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md) · [Recovery and safety](../diffing/references/recovery-and-safety.md)
+[Router](../diffing/SKILL.md) · [Mockup review](../diffing-mockup-review/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md) · [Recovery](../diffing/references/recovery-and-safety.md)

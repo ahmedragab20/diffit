@@ -1,6 +1,11 @@
 ---
 name: diffing-finish-review
 description: Receive a human's diffing review handoff, apply requested edits, answer questions, and synchronize comment threads. Use when the human says their local review is ready, asks to process comments, or requests a synchronous wait for review feedback.
+license: MIT
+metadata:
+  author: ahmedragab20
+  version: "0.20.0"
+user_invocable: true
 ---
 
 # Finish a human review
@@ -81,6 +86,6 @@ Read [Recovery and safety](../diffing/references/recovery-and-safety.md) for `fi
 
 ## Done
 
-Summarize verified edits and remaining questions/blockers, preserving open threads that still need the human. Share the review URL and park for another round unless asked to wait synchronously.
+Summarize verified edits and remaining questions/blockers, preserving open threads that still need the human. Share the review URL and park for another round unless asked to wait synchronously. The Ask AI rail is the human's, not this loop.
 
-[Sessions and transports](../diffing/references/sessions-and-transports.md)
+[Router](../diffing/SKILL.md) · [Start review](../diffing-start-review/SKILL.md) · [Review changes](../diffing-review/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Recovery](../diffing/references/recovery-and-safety.md)

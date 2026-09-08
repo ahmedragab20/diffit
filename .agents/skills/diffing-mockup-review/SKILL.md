@@ -1,6 +1,11 @@
 ---
 name: diffing-mockup-review
 description: Submit HTML screens to diffing, inspect human feedback, and make version-guarded mockup revisions. Use after authoring a requested mockup, to process visual review comments or receive an approved implementation handoff.
+license: MIT
+metadata:
+  author: ahmedragab20
+  version: "0.20.0"
+user_invocable: true
 ---
 
 # Review an HTML mockup
@@ -102,4 +107,4 @@ On conflict, verify scope/version and exact region/text; do not replay stale pat
 
 Share the current URL and verdict, with unanswered questions left open. After approval use `get_mockup_handoff({mockupId:'MOCKUP_ID'})` or `diffing mockup handoff MOCKUP_ID` for compact tokens/screen intent before implementation.
 
-[Sessions and transports](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md)
+[Router](../diffing/SKILL.md) · [Mockup authoring](../diffing-mockup-author/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md)

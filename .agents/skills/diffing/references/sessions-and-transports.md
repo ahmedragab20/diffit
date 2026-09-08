@@ -79,7 +79,7 @@ For unsupported operations, select/start a compatible concurrent web session. Do
 
 CLI/MCP attach `x-diffing-token` for web/PR and `X-Diffing-Capability` for TUI as appropriate. HTTP integrations need the selected session's credential supplied securely by their host, held in memory. There is no cookbook command that exports a token. Do not dump lockfiles or bootstrap HTML into logs to extract one; prefer CLI/MCP if the host cannot supply it safely.
 
-Browser requests use a same-origin header or HttpOnly session cookie. Token query parameters are honored only for `/api/live` SSE, not ordinary API calls. Loopback Host checks and same-origin Origin checks protect HTML as well as API routes. Non-loopback authenticated HTML also requires credentials; there is no automatic LAN login flow. Do not bypass a 401/403 with `--insecure-no-auth` or expose a server on a wildcard host for convenience.
+Browser requests use a same-origin header or HttpOnly session cookie. Token query parameters are honored only for `/api/live` SSE, not ordinary API calls. Loopback Host checks protect HTML as well as API routes. Origin must match the request URL, except a loopback-bound API also accepts another loopback http(s) origin so the Vite client (`localhost:5173`) can proxy `/api` to the backend. Off-loopback Origins still have to match. Non-loopback authenticated HTML also requires credentials; there is no automatic LAN login flow. Do not bypass a 401/403 with `--insecure-no-auth` or expose a server on a wildcard host for convenience.
 
 ## CLI discovery map
 
@@ -100,6 +100,8 @@ This is command notation, not one script. `--help` and registered schemas settle
 | Plans | `diffing plan submit\|await\|list\|show\|versions\|reply\|resolve` |
 | Mockups | `diffing mockup submit\|await\|list\|show\|versions\|inspect\|screen\|threads\|apply-suggestion\|handoff` |
 | Design system | `diffing design show\|list\|extract\|propose\|publish` |
+| Evidence (read-only) | `diffing evidence list\|map\|read\|search\|symbols\|verify\|history\|discussion` |
+| Notebook (writes) | `diffing evidence notebook\|decide` |
 | PR reads/drafts | `diffing gh status\|overview\|threads\|reviews\|timeline\|pending\|pr-fetch\|pr-list-comments` |
 | Authorized PR writes | `diffing gh pr-review\|pr-update\|pr-close\|pr-reopen\|pr-merge` |
 

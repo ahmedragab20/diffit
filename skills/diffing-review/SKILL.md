@@ -1,6 +1,11 @@
 ---
 name: diffing-review
 description: Review code with diffing, inspect changed files and discussion, and post actionable inline findings. Use for working-tree, staged, commit, branch, or GitHub pull-request reviews; report incomplete coverage rather than claiming an exhaustive review.
+license: MIT
+metadata:
+  author: ahmedragab20
+  version: "0.20.0"
+user_invocable: true
 ---
 
 # Review changes with diffing
@@ -64,6 +69,25 @@ In PR mode use **`gh_create_draft_comment`** with the same anchor shape. Follow 
 
 A fenced suggestion is proposed code, not permission to apply it during review. Applying it mutates files; this skill does not do that by default.
 
+### 3. Cite a retained capture (optional)
+
+If a review snapshot was retained, navigate it instead of dumping files:
+
+```js
+ai_evidence_list({})
+ai_evidence_map({ id: 'SNAPSHOT_ID' })
+ai_evidence_read({ id: 'SNAPSHOT_ID', requests: [{ key: 'src/app.ts', startLine: 40, endLine: 48 }] })
+ai_evidence_verify({ id: 'SNAPSHOT_ID', reference, revision: 'REV' })
+```
+
+```bash
+diffing evidence list
+diffing evidence map SNAPSHOT_ID
+diffing evidence read SNAPSHOT_ID --range KEY:START:END
+```
+
+`ai_evidence_search` returns positions only; read before citing. `ai_notebook` lists cited findings; `ai_notebook_add` and `ai_notebook_decide` write, and they are **not** `ai_evidence_*` tools. Do not start `POST /api/ai/run`.
+
 ## Recovery
 
 A 409 can be a stale generation or an ambiguous path selector; inspect the error and narrow/restart accordingly. A failed or omitted read remains a coverage limitation. Never bypass denied file access or publish to GitHub to work around a local draft failure. See [Recovery and safety](../diffing/references/recovery-and-safety.md).
@@ -72,4 +96,4 @@ A 409 can be a stale generation or an ambiguous path selector; inspect the error
 
 Report findings, inspected scope, omissions and the verified review URL. Do not claim every file was reviewed unless it was. Do not wait for another handoff unless requested.
 
-[Sessions and transports](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md)
+[Router](../diffing/SKILL.md) · [Start review](../diffing-start-review/SKILL.md) · [Finish review](../diffing-finish-review/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md)
