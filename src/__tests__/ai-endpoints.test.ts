@@ -1044,6 +1044,8 @@ describe("AI evidence authorization", () => {
 		["POST", "/api/ai/evidence/any/search"],
 		["POST", "/api/ai/evidence/any/symbols"],
 		["POST", "/api/ai/evidence/any/verify"],
+		["GET", "/api/ai/evidence/any/history?key=a"],
+		["GET", "/api/ai/evidence/any/discussion"],
 	])("refuses %s %s without a session token", async (method, path) => {
 		const server = await securedApp();
 		const response = await server.request(path, {
@@ -1129,5 +1131,112 @@ describe("AI evidence citation verification endpoint", () => {
 			body: JSON.stringify({ reference, revision: "not-this-generation" }),
 		});
 		expect(stale.status).toBe(409);
+	});
+});
+
+describe("AI evidence history and discussion endpoints", () => {
+	async function capturedPlanWith(comments: InMemoryCommentStore) {
+		const plans = new InMemoryPlanStore();
+		const plan = await plans.upsert({ title: "Stored", body: "alpha\nbravo" });
+		const { createApp } = await import("../server.js");
+		const server = createApp(
+			"/tmp/diffing-ai-client",
+			DEFAULTS,
+			comments,
+			plans,
+			undefined,
+			false,
+			undefined,
+			new InMemoryMockupStore(),
+			undefined,
+			new AiService([
+				adapter(
+					vi.fn(async (_request, _signal, onEvent) => {
+						await onEvent({ type: "text-delta", text: "ok" });
+						return "ok";
+					}),
+				),
+			]),
+			new InMemoryAiConversationStore(),
+		);
+		const run = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				trigger: "user",
+				conversationId: "plan",
+				modelId: "codex/subscription/codex/gpt-test",
+				action: "critique-plan",
+				surface: "plan",
+				context: { kind: "plan", planId: plan.id, version: 1, title: "client" },
+			}),
+		});
+		expect(run.status).toBe(200);
+		await run.text();
+		const listed = await (await server.request("/api/ai/evidence")).json();
+		const id = listed.snapshots[0].id as string;
+		const map = await (await server.request(`/api/ai/evidence/${id}/map`)).json();
+		return { server, id, path: map.sources[0].path as string, key: map.sources[0].key as string };
+	}
+
+	it("returns only threads anchored to captured paths", async () => {
+		const comments = new InMemoryCommentStore();
+		const { server, id, path } = await capturedPlanWith(comments);
+		await comments.add({
+			id: "in-scope",
+			filePath: path,
+			side: "additions",
+			lineNumber: 1,
+			lineContent: "alpha",
+			body: "captured thread",
+			status: "open",
+			createdAt: 1,
+			replies: [],
+		});
+		await comments.add({
+			id: "out-of-scope",
+			filePath: "src/not-captured.ts",
+			side: "additions",
+			lineNumber: 1,
+			lineContent: "x",
+			body: "unrelated thread",
+			status: "open",
+			createdAt: 2,
+			replies: [],
+		});
+		const response = await server.request(
+			`/api/ai/evidence/${id}/discussion`,
+		);
+		expect(response.status).toBe(200);
+		const result = await response.json();
+		expect(result.threads.map((t: { id: string }) => t.id)).toEqual([
+			"in-scope",
+		]);
+		expect(result.outOfScope).toBe(1);
+		expect(JSON.stringify(result)).not.toContain("unrelated thread");
+	});
+
+	it("rejects history for a key the capture does not hold", async () => {
+		const { server, id } = await capturedPlanWith(new InMemoryCommentStore());
+		const response = await server.request(
+			`/api/ai/evidence/${id}/history?key=not-a-source`,
+		);
+		expect(response.status).toBe(404);
+	});
+
+	it("rejects discussion scoped to an unknown key", async () => {
+		const { server, id } = await capturedPlanWith(new InMemoryCommentStore());
+		const response = await server.request(
+			`/api/ai/evidence/${id}/discussion?key=not-a-source`,
+		);
+		expect(response.status).toBe(404);
+	});
+
+	it("rejects a malformed discussion cursor", async () => {
+		const { server, id } = await capturedPlanWith(new InMemoryCommentStore());
+		const response = await server.request(
+			`/api/ai/evidence/${id}/discussion?cursor=nope`,
+		);
+		expect(response.status).toBe(400);
 	});
 });

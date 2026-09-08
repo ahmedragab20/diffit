@@ -191,6 +191,8 @@ import { streamAiRun } from "./lib/ai/run-stream.js";
 import { AiSnapshotError } from "./lib/ai/snapshots.js";
 import { SnapshotStore } from "./lib/ai/snapshot-store.js";
 import { LanguageServers } from "./lib/ai/language-servers.js";
+import { sourceHistory } from "./lib/ai/history.js";
+import { sourceDiscussion } from "./lib/ai/discussion.js";
 import { lookupSymbols, type SymbolKind } from "./lib/ai/symbols.js";
 import {
 	diffRead,
@@ -1469,6 +1471,37 @@ export function createApp(
 				body.maxBytes === undefined ? undefined : Number(body.maxBytes);
 			const read = body.representation === "unified-patch" ? diffRead : sourceRead;
 			return c.json(read(snapshot, requests, maxBytes));
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.get("/api/ai/evidence/:id/history", async (c) => {
+		try {
+			const snapshot = retained(c);
+			return c.json(
+				await sourceHistory(snapshot, getRepoRoot(), {
+					key: c.req.query("key") ?? "",
+					limit: optionalInt(c.req.query("limit")),
+					cursor: c.req.query("cursor") ?? undefined,
+				}),
+			);
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.get("/api/ai/evidence/:id/discussion", async (c) => {
+		try {
+			const snapshot = retained(c);
+			const key = c.req.query("key");
+			return c.json(
+				sourceDiscussion(snapshot, await store.getAll(), {
+					key: key ?? undefined,
+					limit: optionalInt(c.req.query("limit")),
+					cursor: c.req.query("cursor") ?? undefined,
+				}),
+			);
 		} catch (error) {
 			return evidenceError(c, error);
 		}
