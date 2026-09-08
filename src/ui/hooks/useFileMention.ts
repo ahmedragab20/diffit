@@ -165,6 +165,12 @@ export function useFileMention(
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent): boolean => {
       if (!isOpen) return false;
+      // While an input method is composing, these keys belong to it: arrows
+      // move through candidates and Enter commits one. Intercepting them
+      // replaces the user's candidate with a file mention. `keyCode === 229`
+      // is the legacy signal browsers use when `isComposing` is unavailable.
+      const native = e.nativeEvent as Partial<KeyboardEvent> | undefined;
+      if (native?.isComposing || native?.keyCode === 229) return false;
       if (e.key === "ArrowDown") {
         e.preventDefault();
         const len = items.length;

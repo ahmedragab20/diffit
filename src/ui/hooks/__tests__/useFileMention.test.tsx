@@ -130,3 +130,82 @@ describe('useFileMention — dropdown positioning', () => {
     expect(result.current.isOpen).toBe(true)
   })
 })
+describe('useFileMention — IME composition safety', () => {
+  beforeEach(() => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ items: [{ path: 'src/a.ts' }] }),
+      }),
+    )
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    vi.unstubAllGlobals()
+    document.body.innerHTML = ''
+  })
+
+  async function openMention() {
+    const setText = vi.fn()
+    const { result } = renderHook(({ t }) => useFileMention(t, setText), {
+      initialProps: { t: '@a' },
+      wrapper: wrapper(),
+    })
+    const ta = mountTextarea()
+    ta.value = '@a'
+    ta.selectionStart = ta.selectionEnd = 2
+    act(() => {
+      result.current.setTextareaRef(ta)
+    })
+    // A caret event is what makes the hook recompute and open the dropdown.
+    await act(async () => {
+      ta.dispatchEvent(new Event('click'))
+      await Promise.resolve()
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    return { result, setText }
+  }
+
+  function keyEvent(
+    key: string,
+    native: Partial<KeyboardEvent>,
+  ): React.KeyboardEvent {
+    return {
+      key,
+      preventDefault: vi.fn(),
+      nativeEvent: native as KeyboardEvent,
+    } as unknown as React.KeyboardEvent
+  }
+
+  it.each(['ArrowDown', 'ArrowUp', 'Enter', 'Tab', 'Escape'])(
+    'yields %s to the input method while composing',
+    async (key) => {
+      const { result } = await openMention()
+      expect(result.current.isOpen).toBe(true)
+      const event = keyEvent(key, { isComposing: true })
+      // Returning false hands the key back to the IME instead of the dropdown.
+      expect(result.current.handleKeyDown(event)).toBe(false)
+      expect(event.preventDefault).not.toHaveBeenCalled()
+    },
+  )
+
+  it('yields to the legacy keyCode 229 composition signal', async () => {
+    const { result } = await openMention()
+    expect(result.current.isOpen).toBe(true)
+    const event = keyEvent('Enter', { keyCode: 229 })
+    expect(result.current.handleKeyDown(event)).toBe(false)
+    expect(event.preventDefault).not.toHaveBeenCalled()
+  })
+
+  it('still handles the key once composition has ended', async () => {
+    const { result } = await openMention()
+    expect(result.current.isOpen).toBe(true)
+    const event = keyEvent('Escape', { isComposing: false })
+    expect(result.current.handleKeyDown(event)).toBe(true)
+    expect(event.preventDefault).toHaveBeenCalled()
+  })
+})
