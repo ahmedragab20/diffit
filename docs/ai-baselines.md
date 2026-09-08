@@ -31,7 +31,7 @@ Observed against the legacy prompt on identical fixtures:
 - Small: 1,764 bytes retrieved versus 6,627 prompt; required evidence preserved.
 - Large: 1,794 bytes retrieved versus 101,214 prompt; **required evidence preserved**, including the `unchanged-conversion` line the legacy prompt drops.
 
-The large-fixture result is the one that matters: the legacy path buys its reduction by discarding required evidence, and retrieval does not. `returnedLines` counts lines a read actually returned — it is evidence coverage, never a claim about model attention. Byte counts are measurements on synthetic fixtures, not approved thresholds; `humanApprovedThresholds` stays false and browser/UI responsiveness remains unmeasured.
+The large-fixture result is the one that matters: the legacy path buys its reduction by discarding required evidence, and retrieval does not. `returnedLines` counts lines a read actually returned — it is evidence coverage, never a claim about model attention. Byte counts are measurements on synthetic fixtures, not approved thresholds; `humanApprovedThresholds` stays false. Browser latency (keydown to second animation frame) and JS heap are sampled by `pnpm test:ai:e2e`; those numbers are observations, not approved ceilings.
 
 ## Replay evaluation
 

@@ -100,6 +100,8 @@ pnpm exec vitest run       # full suite
 pnpm run build:ts          # bundle
 pnpm --silent bench:ai     # offline context and retrieval baselines
 pnpm --silent eval:ai      # offline replay corpus
+pnpm --silent compat:ai    # live discovery of the five default providers
+pnpm --silent compat:ai -- --ping  # plus one bounded ping per connected provider
 ```
 
 `native-bundle.test.ts` requires `npm_execpath` and seven prebuilt native TUI
@@ -109,6 +111,11 @@ native build has run.
 Exit status 0 from the baseline runners means the runner completed. It is not
 an acceptance or quality gate: `humanApprovedThresholds` and
 `qualityThresholdsApproved` both remain false until a human adjudicates them.
+
+`compat:ai` talks to installed runtimes (version/status/catalog, and `--ping`
+for one bounded prompt). A successful ping is evidence on that machine, not
+certification: `liveVerified` stays false, and the probe never prints secrets
+or provider payload text.
 
 ## Incident checklist
 

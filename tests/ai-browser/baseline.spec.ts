@@ -215,10 +215,23 @@ for (const surface of surfaces) {
 					animation: computed.animationDuration,
 				};
 			};
+			const heap = (
+				performance as Performance & {
+					memory?: { usedJSHeapSize: number; totalJSHeapSize: number };
+				}
+			).memory;
+			const memory =
+				heap && typeof heap.usedJSHeapSize === "number"
+					? {
+							usedJSHeapSize: heap.usedJSHeapSize,
+							totalJSHeapSize: heap.totalJSHeapSize,
+						}
+					: null;
 			return {
 				...measurements,
 				p50: samples[Math.ceil(samples.length * 0.5) - 1],
 				p95: samples[Math.ceil(samples.length * 0.95) - 1],
+				memory,
 				reducedMotion: matchMedia("(prefers-reduced-motion: reduce)").matches,
 				rail: style(".ai-assistant-rail"),
 				textarea: style(".ai-rail-composer textarea"),
@@ -228,6 +241,13 @@ for (const surface of surfaces) {
 		expect(metrics.samples).toHaveLength(20);
 		expect(
 			metrics.samples.every((value) => Number.isFinite(value) && value >= 0),
+		).toBe(true);
+		expect(Number.isFinite(metrics.p50) && metrics.p50 >= 0).toBe(true);
+		expect(Number.isFinite(metrics.p95) && metrics.p95 >= 0).toBe(true);
+		expect(
+			metrics.memory === null ||
+				(Number.isFinite(metrics.memory.usedJSHeapSize) &&
+					metrics.memory.usedJSHeapSize >= 0),
 		).toBe(true);
 		await info.attach("ai-browser-baseline", {
 			body: JSON.stringify(
