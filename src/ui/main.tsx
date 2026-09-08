@@ -9,6 +9,7 @@ import DiffsWorker from '@pierre/diffs/worker/worker.js?worker'
 // and the element never registers. Importing it directly keeps it alive.
 import '../../node_modules/@pierre/diffs/dist/components/web-components.js'
 import { TooltipProvider } from './primitives/Tooltip'
+import { observePageVisibility } from './lib/pauseWhenHidden'
 import { Root } from './Root'
 import { installSessionAuth } from './session-auth'
 import { AiProvider } from './ai/AiContext'
@@ -21,6 +22,8 @@ import './styles/gridline.css'
 const queryClient = new QueryClient()
 
 installSessionAuth()
+
+observePageVisibility()
 
 createRoot(document.getElementById('root')!).render(
   <QueryClientProvider client={queryClient}>

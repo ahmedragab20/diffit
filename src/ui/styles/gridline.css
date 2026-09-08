@@ -2300,3 +2300,11 @@ file-tree,
   padding: 0 8px 8px 24px;
   color: var(--gl-muted);
 }
+
+/* A looping indicator in a background tab burns battery for nobody. Pausing on
+   a root attribute covers animations added later without opting each one in. */
+html[data-page-hidden='true'] *,
+html[data-page-hidden='true'] *::before,
+html[data-page-hidden='true'] *::after {
+  animation-play-state: paused !important;
+}
