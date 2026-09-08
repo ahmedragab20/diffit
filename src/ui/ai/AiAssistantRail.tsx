@@ -7,6 +7,7 @@ import {
 	useState,
 	type MouseEvent as ReactMouseEvent,
 } from "react";
+import { clampRailWidth } from "./railWidth.js";
 import {
 	Check,
 	Copy,
@@ -344,6 +345,20 @@ function AiAssistantRailOpen({
 	useEffect(() => {
 		if (ai.railWidth) setLocalWidth(ai.railWidth);
 	}, [ai.railWidth]);
+
+	// A width persisted on a wide display must not overflow a narrower window.
+	useEffect(() => {
+		if (typeof window === "undefined") return;
+		const reclamp = () => {
+			setLocalWidth((current) => {
+				const next = clampRailWidth(current, window.innerWidth);
+				return next === null ? current : next;
+			});
+		};
+		reclamp();
+		window.addEventListener("resize", reclamp);
+		return () => window.removeEventListener("resize", reclamp);
+	}, []);
 
 	useEffect(() => {
 		latestConversationRef.current = conversation;
@@ -688,7 +703,13 @@ function AiAssistantRailOpen({
 	};
 
 	const setKeyboardWidth = (next: number) => {
-		const width = Math.max(320, Math.min(720, next));
+		const width = clampRailWidth(
+			next,
+			typeof window === "undefined" ? Number.NaN : window.innerWidth,
+		);
+		// A window too narrow for a usable rail keeps the last width rather than
+		// rendering something unreadable; the rail itself is hidden instead.
+		if (width === null) return;
 		setLocalWidth(width);
 		void setRailWidth(width);
 	};
