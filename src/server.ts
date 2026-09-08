@@ -1413,6 +1413,23 @@ export function createApp(
 	 * exactly what a run could read and nothing more: no shell, no network, no
 	 * filesystem, and no way to widen a capture after the fact.
 	 */
+	/**
+	 * Rollback lever for the evidence surface. Read per request so disabling it
+	 * takes effect without a restart, and answered as not-found so a disabled
+	 * build does not advertise the routes.
+	 */
+	const evidenceEnabled = () => loadSettings().aiEvidenceTools !== false;
+	app.use("/api/ai/evidence/*", async (c, next) => {
+		if (!evidenceEnabled())
+			return c.json({ error: "AI evidence tools are disabled." }, 404);
+		return next();
+	});
+	app.use("/api/ai/evidence", async (c, next) => {
+		if (!evidenceEnabled())
+			return c.json({ error: "AI evidence tools are disabled." }, 404);
+		return next();
+	});
+
 	const evidenceError = (c: Context, error: unknown) => {
 		if (error instanceof AiSnapshotError)
 			return c.json({ error: error.message, code: error.code }, error.status);

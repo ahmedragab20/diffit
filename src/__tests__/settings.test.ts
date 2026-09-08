@@ -59,6 +59,7 @@ const DEFAULTS = {
   aiPrivacyAcknowledged: false,
   aiSettingsExpanded: false,
   aiLanguageServers: {},
+  aiEvidenceTools: true,
 }
 
 describe('settings', () => {

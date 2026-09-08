@@ -1844,7 +1844,8 @@ User-specific preferences, layout options, editor choices, and themes are persis
   "aiRailWidth": 360,                // Shared diff/plan assistant rail width
   "aiPrivacyAcknowledged": false,    // Context-sharing notice acknowledged
   "aiSettingsExpanded": false,       // AI Connections section expanded/collapsed
-  "aiLanguageServers": {}            // Symbol lookup servers, keyed by file extension
+  "aiLanguageServers": {},           // Symbol lookup servers, keyed by file extension
+  "aiEvidenceTools": true            // Read-only AI evidence navigation; false rolls it back
 }
 ```
 
@@ -1856,6 +1857,11 @@ is resolved on PATH and never run through a shell, and a malformed entry is
 dropped rather than repaired. A language server answers about the working tree,
 so any location it returns that falls outside the captured review snapshot is
 named but marked out of scope and is never readable.
+
+`aiEvidenceTools` gates the `/api/ai/evidence*` routes and the `ai_evidence_*`
+MCP tools that call them. It is read per request, so setting it false rolls the
+surface back immediately without restarting the server. See
+[Operating the AI review surface](ai-operations.md).
 
 AI provider secrets are never stored in this JSON file. Direct BYOK secrets use
 the OS credential vault or session memory. OpenCode/Cursor-managed BYOK remains

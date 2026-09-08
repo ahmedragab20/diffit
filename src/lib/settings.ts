@@ -108,6 +108,12 @@ export interface Settings {
 	 * no server and reports the feature unavailable until one is configured.
 	 */
 	aiLanguageServers?: Record<string, AiLanguageServer>;
+	/**
+	 * Read-only AI evidence navigation (`/api/ai/evidence*` and the matching MCP
+	 * tools). Enabled by default; setting it false is the rollback lever and
+	 * takes effect per request, without restarting the server.
+	 */
+	aiEvidenceTools?: boolean;
 	/** ISO timestamp when `diffing setup` last completed successfully. */
 	setupCompletedAt?: string | null;
 }
@@ -154,6 +160,7 @@ const DEFAULTS: Settings = {
 	aiPrivacyAcknowledged: false,
 	aiSettingsExpanded: false,
 	aiLanguageServers: {},
+	aiEvidenceTools: true,
 };
 
 /**
