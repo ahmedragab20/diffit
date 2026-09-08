@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "diffing-core"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "cap-fs-ext",
@@ -390,7 +390,7 @@ dependencies = [
 
 [[package]]
 name = "diffing-tui"
-version = "0.20.0"
+version = "0.20.1"
 dependencies = [
  "anyhow",
  "base64",

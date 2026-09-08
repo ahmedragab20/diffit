@@ -528,7 +528,6 @@ file-tree,
 }
 
 .file-diff-card,
-.pr-file-block,
 .plan-file {
   border: 1px solid var(--gl-rule-subtle);
   border-radius: var(--gl-radius-surface);
@@ -537,7 +536,6 @@ file-tree,
 }
 
 .file-diff-card:hover,
-.pr-file-block:hover,
 .plan-file:hover {
   border-color: var(--gl-rule);
   box-shadow: none;

@@ -6,7 +6,6 @@ import {
   useState,
   useTransition,
 } from "react";
-import { scrollBehavior } from "../lib/motion.js";
 import {
   getFiletypeFromFileName,
   parsePatchFiles,
@@ -38,6 +37,8 @@ import {
 } from "../hooks/useSettings";
 import { useApplyFonts } from "../hooks/useApplyFonts";
 import { useViewed } from "../hooks/useViewed";
+import { useScrollToNextFile } from "../hooks/useScrollToNextFile";
+import { cancelDiffNavigation, navigateToFile } from "../lib/diffNavigation";
 import { useDiffSearch, buildFileSearchCorpus } from "../hooks/useDiffSearch";
 import { useFileSearch } from "../hooks/useFileSearch";
 import { useViewportActiveFileTracking } from "../hooks/useViewportActiveFile";
@@ -288,26 +289,11 @@ export function PrReviewApp() {
   const handleFileClick = useCallback((filePath: string) => {
     explicitActiveFileRef.current = Date.now();
     setActiveFile(filePath);
-    document
-      .getElementById(`file-${filePath}`)
-      ?.scrollIntoView({ block: "start" });
+    navigateToFile(filePath);
   }, []);
 
-  const scrollToNextFile = useCallback(
-    (filePath: string) => {
-      const index = filteredFiles.findIndex((file) => file.name === filePath);
-      const next = filteredFiles[index + 1];
-      if (!next) return;
-      requestAnimationFrame(() =>
-        requestAnimationFrame(() => {
-          document
-            .getElementById(`file-${next.name}`)
-            ?.scrollIntoView({ block: "start", behavior: scrollBehavior() });
-        }),
-      );
-    },
-    [filteredFiles],
-  );
+  const scrollToNextFile = useScrollToNextFile(filteredFiles);
+  useEffect(() => () => cancelDiffNavigation(), []);
 
   const handleViewedChange = useCallback(
     (filePath: string, viewed: boolean) => {
@@ -923,9 +909,6 @@ export function PrReviewApp() {
                 onAddComment={(params) => addComment(params)}
                 onDeleteComment={removeComment}
                 onViewedChange={handleViewedChange}
-                onCardToggleCollapse={(path, collapsed) => {
-                  if (collapsed) scrollToNextFile(path);
-                }}
                 onReplyExisting={replyToExisting}
                 onEditExisting={(id, body) =>
                   mutateExistingComment("PATCH", id, body)
@@ -1028,7 +1011,6 @@ function PrDiffSurface({
   onAddComment,
   onDeleteComment,
   onViewedChange,
-  onCardToggleCollapse,
   onReplyExisting,
   onEditExisting,
   onDeleteExisting,
@@ -1061,7 +1043,6 @@ function PrDiffSurface({
   }) => void;
   onDeleteComment: (id: string) => void;
   onViewedChange: (filePath: string, viewed: boolean) => void;
-  onCardToggleCollapse: (filePath: string, collapsed: boolean) => void;
   onReplyExisting: (commentId: number, body: string) => Promise<void>;
   onEditExisting: (commentId: number, body: string) => Promise<void>;
   onDeleteExisting: (commentId: number) => Promise<void>;
@@ -1071,67 +1052,57 @@ function PrDiffSurface({
 }) {
   return (
     <div className="pr-diff-surface">
-      {files.map((file) => {
-        const existing = existingCommentsByFile.get(file.name) ?? [];
-        return (
-          <div key={file.name} className="pr-file-block">
-            <DiffViewer
-              files={[file]}
-              diffStyle={settings.diffStyle}
-              tabSizeMap={{}}
-              defaultTabSize={settings.defaultTabSize}
-              viewedFiles={viewedFiles}
-              binaryFiles={new Map()}
-              theme={settings.theme || "rose-pine"}
-              lineDiffType={settings.lineDiffType}
-              lineWrap={settings.lineWrap}
-              diffIndicators={settings.diffIndicators}
-              showLineNumbers={settings.showLineNumbers}
-              hunkSeparators={settings.hunkSeparators}
-              lineHoverHighlight={settings.lineHoverHighlight}
-              fontSize={settings.fontSize}
-              monoFontFamily={monoFontFamily}
-              expandContextByDefault={settings.expandContextByDefault}
-              collapsedContextThreshold={settings.collapsedContextThreshold}
-              expansionLineCount={settings.expansionLineCount}
-              autoCollapseLineThreshold={settings.autoCollapseLineThreshold}
-              onViewedChange={onViewedChange}
-              fileAnnotationsMap={
-                new Map([[file.name, fileAnnotations.get(file.name) ?? []]])
-              }
-              existingCommentsMap={new Map([[file.name, existing]])}
-              onAddComment={(
-                filePath,
-                side,
-                lineNumber,
-                lineContent,
-                body,
-                startLineNumber,
-              ) =>
-                onAddComment({
-                  filePath,
-                  side,
-                  lineNumber,
-                  lineContent,
-                  body,
-                  startLineNumber,
-                })
-              }
-              onDeleteComment={onDeleteComment}
-              onReplyExisting={onReplyExisting}
-              onEditExisting={onEditExisting}
-              onDeleteExisting={onDeleteExisting}
-              onSetExistingResolved={onSetExistingResolved}
-              onApplyExisting={onApplyExisting}
-              expectedHeadSha={expectedHeadSha}
-              onCardToggleCollapse={onCardToggleCollapse}
-              allowLocalActions={false}
-              fileSearch={fileSearch}
-              onOpenFileSearch={onOpenFileSearch}
-            />
-          </div>
-        );
-      })}
+      <DiffViewer
+        files={files}
+        diffStyle={settings.diffStyle}
+        tabSizeMap={{}}
+        defaultTabSize={settings.defaultTabSize}
+        viewedFiles={viewedFiles}
+        binaryFiles={new Map()}
+        theme={settings.theme || "rose-pine"}
+        lineDiffType={settings.lineDiffType}
+        lineWrap={settings.lineWrap}
+        diffIndicators={settings.diffIndicators}
+        showLineNumbers={settings.showLineNumbers}
+        hunkSeparators={settings.hunkSeparators}
+        lineHoverHighlight={settings.lineHoverHighlight}
+        fontSize={settings.fontSize}
+        monoFontFamily={monoFontFamily}
+        expandContextByDefault={settings.expandContextByDefault}
+        collapsedContextThreshold={settings.collapsedContextThreshold}
+        expansionLineCount={settings.expansionLineCount}
+        autoCollapseLineThreshold={settings.autoCollapseLineThreshold}
+        onViewedChange={onViewedChange}
+        fileAnnotationsMap={fileAnnotations}
+        existingCommentsMap={existingCommentsByFile}
+        onAddComment={(
+          filePath,
+          side,
+          lineNumber,
+          lineContent,
+          body,
+          startLineNumber,
+        ) =>
+          onAddComment({
+            filePath,
+            side,
+            lineNumber,
+            lineContent,
+            body,
+            startLineNumber,
+          })
+        }
+        onDeleteComment={onDeleteComment}
+        onReplyExisting={onReplyExisting}
+        onEditExisting={onEditExisting}
+        onDeleteExisting={onDeleteExisting}
+        onSetExistingResolved={onSetExistingResolved}
+        onApplyExisting={onApplyExisting}
+        expectedHeadSha={expectedHeadSha}
+        allowLocalActions={false}
+        fileSearch={fileSearch}
+        onOpenFileSearch={onOpenFileSearch}
+      />
     </div>
   );
 }
