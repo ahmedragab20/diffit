@@ -32,6 +32,14 @@ export interface OriginalsRequest {
 	baseSha: string | null;
 	/** New-side commit; only set in revision mode. */
 	headSha: string | null;
+	/** Lower bound than the default, for a reader whose reads cost network. */
+	maxFiles?: number;
+	/**
+	 * What to do when the patch exceeds the bound. Local capture refuses, since
+	 * a local read is cheap and a truncated capture would be surprising; a
+	 * remote capture omits the excess explicitly instead.
+	 */
+	onExcess?: "throw" | "omit";
 }
 
 export interface OriginalsResult {
@@ -66,8 +74,14 @@ export async function captureLocalOriginals(
 		};
 
 	const index = buildAgentDiffIndex(request.patch, 0);
-	if (index.files.length > ORIGINALS_LIMITS.maxFiles)
+	const maxFiles = Math.min(
+		request.maxFiles ?? ORIGINALS_LIMITS.maxFiles,
+		ORIGINALS_LIMITS.maxFiles,
+	);
+	const excess = index.files.length - maxFiles;
+	if (excess > 0 && (request.onExcess ?? "throw") === "throw")
 		throw new AiSnapshotError("limit");
+	const files = excess > 0 ? index.files.slice(0, maxFiles) : index.files;
 
 	// The index side to read from, by mode. Working and staged share an old side.
 	const oldRevision = request.baseSha ?? "HEAD";
@@ -116,7 +130,12 @@ export async function captureLocalOriginals(
 		});
 	};
 
-	for (const file of index.files) {
+	if (excess > 0)
+		omissions.push(
+			`Originals omitted for ${excess} further path(s); the capture reads at most ${maxFiles}.`,
+		);
+
+	for (const file of files) {
 		if (file.kind === "binary" || file.isBinary) {
 			omissions.push(
 				`Original omitted, binary path: ${file.newPath ?? file.oldPath ?? "(unknown)"}`,

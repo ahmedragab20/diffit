@@ -205,6 +205,10 @@ import {
 } from "./lib/ai/tools.js";
 import { resolvePlanSnapshot } from "./lib/ai/plan-snapshot.js";
 import { capturePrReview } from "./lib/ai/pr-snapshot.js";
+import {
+	capturePrOriginals,
+	createPrOriginalsCache,
+} from "./lib/ai/pr-originals.js";
 import { captureLocalReview } from "./lib/ai/local-snapshot.js";
 import { resolveDiffSnapshot } from "./lib/ai/diff-snapshot.js";
 import { ByteLruCache } from "./lib/ai/cache.js";
@@ -568,6 +572,8 @@ export function createApp(
 	const ai = aiService ?? new AiService();
 	// Retains each run's capture so external callers can navigate the same evidence.
 	const snapshotStore = new SnapshotStore();
+	// Bounded reuse across captures of the same pull request.
+	const prOriginalsCache = createPrOriginalsCache();
 	/**
 	 * Durable record of run boundaries, when a store was supplied. Journalling
 	 * is best-effort: a storage failure never takes down a live run.
@@ -1869,9 +1875,30 @@ export function createApp(
 								executeDiffWithMeta,
 							);
 						signal.throwIfAborted();
+						// A PR capture holds only the patch, so its originals are fetched
+						// here; a local capture already read them.
+						const prOriginals = prCapture
+							? await capturePrOriginals(
+									prCapture.identity,
+									prCapture.patch,
+									fetchPrFileContentViaGh,
+									prOriginalsCache,
+								)
+							: undefined;
+						signal.throwIfAborted();
+						const source = prCapture
+							? {
+									...prCapture,
+									originals: prOriginals!.sources,
+									omissions: [
+										...prCapture.omissions,
+										...prOriginals!.omissions,
+									],
+								}
+							: localCapture!;
 						const captured = resolveDiffSnapshot(
 							body.context,
-							prCapture ?? localCapture!,
+							source,
 							getRepoRoot(),
 						);
 						body.context = captured.context;
