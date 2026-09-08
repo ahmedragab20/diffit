@@ -93,7 +93,8 @@ if (ghPrConsumed > 0) {
 // revisions. Full contracts: docs/cli.md §4–§5 and Agents.md.
 //
 //   await-review | comments | reply | resolve | unresolve | comment
-//   progress | url | plan | gh | mcp | inspect | doctor | completion | update
+//   progress | url | plan | gh | mcp | inspect | evidence | doctor | completion
+//   update
 //   mode | setup | init | onboard
 //   view and show are handled separately (fall through to native/web modes).
 const SUBCOMMANDS = new Set([
@@ -114,6 +115,7 @@ const SUBCOMMANDS = new Set([
 	"completion",
 	"progress",
 	"inspect",
+	"evidence",
 	"mode",
 	"sessions",
 	"setup",

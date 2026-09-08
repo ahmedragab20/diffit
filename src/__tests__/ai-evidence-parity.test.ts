@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 const root = process.cwd();
 const mcpSource = readFileSync(join(root, "src", "mcp.ts"), "utf-8");
 const serverSource = readFileSync(join(root, "src", "server.ts"), "utf-8");
+const cliSource = readFileSync(join(root, "src", "cli-agent.ts"), "utf-8");
 
 interface Call {
   tool: string;
@@ -94,5 +95,36 @@ describe("AI evidence HTTP/MCP contract parity", () => {
       ),
     ];
     expect(mutating.map((match) => match[2])).toEqual([]);
+  });
+});
+
+describe("AI evidence CLI parity", () => {
+  const leaves = serverEvidenceRoutes()
+    .map((route) => route.route.split("/").at(-1)!)
+    .filter((leaf) => leaf !== "evidence");
+
+  it("registers an evidence subcommand", () => {
+    expect(cliSource).toContain('case "evidence":');
+    expect(cliSource).toContain("async function evidence(");
+  });
+
+  it.each([...new Set(leaves)])(
+    "mirrors the %s route in the CLI",
+    (leaf) => {
+      // Parity is three-way: a route reachable over HTTP and MCP must also be
+      // reachable from the CLI, or the contract is HTTP+MCP only.
+      expect(cliSource, `CLI must document the ${leaf} resource`).toContain(
+        `  ${leaf}`,
+      );
+      expect(cliSource).toContain(`"${leaf}"`);
+    },
+  );
+
+  it("lists every evidence resource in its usage text", () => {
+    const usage = /diffing evidence <([a-z|]+)>/.exec(cliSource)?.[1] ?? "";
+    const documented = new Set(usage.split("|"));
+    expect(documented.has("list")).toBe(true);
+    for (const leaf of new Set(leaves))
+      expect(documented, `usage must list ${leaf}`).toContain(leaf);
   });
 });

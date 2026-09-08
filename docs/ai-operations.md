@@ -8,7 +8,7 @@ human-approved quality threshold.
 
 | Surface | Where | Authority |
 | --- | --- | --- |
-| Evidence navigation | `/api/ai/evidence*`, `ai_evidence_*` MCP tools | Read-only |
+| Evidence navigation | `/api/ai/evidence*`, `ai_evidence_*` MCP tools, `diffing evidence …` | Read-only |
 | Inference runs | `POST /api/ai/run` | Requires `trigger: "user"` |
 | Model/connection listing | `/api/ai/models`, `/api/ai/connections` | Read-only |
 
@@ -32,7 +32,9 @@ needs no restart**:
 ```
 
 Disabling evidence navigation leaves the rest of the AI surface untouched —
-model listing and runs continue to work.
+model listing and runs continue to work. The flag gates the HTTP routes, so the
+MCP tools and the `diffing evidence` CLI, which both call those routes, are
+disabled with them.
 
 ## Configuring language servers
 
