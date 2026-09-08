@@ -52,7 +52,7 @@ function clamp(body: string): { body: string; truncated: boolean } {
 		.subarray(0, DISCUSSION_LIMITS.maxBodyBytes)
 		.toString("utf8");
 	// A trailing partial code point is dropped rather than shown as a replacement.
-	return { body: cut.replace(/�$/, ""), truncated: true };
+	return { body: cut.replace(/\uFFFD$/, ""), truncated: true };
 }
 
 /**
