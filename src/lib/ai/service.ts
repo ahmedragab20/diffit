@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { buildAiPrompt } from "./context.js";
 import { createDefaultAdapters } from "./adapters.js";
 import { assertProviderRequest } from "./capabilities.js";
+import { resetCodexModelCatalog } from "./catalog.js";
 import { AiRequestError } from "./request.js";
 import { AiSnapshotError } from "./snapshots.js";
 import {
@@ -140,6 +141,7 @@ export class AiService {
 	private invalidateCatalog(): void {
 		this.connectionCache = null;
 		this.modelCache = null;
+		resetCodexModelCatalog();
 	}
 
 	async connectKey(

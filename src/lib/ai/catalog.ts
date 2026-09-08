@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "./child-process.js";
 import { z } from "zod";
 import { AiRunError } from "./lifecycle.js";
 
@@ -318,10 +318,29 @@ export async function runCodexCatalog(
 	return decoder.finish();
 }
 
+/**
+ * Matches the service catalog TTL so option gating on a run reuses the same
+ * generation the model list was built from, instead of spawning a second
+ * app-server per run. Only successful catalogs are retained.
+ */
+const CATALOG_TTL_MS = 15_000;
 let catalogFlight: Promise<CatalogModel[]> | undefined;
+let catalogCache: { models: CatalogModel[]; expiresAt: number } | undefined;
 export function codexModelCatalog(): Promise<CatalogModel[]> {
+	if (catalogCache && catalogCache.expiresAt > Date.now())
+		return Promise.resolve(catalogCache.models);
 	// Retain the slot until owned process cleanup finishes, even after timeout.
-	return (catalogFlight ??= runCodexCatalog().finally(() => {
-		catalogFlight = undefined;
-	}));
+	return (catalogFlight ??= runCodexCatalog()
+		.then((models) => {
+			catalogCache = { models, expiresAt: Date.now() + CATALOG_TTL_MS };
+			return models;
+		})
+		.finally(() => {
+			catalogFlight = undefined;
+		}));
+}
+
+/** Drops the retained catalog so the next read re-runs discovery. */
+export function resetCodexModelCatalog(): void {
+	catalogCache = undefined;
 }
