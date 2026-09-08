@@ -1,3 +1,11 @@
+## 0.20.2
+
+### Patch Changes
+
+- ee7c1c5: Stop the installer clobbering skill sources during publish
+- 437c28e: Pr draft actions (#12)
+- e1d9b84: Ai foundation checkpoint and full-scope agent handoff (#11)
+
 ## 0.20.1
 
 ### Patch Changes
