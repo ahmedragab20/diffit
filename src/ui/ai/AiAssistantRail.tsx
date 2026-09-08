@@ -684,7 +684,14 @@ function AiAssistantRailOpen({
 		const startWidth = localWidth;
 		let latest = startWidth;
 		const move = (next: MouseEvent) => {
-			latest = Math.max(320, Math.min(720, startWidth + startX - next.clientX));
+			// Same rule as the keyboard path: a drag must not overflow the window
+			// or squeeze out the diff either.
+			const width = clampRailWidth(
+				startWidth + startX - next.clientX,
+				window.innerWidth,
+			);
+			if (width === null) return;
+			latest = width;
 			setLocalWidth(latest);
 			document.documentElement.style.setProperty("--ai-rail-width", `${latest}px`);
 		};

@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { AiAssistantRail } from "../AiAssistantRail";
 
 const mocks = vi.hoisted(() => ({
-	setRailWidth: vi.fn(async () => {}),
+	setRailWidth: vi.fn(async (_width: number) => {}),
 	run: vi.fn(),
 	cancel: vi.fn(async () => {}),
 }));
@@ -300,6 +300,71 @@ describe("AiAssistantRail", () => {
 		fireEvent.mouseMove(document, { clientX: 420 });
 		fireEvent.mouseUp(document);
 		expect(mocks.setRailWidth).toHaveBeenCalledWith(440);
+	});
+
+	it.each([
+		["a drag", (separator: HTMLElement) => {
+			fireEvent.mouseDown(separator, { clientX: 900 });
+			fireEvent.mouseMove(document, { clientX: 100 });
+			fireEvent.mouseUp(document);
+		}],
+		["a keypress", (separator: HTMLElement) => {
+			fireEvent.keyDown(separator, { key: "ArrowLeft" });
+		}],
+	])("keeps the rail inside a narrow window on %s", (_label, resize) => {
+		const original = window.innerWidth;
+		Object.defineProperty(window, "innerWidth", {
+			configurable: true,
+			value: 900,
+		});
+		try {
+			renderRail(
+				<AiAssistantRail
+					open
+					onClose={vi.fn()}
+					surface="diff"
+					context={{ kind: "diff" }}
+				/>,
+			);
+			resize(
+				screen.getByRole("separator", { name: "Resize AI assistant" }),
+			);
+			// 900px leaves 540 for the rail once the diff gutter is reserved.
+			for (const call of mocks.setRailWidth.mock.calls)
+				expect(call[0]).toBeLessThanOrEqual(540);
+		} finally {
+			Object.defineProperty(window, "innerWidth", {
+				configurable: true,
+				value: original,
+			});
+		}
+	});
+
+	it("announces the range a narrow window can actually produce", () => {
+		const original = window.innerWidth;
+		Object.defineProperty(window, "innerWidth", {
+			configurable: true,
+			value: 900,
+		});
+		try {
+			renderRail(
+				<AiAssistantRail
+					open
+					onClose={vi.fn()}
+					surface="diff"
+					context={{ kind: "diff" }}
+				/>,
+			);
+			const separator = screen.getByRole("separator", {
+				name: "Resize AI assistant",
+			});
+			expect(separator.getAttribute("aria-valuemax")).toBe("540");
+		} finally {
+			Object.defineProperty(window, "innerWidth", {
+				configurable: true,
+				value: original,
+			});
+		}
 	});
 
 	it("supports keyboard resizing", () => {
