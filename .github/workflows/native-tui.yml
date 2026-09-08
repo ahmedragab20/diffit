@@ -61,8 +61,8 @@ jobs:
             zig: false
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - uses: dtolnay/rust-toolchain@stable
@@ -93,7 +93,7 @@ jobs:
             --target "${{ matrix.target_name }}" \
             --binary "$binary" \
             --output-root target/native-binaries
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target_name }}
           path: target/native-binaries/*/*
@@ -105,9 +105,9 @@ jobs:
     needs: build-native
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -120,7 +120,7 @@ jobs:
         run: >-
           test "v$(node -p "require('./package.json').version")"
           = "$GITHUB_REF_NAME"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: tui-*
           path: dist/native
@@ -138,7 +138,7 @@ jobs:
           set -euo pipefail
           mkdir -p target/root-tarball
           npm pack . --pack-destination target/root-tarball
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: diffing-root
           path: target/root-tarball/*.tgz
@@ -150,12 +150,12 @@ jobs:
     needs: build-root
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: diffing-root
           path: target/root-tarball
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Inspect release artifact
@@ -192,10 +192,10 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: diffing-root
           path: target/root-tarball
@@ -209,8 +209,8 @@ jobs:
     needs: publish-root
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - name: Install published diffing package
@@ -243,7 +243,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       - name: Create release from changelog
