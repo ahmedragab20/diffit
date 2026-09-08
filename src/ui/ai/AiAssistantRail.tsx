@@ -38,6 +38,7 @@ import type {
 	AiConversationSummary,
 } from "../../lib/ai/conversations";
 import { Markdown } from "../components/Markdown";
+import { TranscriptTurn } from "./TranscriptTurn";
 import { FileMentionDropdown } from "../components/FileMentionDropdown";
 import { useFileMention } from "../hooks/useFileMention";
 import { useOptionalAi } from "./AiContext";
@@ -812,7 +813,13 @@ function AiAssistantRailOpen({
 		setDeletePending(false);
 	};
 
-	const copyMarkdown = async (turn: AiConversationTurn) => {
+	/**
+	 * Stable across renders on purpose: a completed turn is memoized on its
+	 * props, so a fresh handler each render would re-render every turn on each
+	 * streamed token and the memoization would buy nothing. It closes over
+	 * nothing but `setCopiedId`, which React keeps stable.
+	 */
+	const copyMarkdown = useCallback(async (turn: AiConversationTurn) => {
 		try {
 			await navigator.clipboard.writeText(turn.text);
 			setCopiedId(turn.id ?? null);
@@ -823,7 +830,14 @@ function AiAssistantRailOpen({
 		} catch {
 			/* clipboard access is optional in embedded browsers */
 		}
-	};
+	}, []);
+
+	const handleCopy = useCallback(
+		(turn: AiConversationTurn) => {
+			void copyMarkdown(turn);
+		},
+		[copyMarkdown],
+	);
 
 	const isMockup = surface === "mockup";
 	const isPlan = surface === "plan";
@@ -1154,22 +1168,12 @@ function AiAssistantRailOpen({
 					turn.role === "user" ? (
 						<UserMessage key={turn.id} turn={turn} />
 					) : (
-						<article className="ai-response-document" key={turn.id}>
-							<Markdown
-								content={turn.text}
-								className="markdown-body ai-response-markdown"
-							/>
-							<div className="ai-message-actions">
-								<button
-									type="button"
-									onClick={() => void copyMarkdown(turn)}
-									aria-label={`Copy response ${turn.id}`}
-								>
-									{copiedId === turn.id ? <Check size={12} /> : <Copy size={12} />}{" "}
-									{copiedId === turn.id ? "Copied" : "Copy Markdown"}
-								</button>
-							</div>
-						</article>
+						<TranscriptTurn
+							key={turn.id}
+							turn={turn}
+							copied={copiedId === turn.id}
+							onCopy={handleCopy}
+						/>
 					),
 				)}
 				{pending && (
