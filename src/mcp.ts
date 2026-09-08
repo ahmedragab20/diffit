@@ -3323,6 +3323,136 @@ MCP connects only to the loopback diffing server and never terminates a user-own
 		}),
 	);
 
+	/**
+	 * Evidence navigation over a run's retained capture. These mirror the
+	 * /api/ai/evidence routes so HTTP, CLI and MCP callers read the same
+	 * bounded evidence under the same limits. All are strictly read-only.
+	 */
+	server.registerTool(
+		"ai_evidence_list",
+		{
+			title: "List retained AI review evidence",
+			description:
+				"List the review snapshots a recent AI run captured, with their ids and revisions. Returns no source content.",
+			inputSchema: {},
+			outputSchema: { result: z.unknown() },
+			annotations: READ_ONLY,
+		},
+		async () => {
+			const result = await requestSessionJson<Record<string, unknown>>(
+				requireAnySession(),
+				"/api/ai/evidence",
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
+		"ai_evidence_map",
+		{
+			title: "Map AI review evidence",
+			description:
+				"List the sources, omissions and coverage of one retained capture. Listing is not reading: this returns no source text.",
+			inputSchema: {
+				id: z.string().min(1),
+				revision: z.string().min(1).optional(),
+				cursor: z.string().min(1).optional(),
+				limit: z.number().int().positive().max(50).optional(),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: READ_ONLY,
+		},
+		async ({ id, revision, cursor, limit }) => {
+			const query = new URLSearchParams();
+			if (revision) query.set("revision", revision);
+			if (cursor) query.set("cursor", cursor);
+			if (limit !== undefined) query.set("limit", String(limit));
+			const suffix = query.size ? `?${query}` : "";
+			const result = await requestSessionJson<Record<string, unknown>>(
+				requireAnySession(),
+				`/api/ai/evidence/${encodeURIComponent(id)}/map${suffix}`,
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
+		"ai_evidence_read",
+		{
+			title: "Read AI review evidence",
+			description:
+				"Read cited line ranges from one retained capture. Batched, budgeted, and reported per item; an exhausted budget is reported rather than silently truncated.",
+			inputSchema: {
+				id: z.string().min(1),
+				revision: z.string().min(1).optional(),
+				requests: z
+					.array(
+						z.object({
+							key: z.string().min(1),
+							startLine: z.number().int().positive(),
+							endLine: z.number().int().positive(),
+						}),
+					)
+					.min(1)
+					.max(32),
+				maxBytes: z.number().int().positive().max(64 * 1024).optional(),
+				representation: z.enum(["original", "unified-patch"]).optional(),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: READ_ONLY,
+		},
+		async ({ id, revision, requests, maxBytes, representation }) => {
+			const suffix = revision
+				? `?revision=${encodeURIComponent(revision)}`
+				: "";
+			const result = await requestSessionJson<Record<string, unknown>>(
+				requireAnySession(),
+				`/api/ai/evidence/${encodeURIComponent(id)}/read${suffix}`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ requests, maxBytes, representation }),
+				},
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
+		"ai_evidence_search",
+		{
+			title: "Search AI review evidence",
+			description:
+				"Locate a literal substring in one retained capture. Returns positions only, never text, so a match must be read before it can be cited. Regular expressions are not accepted.",
+			inputSchema: {
+				id: z.string().min(1),
+				revision: z.string().min(1).optional(),
+				query: z.string().min(1).max(512),
+				key: z.string().min(1).optional(),
+				limit: z.number().int().positive().max(100).optional(),
+				ignoreCase: z.boolean().optional(),
+				cursor: z.string().min(1).optional(),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: READ_ONLY,
+		},
+		async ({ id, revision, query, key, limit, ignoreCase, cursor }) => {
+			const suffix = revision
+				? `?revision=${encodeURIComponent(revision)}`
+				: "";
+			const result = await requestSessionJson<Record<string, unknown>>(
+				requireAnySession(),
+				`/api/ai/evidence/${encodeURIComponent(id)}/search${suffix}`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ query, key, limit, ignoreCase, cursor }),
+				},
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
 	return server;
 }
 

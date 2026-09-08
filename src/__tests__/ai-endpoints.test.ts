@@ -809,3 +809,127 @@ describe("AI plan snapshot endpoint", () => {
 		]);
 	});
 });
+
+describe("AI evidence navigation endpoints", () => {
+	async function captured(body = "alpha\nbravo\ncharlie") {
+		const plans = new InMemoryPlanStore();
+		const plan = await plans.upsert({ title: "Stored", body });
+		const server = await app(
+			vi.fn(async (_request, _signal, onEvent) => {
+				await onEvent({ type: "text-delta", text: "ok" });
+				return "ok";
+			}),
+			plans,
+		);
+		const run = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				trigger: "user",
+				conversationId: "plan",
+				modelId: "codex/subscription/codex/gpt-test",
+				action: "critique-plan",
+				surface: "plan",
+				context: { kind: "plan", planId: plan.id, version: 1, title: "client" },
+			}),
+		});
+		expect(run.status).toBe(200);
+		await run.text();
+		const listed = await (await server.request("/api/ai/evidence")).json();
+		expect(listed.snapshots).toHaveLength(1);
+		return { server, id: listed.snapshots[0].id as string, listed };
+	}
+
+	it("lists nothing before a run has captured evidence", async () => {
+		const server = await app();
+		const response = await server.request("/api/ai/evidence");
+		expect(await response.json()).toEqual({ snapshots: [] });
+	});
+
+	it("retains a run's capture without exposing its content in the listing", async () => {
+		const { listed } = await captured();
+		expect(listed.snapshots[0]).toMatchObject({ identityKind: "plan" });
+		expect(JSON.stringify(listed)).not.toContain("bravo");
+	});
+
+	it("maps a capture without counting the listing as a read", async () => {
+		const { server, id } = await captured();
+		const map = await (await server.request(`/api/ai/evidence/${id}/map`)).json();
+		expect(map.sources.length).toBeGreaterThan(0);
+		// The run already read to build its prompt; mapping must not add to that.
+		const again = await (
+			await server.request(`/api/ai/evidence/${id}/map`)
+		).json();
+		expect(again.coverage.returnedLines).toBe(map.coverage.returnedLines);
+	});
+
+	it("reads cited lines and records coverage", async () => {
+		const { server, id } = await captured();
+		const map = await (await server.request(`/api/ai/evidence/${id}/map`)).json();
+		const key = map.sources[0].key as string;
+		const response = await server.request(`/api/ai/evidence/${id}/read`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ requests: [{ key, startLine: 1, endLine: 2 }] }),
+		});
+		expect(response.status).toBe(200);
+		const read = await response.json();
+		expect(read.items[0].ok).toBe(true);
+		expect(read.items[0].value.text).toContain("alpha");
+		expect(read.items[0].value.evidence.startLine).toBe(1);
+		const after = await (
+			await server.request(`/api/ai/evidence/${id}/map`)
+		).json();
+		expect(after.coverage.returnedLines).toBeGreaterThan(0);
+	});
+
+	it("searches for positions without returning content", async () => {
+		const { server, id } = await captured();
+		const response = await server.request(`/api/ai/evidence/${id}/search`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ query: "bravo" }),
+		});
+		const found = await response.json();
+		expect(found.matches[0]).toMatchObject({ line: 2 });
+		expect(JSON.stringify(found)).not.toContain("bravo\n");
+	});
+
+	it("reports an unknown capture as missing", async () => {
+		const server = await app();
+		const response = await server.request("/api/ai/evidence/nope/map");
+		expect(response.status).toBe(404);
+	});
+
+	it("reports a pinned revision mismatch as stale", async () => {
+		const { server, id } = await captured();
+		const response = await server.request(
+			`/api/ai/evidence/${id}/map?revision=not-the-captured-one`,
+		);
+		expect(response.status).toBe(409);
+	});
+
+	it.each([
+		{ label: "a non-array batch", body: { requests: "all" } },
+		{ label: "a non-integer range", body: { requests: [{ key: "a", startLine: 1.5, endLine: 2 }] } },
+		{ label: "a missing key", body: { requests: [{ startLine: 1, endLine: 2 }] } },
+	])("rejects $label", async ({ body }) => {
+		const { server, id } = await captured();
+		const response = await server.request(`/api/ai/evidence/${id}/read`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body),
+		});
+		expect(response.status).toBe(400);
+	});
+
+	it("rejects a search without a query", async () => {
+		const { server, id } = await captured();
+		const response = await server.request(`/api/ai/evidence/${id}/search`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ key: "a" }),
+		});
+		expect(response.status).toBe(400);
+	});
+});

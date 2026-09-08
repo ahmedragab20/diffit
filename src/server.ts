@@ -189,6 +189,14 @@ import { AiRunError } from "./lib/ai/lifecycle.js";
 import { AiRequestError, readAiRunRequest } from "./lib/ai/request.js";
 import { streamAiRun } from "./lib/ai/run-stream.js";
 import { AiSnapshotError } from "./lib/ai/snapshots.js";
+import { SnapshotStore } from "./lib/ai/snapshot-store.js";
+import {
+	diffRead,
+	reviewMap,
+	sourceRead,
+	sourceSearch,
+	type ReadRequest,
+} from "./lib/ai/tools.js";
 import { resolvePlanSnapshot } from "./lib/ai/plan-snapshot.js";
 import { capturePrReview } from "./lib/ai/pr-snapshot.js";
 import { captureLocalReview } from "./lib/ai/local-snapshot.js";
@@ -546,6 +554,8 @@ export function createApp(
 		repoRoot = process.cwd();
 	}
 	const ai = aiService ?? new AiService();
+	// Retains each run's capture so external callers can navigate the same evidence.
+	const snapshotStore = new SnapshotStore();
 	const aiConversations = aiConversationStore ?? new FileAiConversationStore();
 
 	// Watch the project storage dir so any write — whether from this server's own
@@ -1387,6 +1397,99 @@ export function createApp(
 		return c.json({ models: await ai.models() });
 	});
 
+	/**
+	 * Read-only evidence navigation over a retained capture. These routes serve
+	 * exactly what a run could read and nothing more: no shell, no network, no
+	 * filesystem, and no way to widen a capture after the fact.
+	 */
+	const evidenceError = (c: Context, error: unknown) => {
+		if (error instanceof AiSnapshotError)
+			return c.json({ error: error.message, code: error.code }, error.status);
+		throw error;
+	};
+	const readRequests = (value: unknown): ReadRequest[] => {
+		if (!Array.isArray(value)) throw new AiSnapshotError("invalid");
+		return value.map((entry) => {
+			const item = entry as Partial<ReadRequest>;
+			if (
+				typeof item?.key !== "string" ||
+				!Number.isSafeInteger(item.startLine) ||
+				!Number.isSafeInteger(item.endLine)
+			)
+				throw new AiSnapshotError("invalid");
+			return {
+				key: item.key,
+				startLine: item.startLine as number,
+				endLine: item.endLine as number,
+			};
+		});
+	};
+	const retained = (c: Context) => {
+		const id = c.req.param("id");
+		if (!id) throw new AiSnapshotError("invalid");
+		return snapshotStore.get(id, c.req.query("revision") ?? undefined);
+	};
+	const optionalInt = (value: string | undefined): number | undefined =>
+		value === undefined ? undefined : Number(value);
+
+	app.get("/api/ai/evidence", (c) =>
+		c.json({ snapshots: snapshotStore.list() }),
+	);
+
+	app.get("/api/ai/evidence/:id/map", (c) => {
+		try {
+			return c.json(
+				reviewMap(retained(c), {
+					cursor: c.req.query("cursor") ?? undefined,
+					limit: optionalInt(c.req.query("limit")),
+				}),
+			);
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/read", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as { requests?: unknown; maxBytes?: unknown; representation?: unknown };
+			const snapshot = retained(c);
+			const requests = readRequests(body.requests);
+			const maxBytes =
+				body.maxBytes === undefined ? undefined : Number(body.maxBytes);
+			const read = body.representation === "unified-patch" ? diffRead : sourceRead;
+			return c.json(read(snapshot, requests, maxBytes));
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/search", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as {
+				query?: unknown;
+				key?: unknown;
+				limit?: unknown;
+				ignoreCase?: unknown;
+				cursor?: unknown;
+			};
+			if (typeof body.query !== "string") throw new AiSnapshotError("invalid");
+			return c.json(
+				sourceSearch(retained(c), body.query, {
+					key: typeof body.key === "string" ? body.key : undefined,
+					limit: body.limit === undefined ? undefined : Number(body.limit),
+					ignoreCase: body.ignoreCase === true,
+					cursor: typeof body.cursor === "string" ? body.cursor : undefined,
+				}),
+			);
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
 	app.post("/api/ai/connections/:source/key", async (c) => {
 		try {
 			const source = c.req.param("source") as AiSourceId;
@@ -1620,6 +1723,7 @@ export function createApp(
 						body.context = planCapture.context;
 						body.snapshot = planCapture.snapshot.manifest;
 						body.snapshotReader = planCapture.snapshot;
+						snapshotStore.put(planCapture.snapshot);
 					} else if (body.surface === "plan") throw new AiSnapshotError("invalid");
 					else if (!("mockupId" in body.context)) {
 						if (body.surface !== (prMode ? "pr-diff" : "diff"))
@@ -1639,6 +1743,7 @@ export function createApp(
 						body.context = captured.context;
 						body.snapshot = captured.snapshot.manifest;
 						body.snapshotReader = captured.snapshot;
+						snapshotStore.put(captured.snapshot);
 					}
 					const requestedImages = Array.isArray(body.context.imageAttachments)
 						? body.context.imageAttachments
