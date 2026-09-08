@@ -1,10 +1,10 @@
 ---
 name: diffing-release
-description: Prepare and publish a new diffing product release through its release script and CI. Use when a contributor asks to bump, tag, ship or release diffing itself; preview first and require explicit approval before pushing or publishing.
+description: Cut and ship a diffing product release through its release script and CI. Use when a diffing contributor asks to bump, tag, publish or ship diffing itself; preview with a dry run first and get explicit approval before anything is pushed.
 license: MIT
 metadata:
   author: ahmedragab20
-  version: "0.20.0"
+  version: "0.20.1"
 user_invocable: true
 ---
 
@@ -12,11 +12,11 @@ user_invocable: true
 
 ## Use this when
 
-Release the **diffing product**, not a consumer project's code. Installed-skill users must locate the intended product checkout; do not run these commands in an unrelated consumer repository.
+Someone is releasing the **diffing product** itself. A consumer project's own release is a different job. Installed-skill users need to locate the intended product checkout first; these commands belong there and nowhere else.
 
 ## Before you start
 
-Read the current `scripts/release.mjs` and `.github/workflows/native-tui.yml` in that checkout. Confirm the requested version bump and shipping authority. This recipe does not authorize commits, pushes, tags, npm publication or GitHub release creation on its own.
+Read the current `scripts/release.mjs` and `.github/workflows/native-tui.yml` in that checkout — they are the source of truth for what ships. Confirm the requested bump and who authorized shipping. Commits, pushes, tags, npm publication and GitHub release creation each need that authorization; this recipe grants none of them.
 
 | Bump | Use |
 | --- | --- |
@@ -32,11 +32,11 @@ Read the current `scripts/release.mjs` and `.github/workflows/native-tui.yml` in
 pnpm release --dry-run --patch
 ```
 
-Replace the bump flag as agreed. Dry-run reads local files/history and prints proposed version/changelog/build/shipping actions without performing them. It **skips the real clean-tree/branch/sync preflight**, so a dry-run pass does not prove release readiness.
+Swap the bump flag for the agreed one. The dry run reads local files and history and prints the proposed version, changelog, build and shipping actions without performing them. It **skips the real clean-tree, branch and sync preflight**, so a clean dry run is not proof of release readiness.
 
-Inspect the proposed changelog. It selects `feat`/`fix` subjects since the previous tag, excluding release-maintenance entries. If it says “No user-facing changes”, confirm that a release is still intended.
+Inspect the proposed changelog: it takes `feat` and `fix` subjects since the previous tag, minus release-maintenance entries. If it says "No user-facing changes", confirm a release is still wanted.
 
-Present the proposed version and publication effects to the human. Do not proceed until they approve shipping.
+Show the human the proposed version and its publication effects, and wait for their approval to ship.
 
 ### 2. Run the approved release
 
@@ -46,16 +46,16 @@ pnpm release --patch
 
 The real script:
 
-1. Requires a clean working tree on `main`; fetches `origin` and rejects ahead/behind `origin/main`.
-2. Updates six version occurrences across `package.json`, `Cargo.toml`, two `Cargo.lock` packages, and the two site fallback strings; prepends the changelog section.
+1. Requires a clean working tree on `main`; fetches `origin` and rejects a branch ahead of or behind `origin/main`.
+2. Updates six version occurrences across `package.json`, `Cargo.toml`, two `Cargo.lock` packages and the two site fallback strings, then prepends the changelog section.
 3. Runs `pnpm build && pnpm test` unless the human explicitly accepts `--no-verify`.
-4. Stages the changes, commits `chore(release): prepare vX.Y.Z`, tags `vX.Y.Z`, and pushes `main` plus the tag.
+4. Stages, commits `chore(release): prepare vX.Y.Z`, tags `vX.Y.Z`, and pushes `main` plus the tag.
 
-Do not stage, stash, reset or clean unrelated work to satisfy preflight. Do not hand-bump around the script. A failed build leaves local release edits that must be inspected before continuing.
+Satisfy the preflight by landing or setting aside work deliberately, with the human's say-so — not by staging, stashing, resetting or cleaning around it, and not by hand-bumping past the script. A failed build leaves local release edits on disk; inspect them before doing anything else.
 
-### 3. Verify CI/publication
+### 3. Verify CI and publication
 
-The tag triggers `native-tui.yml`: build seven native targets, build/package the root, verify install, publish npm via OIDC trusted publishing, verify the published package, then create the GitHub release. Local npm authentication is not part of this flow.
+The tag triggers `native-tui.yml`: build seven native targets, build and package the root, verify the install, publish npm through OIDC trusted publishing, verify the published package, then create the GitHub release. Local npm authentication plays no part.
 
 ```bash
 gh run list --workflow=native-tui.yml
@@ -64,23 +64,23 @@ npm view diffing version
 gh release list --limit 2
 ```
 
-Select the run for the actual tag, not simply the newest run. Confirm both the expected npm version and GitHub release; successful local push alone is not a completed release.
+Pick the run for the actual tag rather than the newest one. Confirm both the expected npm version and the GitHub release; a successful push is only the first step.
 
 ## Recovery
 
 | Failure | Action |
 | --- | --- |
-| Dirty/wrong/ahead-or-behind checkout | Stop and report; do not discard work or force the branch |
-| Build/test failure | Inspect release edits and failure; do not rerun a version bump blindly |
-| Main pushed but tag/publish uncertain | Inspect local/remote tag and workflow state before retrying |
-| Local bundle check lacks other platforms | CI builds all seven; do not fabricate missing binaries |
-| npm publish fails | Check CI/trusted-publisher configuration; do not publish locally |
-| npm exists but GitHub release is missing | Inspect the CI create-release job; any manual recovery needs explicit authorization |
+| Dirty/wrong/ahead-or-behind checkout | Stop and report; the human decides what happens to that work |
+| Build/test failure | Inspect the release edits and the failure before any rerun |
+| Main pushed but tag/publish uncertain | Inspect the local and remote tag and the workflow state before retrying |
+| Local bundle check lacks other platforms | CI builds all seven; report what you could verify |
+| npm publish fails | Check CI and trusted-publisher configuration; publication stays in CI |
+| npm exists but GitHub release is missing | Inspect the CI create-release job; manual recovery needs explicit authorization |
 
-Never force-push, recreate a published tag, or bypass failed verification as an automatic retry. See [Recovery and safety](../diffing/references/recovery-and-safety.md) for ambiguous mutation outcomes.
+A published tag stays published: recreating one, force-pushing, or retrying past a failed verification each need an explicit human decision. [Recovery and safety](../diffing/references/recovery-and-safety.md) covers ambiguous mutation outcomes.
 
 ## Done
 
-Report the released version and evidence that the intended CI run, npm package and GitHub release succeeded. If one is missing, state the remaining blocker instead of claiming completion.
+Report the released version with evidence that the intended CI run, the npm package and the GitHub release all succeeded. If one is missing, name it as the remaining blocker.
 
 [Router](../diffing/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md) · [Recovery](../diffing/references/recovery-and-safety.md)

@@ -1,10 +1,10 @@
 ---
 name: diffing-mockup-review
-description: Submit HTML screens to diffing, inspect human feedback, and make version-guarded mockup revisions. Use after authoring a requested mockup, to process visual review comments or receive an approved implementation handoff.
+description: Submit HTML screens to diffing, read the human's visual feedback, and make version-guarded revisions. Use after authoring a requested mockup, to process visual review comments, or to pick up an approved mockup for implementation.
 license: MIT
 metadata:
   author: ahmedragab20
-  version: "0.20.0"
+  version: "0.20.1"
 user_invocable: true
 ---
 
@@ -12,11 +12,15 @@ user_invocable: true
 
 ## Use this when
 
-HTML is ready for visual review, or the human returned feedback. Follow [Mockup authoring](../diffing-mockup-author/SKILL.md) for product styles and state structure; this skill handles the review loop.
+HTML is ready for visual review, or the human sent feedback back. [Mockup authoring](../diffing-mockup-author/SKILL.md) covers product styles and state structure; this skill runs the review loop.
 
 ## Before you start
 
-Select the correct consumer's local web session. Keep HTML inline/stdin or under `~/.diffing/`, never in the consumer tree. Use stable screen IDs, at most 24 screens, and one distinct state per screen. Viewport changes alone do not need duplicate screens.
+```js
+review_session_status({})  // the consumer's local web session
+```
+
+Keep the HTML inline or on stdin, or under `~/.diffing/` — out of the consumer tree. Use stable screen IDs, at most 24 screens, one distinct state per screen. Viewport differences alone need no duplicate screen.
 
 ## Recipe
 
@@ -30,13 +34,13 @@ submit_mockup({ title: 'Import empty state', html: emptyHtml, mode: 'fragment' }
 printf '%s' "$HTML" | diffing mockup submit - --title 'Import empty state' --mode fragment
 ```
 
-For several states use `screens:[{id,label,html}, ...]` in one MCP submission. For a full replacement, reuse `mockupId` (CLI `--id`); do not create a second conversation. `--screen id=path` can submit existing staged files, but those paths must be outside the consumer tree.
+Several states go in one MCP submission as `screens:[{id,label,html}, ...]`. A full replacement reuses `mockupId` (CLI `--id`) so the conversation stays in one place. `--screen id=path` submits staged files from outside the consumer tree.
 
-Use the returned ID/version/URL and inspect advisory `hints`. Share the URL and end the turn. `model`/`--model` records provenance; submission does not invoke AI.
+Use the returned ID, version and URL, and read the advisory `hints`. Share the URL and end the turn. `model`/`--model` records provenance; submission runs no inference.
 
 ### 2. Receive a verdict
 
-When ready or explicitly asked to wait:
+When the human is ready or asks you to wait:
 
 ```js
 await_mockup_review({ timeoutSeconds: 60 })
@@ -46,13 +50,21 @@ await_mockup_review({ timeoutSeconds: 60 })
 diffing mockup await --timeout 60
 ```
 
-Validate the released artifact ID and version: waits are session-global. MCP takes `timeoutSeconds`; only HTTP uses `sinceRound`/`timeoutMs`. Handoff XML is compact and open-only for the current version, with `screen`, `mockup-version`, and `viewport` scope.
+Waits are session-global, so validate the released artifact ID and version. MCP takes `timeoutSeconds`; `sinceRound`/`timeoutMs` are HTTP-only. The handoff XML is compact and open-only for the current version, scoped by `screen`, `mockup-version` and `viewport`.
 
-`approved` permits implementation of the reviewed mockup. `changes-requested` calls for a revision. `rejected` stops that approach. `comment-only` permits replies only, not markup/product edits. Timeout/pending means park. Never submit the human decision endpoint yourself.
+| Verdict | Next action |
+| --- | --- |
+| `approved` | Implement the reviewed mockup |
+| `changes-requested` | Revise the screens |
+| `rejected` | Stop on that approach |
+| `comment-only` | Reply only; markup and product stay as they are |
+| Pending/timeout | Park |
 
-### 3. Inspect only the needed source
+The decision endpoint is the human's to call.
 
-If the handoff already includes actionable comments, use them directly. For a targeted refresh:
+### 3. Inspect only the source you need
+
+When the handoff already carries actionable comments, work from those. For a targeted refresh:
 
 ```js
 inspect_mockup({ mockupId: 'MOCKUP_ID', view: 'comments', status: 'open', cursor: 0, limit: 20 })
@@ -64,9 +76,9 @@ diffing mockup inspect comments MOCKUP_ID --status open --limit 20
 diffing mockup inspect screen MOCKUP_ID --screen imports-empty --context source
 ```
 
-Page `nextCursor`. Narrow by `version`, `screenId`/`--screen`, and `viewport`. `context` is `none`, `anchor` or `source`; source/preview output may be bounded. `view:'preview'` reads available layout/screenshot metadata without starting AI. Fetch one historical/current full record only if bounded source is insufficient.
+Page `nextCursor`, and narrow by `version`, `screenId`/`--screen` and `viewport`. `context` is `none`, `anchor` or `source`, and source/preview output may be bounded. `view:'preview'` reads available layout and screenshot metadata. Fetch a full historical or current record only when bounded source falls short.
 
-Section comments use a `data-diffing` target, block comments a selector/fingerprint/source, and point comments coordinates. Read source before changing markup; a pin alone is not enough context.
+Section comments carry a `data-diffing` target, block comments a selector/fingerprint/source, and point comments coordinates. Read the source behind the anchor before changing markup — a pin alone is not context.
 
 ### 4. Revise once, guarded by version
 
@@ -82,13 +94,13 @@ revise_mockup({
 diffing mockup screen replace-region MOCKUP_ID imports-empty --region imports-empty --replacement '<h2>No imports yet</h2><p>Choose a file to start.</p>' --expected-version 3
 ```
 
-`op:'patch'` uses `expectedText` plus `replacement` in MCP/HTTP; CLI uses `--text`/`--replacement`. `upsert` adds/replaces one screen; `remove` cannot remove the last screen. Every successful screen operation already creates the next version. Do not submit again afterward. A 409 requires rereading the current version/target and reconciling the change.
+`op:'patch'` takes `expectedText` plus `replacement` in MCP/HTTP, `--text`/`--replacement` in the CLI. `upsert` adds or replaces one screen; `remove` keeps the last screen in place. Every successful screen operation already creates the next version, so it needs no resubmission. A 409 means reread the current version and target, then reconcile.
 
-`apply_mockup_suggestion({commentId:'COMMENT_ID',expectedVersion:3})` / `diffing mockup apply-suggestion COMMENT_ID --expected-version 3` applies the suggestion but **does not resolve** the thread. Check the revised result first.
+`apply_mockup_suggestion({commentId:'COMMENT_ID',expectedVersion:3})` / `diffing mockup apply-suggestion COMMENT_ID --expected-version 3` revises the screen and leaves the thread open. Check the revised result, then reply and resolve yourself.
 
 ### 5. Synchronize feedback
 
-After verifying the revision:
+Once the revision is verified:
 
 ```js
 update_mockup_threads({ mockupId: 'MOCKUP_ID', operations: [
@@ -97,14 +109,14 @@ update_mockup_threads({ mockupId: 'MOCKUP_ID', operations: [
 ] })
 ```
 
-The batch validates all operations before applying any and does not bump the version. CLI `mockup threads reply` followed by `resolve` is two separate calls, **not atomic**. Questions stay open. Individual `reply_to_mockup_comment`, `resolve_mockup_comment` and `unresolve_mockup_comment` are available for one-off updates.
+The batch validates every operation before applying any, and bumps no version. CLI `mockup threads reply` then `resolve` is two calls and **not atomic**. Questions stay open. `reply_to_mockup_comment`, `resolve_mockup_comment` and `unresolve_mockup_comment` handle one-off updates.
 
 ## Recovery
 
-On conflict, verify scope/version and exact region/text; do not replay stale patches. On timeout, park. Never delete threads to clear feedback or invoke the human Ask AI UI as an agent inference loop. See [Recovery and safety](../diffing/references/recovery-and-safety.md).
+On a conflict, verify the scope, version and exact region or text before revising again rather than replaying a stale patch. On timeout, park. Threads are the human's record of their feedback: clear them by addressing and resolving them, never by deleting them. The Ask AI UI stays theirs to trigger. See [Recovery and safety](../diffing/references/recovery-and-safety.md).
 
 ## Done
 
-Share the current URL and verdict, with unanswered questions left open. After approval use `get_mockup_handoff({mockupId:'MOCKUP_ID'})` or `diffing mockup handoff MOCKUP_ID` for compact tokens/screen intent before implementation.
+Share the current URL and verdict, leaving unanswered questions open. After approval, `get_mockup_handoff({mockupId:'MOCKUP_ID'})` or `diffing mockup handoff MOCKUP_ID` gives the compact tokens and screen intent to implement from.
 
 [Router](../diffing/SKILL.md) · [Mockup authoring](../diffing-mockup-author/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md)

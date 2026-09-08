@@ -1,10 +1,10 @@
 ---
 name: diffing-mockup-author
-description: Author product-grounded HTML mockup screens for diffing visual review. Use only when a mockup is requested or accepted, before submit_mockup, or when revising screen states and stable data-diffing regions from human feedback.
+description: Write product-grounded HTML mockup screens for diffing visual review - real product styles, one screen per state, stable data-diffing anchors. Use when a mockup has been requested or accepted, before submitting it, or when revising screens from human feedback.
 license: MIT
 metadata:
   author: ahmedragab20
-  version: "0.20.0"
+  version: "0.20.1"
 user_invocable: true
 ---
 
@@ -12,40 +12,39 @@ user_invocable: true
 
 ## Use this when
 
-The human requested or accepted an HTML mockup. Do not generate one merely because a UI change is large. Authoring is separate from [submission and review](../diffing-mockup-review/SKILL.md); implementation waits for approval.
+The human asked for an HTML mockup or accepted the offer of one. A large UI change on its own is not the trigger. Authoring is separate from [submission and review](../diffing-mockup-review/SKILL.md), and implementation waits for approval.
 
 ## Before you start
 
-Select a local web session for the consumer. Keep all mockup HTML out of the consumer source tree: submit inline or on stdin. If staging is unavoidable, use `~/.diffing/…/mockup-sources/`.
-
-Read the design system:
-
 ```js
-get_design_system({})
+review_session_status({})  // consumer's local web session
+get_design_system({})      // published tokens, fonts, guidelines, components
 ```
 
 ```bash
 diffing design show
 ```
 
-Use published tokens, fonts, guidelines and component patterns. A returned system may be a draft: do not assume it is published. If absent, inspect real product styles/screens; optional `extract_design_system({})` / `diffing design extract` creates a draft, not a published system. Propose changes with `propose_design_system`; publish only on explicit human request.
+Build on the published system. A returned system can still be a draft — check before relying on it. With none available, read the real product styles and screens. `extract_design_system({})` / `diffing design extract` creates a draft, `propose_design_system` proposes changes, and `publish_design_system` runs only on explicit human request.
+
+Keep mockup HTML out of the consumer source tree: submit inline or on stdin, and stage under `~/.diffing/…/mockup-sources/` only when unavoidable.
 
 ## Recipe
 
 ### 1. Define the screen set
 
-List stable screen IDs before writing markup. Each distinct state is a screen: `imports-empty`, `imports-loaded`, `imports-error`, `dialog-open`. Maximum **24 screens** per mockup.
+List stable screen IDs before writing markup. Each distinct state is its own screen: `imports-empty`, `imports-loaded`, `imports-error`, `dialog-open`. Cap: **24 screens** per mockup.
 
-Do not hide reviewable states behind JS tabs, accordions, dropdowns or toggles. Depict the open/closed/selected states in separate screens. A static rendering of controls is fine; state-swapping behavior is not needed. Viewport controls already cover desktop/tablet/mobile: add responsive screens only when composition/state genuinely differs.
+Reviewable states belong in separate screens, not behind JS tabs, accordions, dropdowns or toggles — depict open, closed and selected as their own screens. Rendering the controls statically is enough; state-swapping behavior is not needed. Viewport controls already cover desktop, tablet and mobile, so add a responsive screen only when the composition or state genuinely differs.
 
 ### 2. Match the product
 
-- Use realistic copy and data; no filler names or invented brand palette.
-- Prefer existing CSS/tokens, not Tailwind/Google Fonts CDNs or generic Inter-and-indigo styling.
-- Tag major regions with stable `data-diffing` values so comments can target future revisions.
-- Prefer body fragments with `mode:'fragment'` when using the published host design shell. Use `mode:'document'` for a self-contained document; do not assume a missing/draft design system will provide styles.
+- Realistic copy and data, drawn from the product rather than filler names or an invented palette.
+- Existing CSS and tokens, over Tailwind/Google Fonts CDNs or generic Inter-and-indigo styling.
+- Stable `data-diffing` values on major regions, so comments can target them across revisions.
+- `mode:'fragment'` when the published host design shell will wrap the body fragment; `mode:'document'` for a self-contained document that carries its own styles.
 
-Minimal screen shape, with styling to be drawn from the actual product:
+Minimal screen shape, styled from the actual product:
 
 ```html
 <section data-diffing="imports-empty">
@@ -67,16 +66,16 @@ submit_mockup({
 })
 ```
 
-Use `designSystem:'SYSTEM_ID'` only for the intended system; optional `planId` links the plan. `emptyHtml`/`loadedHtml` are the authored source, not filenames. Multi-screen submission creates one version, rather than one version per added screen.
+`emptyHtml` and `loadedHtml` are the authored source strings, not filenames. Set `designSystem:'SYSTEM_ID'` for a specific system, and optional `planId` to link the plan. One multi-screen submission creates one version.
 
-Read returned `hints`: state hints flag hidden interactive states; style hints flag generic/external styling. Inspect each warning and correct applicable issues with a guarded screen revision. Hints are advisory, not a substitute for reviewing the markup.
+Read the returned `hints`: state hints flag hidden interactive states, style hints flag generic or external styling. Inspect each one and fix what applies with a guarded screen revision. Hints are advisory — they do not replace reading your own markup.
 
 ## Recovery
 
-Use [mockup review](../diffing-mockup-review/SKILL.md) for `inspect_mockup` and `revise_mockup` with `expectedVersion`. A successful revision already bumps the version; do not resubmit it again. `comment-only` permits discussion, not markup/product edits. The UI's Ask AI is human-triggered; do not start inference to complete this workflow.
+[Mockup review](../diffing-mockup-review/SKILL.md) covers `inspect_mockup` and `revise_mockup` with `expectedVersion`. A successful revision already bumps the version, so it needs no resubmission. `comment-only` allows discussion, with markup and product left alone. The UI's Ask AI is human-triggered.
 
 ## Done
 
-The state set is reviewable, product-grounded and submitted with stable anchors. Share its returned URL and park for human approval; do not implement the product UI yet.
+The state set is reviewable, product-grounded and submitted with stable anchors. Share its returned URL and park for human approval; the product UI waits for the verdict.
 
 [Router](../diffing/SKILL.md) · [Mockup review](../diffing-mockup-review/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md) · [Recovery](../diffing/references/recovery-and-safety.md)

@@ -1,10 +1,10 @@
 ---
 name: diffing-review
-description: Review code with diffing, inspect changed files and discussion, and post actionable inline findings. Use for working-tree, staged, commit, branch, or GitHub pull-request reviews; report incomplete coverage rather than claiming an exhaustive review.
+description: Review code through diffing - bounded reads of the changed files, then inline findings anchored to real lines. Use for working-tree, staged, commit, branch or GitHub pull-request reviews where the user wants findings rather than implementation.
 license: MIT
 metadata:
   author: ahmedragab20
-  version: "0.20.0"
+  version: "0.20.1"
 user_invocable: true
 ---
 
@@ -12,19 +12,24 @@ user_invocable: true
 
 ## Use this when
 
-The user wants a code review, not implementation. Start a missing session with [Start review](../diffing-start-review/SKILL.md); apply existing human requests with [Finish review](../diffing-finish-review/SKILL.md).
+The user wants a code review, not implementation. Start a missing session with [Start review](../diffing-start-review/SKILL.md); apply feedback the human already left with [Finish review](../diffing-finish-review/SKILL.md).
 
 ## Before you start
 
-Call `review_session_status({})`. Verify consumer repository, mode and scope; for `gh-pr`, confirm identity with `gh_overview({})`. Select/reconnect deliberately if mismatched. Web and TUI support local findings; PR mode uses local PR drafts, not local code comments.
+```js
+review_session_status({})            // consumer repository, mode, scope
+gh_overview({})                      // gh-pr mode only: confirm identity
+list_comments({ openOnly: true })    // web/tui: what is already being discussed
+gh_list_draft_comments({})           // gh-pr: existing local drafts
+```
 
-Read open local comments with `list_comments({openOnly:true})`. In PR mode, read published threads/reviews and `gh_list_draft_comments({})` instead. Do not duplicate existing discussion.
+Select or reconnect deliberately if the session does not match. Web and TUI take local findings; PR mode takes local PR drafts instead of local code comments. Read the open discussion first so you add to it rather than repeat it.
 
 ## Recipe
 
 ### 1. Inspect with bounded reads
 
-MCP request sequence (replace `G` with the returned numeric generation):
+Replace `G` with the numeric generation the summary returns:
 
 ```js
 diff_summary({})
@@ -42,15 +47,15 @@ diffing inspect hunks --path src/app.ts --cursor 0 --limit 50 --generation G
 diffing inspect slice --path src/app.ts --start 0 --max-lines 120 --generation G
 ```
 
-- Page **all** requested files and hunks via `nextCursor`; slices via `nextRow`. Repeat per file. Verify file-page generation matches your traversal.
-- Carry generation into hunks/slices/search. On stale generation, restart from summary; do not mix snapshots.
-- `complete: false` and `omittedPaths` disclose missing source coverage. Review the available patch and report omissions. Never keep polling for completeness or call that an exhaustive review.
-- Use `diff_search({q:'literal', generation:G})` / `diffing inspect search 'literal' --generation G` for targeted discovery, not coverage. Continue search with both `nextFile` and `nextRow`.
-- Read relevant surrounding source; account for binary/renamed/untracked content. Use full `get_diff` only when bounded inspection cannot serve the task and the mode supports it.
+- Page **every** requested file and hunk through `nextCursor`, and slices through `nextRow`, repeating per file. Verify the file page's generation matches your traversal.
+- Carry `G` into hunks, slices and search. A stale generation means restart from summary; snapshots do not mix.
+- `complete: false` and `omittedPaths` disclose missing source coverage. Review the patch you have and name the omission in your report — asking again returns the same coverage, and a partial read is not an exhaustive review.
+- `diff_search({q:'literal', generation:G})` / `diffing inspect search 'literal' --generation G` is for targeted discovery, not coverage. Continue it through both `nextFile` and `nextRow`.
+- Read the surrounding source too, and account for binary, renamed and untracked content. Reach for full `get_diff` only when bounded inspection cannot serve the task and the mode supports it.
 
 ### 2. Post precise findings
 
-After inspecting an actual row, use this shape with its real path/coordinates/content:
+Anchor to a row you actually read, with its real path, coordinates and content:
 
 ```js
 create_comment({
@@ -61,17 +66,17 @@ create_comment({
 })
 ```
 
-For `add`/`context` rows use `newLineno` and `additions`; for `del` rows use `oldLineno` and `deletions`. `startLineNumber` through `lineNumber` is inclusive. File-level `lineNumber:0` has no start range. If the concern cannot be anchored honestly, summarize it rather than inventing a line.
+`add` and `context` rows use `newLineno` with `additions`; `del` rows use `oldLineno` with `deletions`. `startLineNumber` through `lineNumber` is inclusive. File-level `lineNumber:0` takes no start range. When a concern has no honest anchor, summarize it instead of inventing a line.
 
-Prioritize correctness, security, data loss and regressions. State the consequence and smallest viable correction. Severity is optional: `blocking`, `nit`, `question`, `praise`, or untriaged. Avoid speculative findings and generic praise.
+Prioritize correctness, security, data loss and regressions. State the consequence and the smallest viable correction. Severity is optional: `blocking`, `nit`, `question`, `praise`, or untriaged. Skip speculative findings and generic praise.
 
-In PR mode use **`gh_create_draft_comment`** with the same anchor shape. Follow [PR reads](../diffing-pr-read/SKILL.md) for nested discussion pagination. Drafts remain local. Publish only when explicitly authorized, first using `gh_submit_review({decision:'comment', dryRun:true})` or `diffing gh pr-review --decision comment --dry-run`, then the authorized submission without dry-run.
+PR mode uses **`gh_create_draft_comment`** with the same anchor shape; [PR reads](../diffing-pr-read/SKILL.md) covers nested discussion pagination. Drafts stay local. Publishing needs explicit authorization, and goes `gh_submit_review({decision:'comment', dryRun:true})` or `diffing gh pr-review --decision comment --dry-run` first, then the authorized submission.
 
-A fenced suggestion is proposed code, not permission to apply it during review. Applying it mutates files; this skill does not do that by default.
+A fenced suggestion is proposed code. Applying it writes to the working tree, which is a separate ask from reviewing.
 
 ### 3. Cite a retained capture (optional)
 
-If a review snapshot was retained, navigate it instead of dumping files:
+When a review snapshot was retained, navigate it instead of dumping files:
 
 ```js
 ai_evidence_list({})
@@ -86,14 +91,14 @@ diffing evidence map SNAPSHOT_ID
 diffing evidence read SNAPSHOT_ID --range KEY:START:END
 ```
 
-`ai_evidence_search` returns positions only; read before citing. `ai_notebook` lists cited findings; `ai_notebook_add` and `ai_notebook_decide` write, and they are **not** `ai_evidence_*` tools. Do not start `POST /api/ai/run`.
+`ai_evidence_search` returns positions only — read the range before citing it. `ai_notebook` lists cited findings; `ai_notebook_add` and `ai_notebook_decide` are writes, not `ai_evidence_*` reads. `POST /api/ai/run` belongs to the human's rail.
 
 ## Recovery
 
-A 409 can be a stale generation or an ambiguous path selector; inspect the error and narrow/restart accordingly. A failed or omitted read remains a coverage limitation. Never bypass denied file access or publish to GitHub to work around a local draft failure. See [Recovery and safety](../diffing/references/recovery-and-safety.md).
+A 409 is either a stale generation or an ambiguous path selector — read the error and restart or narrow accordingly. A failed or omitted read stays a coverage limitation in your report. Denied file access and a failed local draft both stand on their own; publishing to GitHub is not a workaround. See [Recovery and safety](../diffing/references/recovery-and-safety.md).
 
 ## Done
 
-Report findings, inspected scope, omissions and the verified review URL. Do not claim every file was reviewed unless it was. Do not wait for another handoff unless requested.
+Report the findings, the scope you inspected, what was omitted, and the verified review URL. Say which files you covered rather than implying all of them. Park unless another handoff was requested.
 
 [Router](../diffing/SKILL.md) · [Start review](../diffing-start-review/SKILL.md) · [Finish review](../diffing-finish-review/SKILL.md) · [Sessions](../diffing/references/sessions-and-transports.md) · [Headless API](../diffing/references/headless-api.md)
