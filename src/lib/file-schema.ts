@@ -29,6 +29,19 @@ export const saveFileSchema = z.object({
   gitAdd: z.boolean().optional(),
 });
 
+// Positions come from the diff gutter: one-based lines, zero-based characters,
+// matching LspSession and the editor's own TextDocument.
+export const codeIntelSchema = z.object({
+  op: z.enum(["hover", "definition", "references"]),
+  path: filePath,
+  side: z.enum(["deletions", "additions"]),
+  line: z.number().int().positive(),
+  character: z.number().int().nonnegative(),
+  includeDeclaration: z.boolean().optional(),
+  /** The scope the client is displaying; defaults to the server's own. */
+  staged: z.boolean().optional(),
+});
+
 export const editSaveSchema = z.object({
   filePath,
   content: z.string(),

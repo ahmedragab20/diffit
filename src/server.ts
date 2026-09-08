@@ -11,6 +11,7 @@ import { NativeFsError, getNativeRepositoryFs } from "./lib/native-fs.js";
 import {
 	saveFileSchema,
 	editSaveSchema,
+	codeIntelSchema,
 	MAX_FILE_REQUEST_BYTES,
 } from "./lib/file-schema.js";
 import { serve } from "@hono/node-server";
@@ -197,6 +198,7 @@ import type { Decision, NotebookEntryInput } from "./lib/ai/notebook.js";
 import { sourceHistory } from "./lib/ai/history.js";
 import { sourceDiscussion } from "./lib/ai/discussion.js";
 import { lookupSymbols, type SymbolKind } from "./lib/ai/symbols.js";
+import { codeIntel, codeIntelCapabilities } from "./lib/code-intel.js";
 import {
 	diffRead,
 	reviewMap,
@@ -1659,6 +1661,46 @@ export function createApp(
 		} catch (error) {
 			return evidenceError(c, error);
 		}
+	});
+
+	/**
+	 * Code intel for the review UI: hover, definition and references over the
+	 * same language-server pool the AI path uses.
+	 *
+	 * A language server answers about the working tree, so `code-intel.ts`
+	 * decides whether this review is one it can answer for at all. Every
+	 * refusal names its reason; the client never has to infer "no server" from
+	 * an empty result.
+	 */
+	app.get("/api/code-intel/capabilities", (c) =>
+		c.json(
+			codeIntelCapabilities(languageServers, {
+				customMode,
+				prMode,
+				staged: diffOpts.staged,
+			}),
+		),
+	);
+
+	app.post("/api/code-intel", async (c) => {
+		const parsed = codeIntelSchema.safeParse(await readCommentJson(c));
+		if (!parsed.success)
+			return c.json({ error: "Invalid code-intel request" }, 400);
+		const { staged, ...request } = parsed.data;
+		return c.json(
+			await codeIntel(
+				languageServers,
+				repoRoot,
+				{
+					customMode,
+					prMode,
+					// The UI can toggle staged after startup, so it states the scope
+					// it is displaying; the startup default stands when it does not.
+					staged: staged ?? diffOpts.staged,
+				},
+				request,
+			),
+		);
 	});
 
 	app.post("/api/ai/evidence/:id/search", async (c) => {
