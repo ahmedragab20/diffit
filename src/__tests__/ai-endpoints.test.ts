@@ -933,3 +933,85 @@ describe("AI evidence navigation endpoints", () => {
 		expect(response.status).toBe(400);
 	});
 });
+
+describe("AI evidence symbol endpoint", () => {
+	async function capturedPlan() {
+		const plans = new InMemoryPlanStore();
+		const plan = await plans.upsert({ title: "Stored", body: "alpha\nbravo" });
+		const server = await app(
+			vi.fn(async (_request, _signal, onEvent) => {
+				await onEvent({ type: "text-delta", text: "ok" });
+				return "ok";
+			}),
+			plans,
+		);
+		const run = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				trigger: "user",
+				conversationId: "plan",
+				modelId: "codex/subscription/codex/gpt-test",
+				action: "critique-plan",
+				surface: "plan",
+				context: { kind: "plan", planId: plan.id, version: 1, title: "client" },
+			}),
+		});
+		expect(run.status).toBe(200);
+		await run.text();
+		const listed = await (await server.request("/api/ai/evidence")).json();
+		return { server, id: listed.snapshots[0].id as string };
+	}
+
+	it("reports unavailable when no language server is configured", async () => {
+		const { server, id } = await capturedPlan();
+		const map = await (await server.request(`/api/ai/evidence/${id}/map`)).json();
+		const response = await server.request(`/api/ai/evidence/${id}/symbols`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				key: map.sources[0].key,
+				line: 1,
+				character: 0,
+				kind: "definitions",
+			}),
+		});
+		expect(response.status).toBe(200);
+		const result = await response.json();
+		// Unavailable is not the same as "no references"; it must say so.
+		expect(result.locations).toEqual([]);
+		expect(result.unavailable).toBeTruthy();
+	});
+
+	it.each([
+		{ label: "an unknown kind", body: { line: 1, character: 0, kind: "all" } },
+		{ label: "a zero line", body: { line: 0, character: 0, kind: "definitions" } },
+		{ label: "a negative character", body: { line: 1, character: -1, kind: "definitions" } },
+		{ label: "an unknown source key", body: { key: "no-such-source", line: 1, character: 0, kind: "definitions" } },
+		{ label: "an omitted key", body: { line: 1, character: 0, kind: "definitions" }, omitKey: true },
+	])("rejects $label", async ({ body, omitKey }) => {
+		const { server, id } = await capturedPlan();
+		const map = await (await server.request(`/api/ai/evidence/${id}/map`)).json();
+		const payload =
+			omitKey || "key" in body
+				? body
+				: { key: map.sources[0].key as string, ...body };
+		const response = await server.request(`/api/ai/evidence/${id}/symbols`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(payload),
+		});
+		// An unknown key is a missing capture source; the rest are malformed.
+		expect([400, 404]).toContain(response.status);
+	});
+
+	it("reports an unknown capture as missing", async () => {
+		const server = await app();
+		const response = await server.request("/api/ai/evidence/nope/symbols", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ key: "a", line: 1, character: 0, kind: "definitions" }),
+		});
+		expect(response.status).toBe(404);
+	});
+});

@@ -1843,9 +1843,19 @@ User-specific preferences, layout options, editor choices, and themes are persis
   "aiServiceTier": null,             // Optional model-specific service tier
   "aiRailWidth": 360,                // Shared diff/plan assistant rail width
   "aiPrivacyAcknowledged": false,    // Context-sharing notice acknowledged
-  "aiSettingsExpanded": false        // AI Connections section expanded/collapsed
+  "aiSettingsExpanded": false,       // AI Connections section expanded/collapsed
+  "aiLanguageServers": {}            // Symbol lookup servers, keyed by file extension
 }
 ```
+
+`aiLanguageServers` maps a file extension (no dot) to a language server, e.g.
+`{"ts": {"command": "typescript-language-server", "args": ["--stdio"]}}`. It is
+empty by default: diffing presumes no toolchain, so definition and reference
+lookups report themselves unavailable until a server is configured. The command
+is resolved on PATH and never run through a shell, and a malformed entry is
+dropped rather than repaired. A language server answers about the working tree,
+so any location it returns that falls outside the captured review snapshot is
+named but marked out of scope and is never readable.
 
 AI provider secrets are never stored in this JSON file. Direct BYOK secrets use
 the OS credential vault or session memory. OpenCode/Cursor-managed BYOK remains

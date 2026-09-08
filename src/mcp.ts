@@ -3419,6 +3419,49 @@ MCP connects only to the loopback diffing server and never terminates a user-own
 	);
 
 	server.registerTool(
+		"ai_evidence_symbols",
+		{
+			title: "Find definitions or references in AI review evidence",
+			description:
+				"Look up definitions or references for a position in a captured source, via a configured language server. " +
+				"Locations outside the capture are named but marked out of scope and are never readable. " +
+				"Reports unavailable when no language server is configured for the source, which is not the same as no results.",
+			inputSchema: {
+				id: z.string().min(1),
+				revision: z.string().min(1).optional(),
+				key: z.string().min(1),
+				line: z.number().int().positive(),
+				character: z.number().int().min(0),
+				kind: z.enum(["definitions", "references"]),
+				includeDeclaration: z.boolean().optional(),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: READ_ONLY,
+		},
+		async ({ id, revision, key, line, character, kind, includeDeclaration }) => {
+			const suffix = revision
+				? `?revision=${encodeURIComponent(revision)}`
+				: "";
+			const result = await requestSessionJson<Record<string, unknown>>(
+				requireAnySession(),
+				`/api/ai/evidence/${encodeURIComponent(id)}/symbols${suffix}`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						key,
+						line,
+						character,
+						kind,
+						includeDeclaration,
+					}),
+				},
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
 		"ai_evidence_search",
 		{
 			title: "Search AI review evidence",

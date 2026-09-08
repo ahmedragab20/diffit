@@ -190,6 +190,8 @@ import { AiRequestError, readAiRunRequest } from "./lib/ai/request.js";
 import { streamAiRun } from "./lib/ai/run-stream.js";
 import { AiSnapshotError } from "./lib/ai/snapshots.js";
 import { SnapshotStore } from "./lib/ai/snapshot-store.js";
+import { LanguageServers } from "./lib/ai/language-servers.js";
+import { lookupSymbols, type SymbolKind } from "./lib/ai/symbols.js";
 import {
 	diffRead,
 	reviewMap,
@@ -556,6 +558,12 @@ export function createApp(
 	const ai = aiService ?? new AiService();
 	// Retains each run's capture so external callers can navigate the same evidence.
 	const snapshotStore = new SnapshotStore();
+	// No language server is presumed; symbol lookup stays unavailable until one
+	// is configured in settings.
+	const languageServers = new LanguageServers(
+		loadSettings().aiLanguageServers ?? {},
+		getRepoRoot(),
+	);
 	const aiConversations = aiConversationStore ?? new FileAiConversationStore();
 
 	// Watch the project storage dir so any write — whether from this server's own
@@ -1460,6 +1468,32 @@ export function createApp(
 				body.maxBytes === undefined ? undefined : Number(body.maxBytes);
 			const read = body.representation === "unified-patch" ? diffRead : sourceRead;
 			return c.json(read(snapshot, requests, maxBytes));
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/symbols", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as {
+				key?: unknown;
+				line?: unknown;
+				character?: unknown;
+				kind?: unknown;
+				includeDeclaration?: unknown;
+			};
+			const snapshot = retained(c);
+			return c.json(
+				await lookupSymbols(snapshot, languageServers, getRepoRoot(), {
+					key: typeof body.key === "string" ? body.key : "",
+					line: Number(body.line),
+					character: Number(body.character),
+					kind: body.kind as SymbolKind,
+					includeDeclaration: body.includeDeclaration === true,
+				}),
+			);
 		} catch (error) {
 			return evidenceError(c, error);
 		}

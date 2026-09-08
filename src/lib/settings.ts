@@ -23,6 +23,12 @@ export function formatModeLabel(mode: string): string {
 	return mode;
 }
 
+export interface AiLanguageServer {
+	/** Resolved on PATH; never run through a shell. */
+	command: string;
+	args?: string[];
+}
+
 export interface Settings {
 	/** Interactive mode used when no explicit output-mode flag is provided. */
 	defaultMode: DefaultMode;
@@ -96,6 +102,12 @@ export interface Settings {
 	aiPrivacyAcknowledged?: boolean;
 	/** Whether the shared AI Connections section is expanded in Settings. */
 	aiSettingsExpanded?: boolean;
+	/**
+	 * Language servers used for AI definition/reference lookups, keyed by file
+	 * extension without the dot (e.g. `ts`). Empty by default: diffing presumes
+	 * no server and reports the feature unavailable until one is configured.
+	 */
+	aiLanguageServers?: Record<string, AiLanguageServer>;
 	/** ISO timestamp when `diffing setup` last completed successfully. */
 	setupCompletedAt?: string | null;
 }
@@ -141,7 +153,41 @@ const DEFAULTS: Settings = {
 	aiRailWidth: 360,
 	aiPrivacyAcknowledged: false,
 	aiSettingsExpanded: false,
+	aiLanguageServers: {},
 };
+
+/**
+ * Keeps only well-formed entries. A malformed server is dropped rather than
+ * repaired, so a bad edit disables a lookup instead of running something odd.
+ */
+export function sanitizeLanguageServers(
+	value: unknown,
+): Record<string, AiLanguageServer> {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+	const servers: Record<string, AiLanguageServer> = {};
+	for (const [extension, entry] of Object.entries(
+		value as Record<string, unknown>,
+	)) {
+		if (!/^[A-Za-z0-9_+-]{1,32}$/.test(extension)) continue;
+		const server = entry as Partial<AiLanguageServer> | null;
+		if (
+			!server ||
+			typeof server.command !== "string" ||
+			!server.command.trim() ||
+			server.command.length > 1024
+		)
+			continue;
+		const args = server.args ?? [];
+		if (
+			!Array.isArray(args) ||
+			args.length > 32 ||
+			args.some((arg) => typeof arg !== "string" || arg.length > 1024)
+		)
+			continue;
+		servers[extension.toLowerCase()] = { command: server.command, args };
+	}
+	return servers;
+}
 
 export function loadSettings(): Settings {
 	try {
@@ -150,6 +196,9 @@ export function loadSettings(): Settings {
 		if (settings.defaultMode !== "web" && settings.defaultMode !== "tui") {
 			settings.defaultMode = DEFAULTS.defaultMode;
 		}
+		settings.aiLanguageServers = sanitizeLanguageServers(
+			settings.aiLanguageServers,
+		);
 		return settings;
 	} catch {
 		return { ...DEFAULTS };
