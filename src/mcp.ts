@@ -3419,6 +3419,43 @@ MCP connects only to the loopback diffing server and never terminates a user-own
 	);
 
 	server.registerTool(
+		"ai_evidence_verify",
+		{
+			title: "Verify an AI review citation",
+			description:
+				"Confirm a previously issued citation still anchors to a retained capture. A citation issued elsewhere is invalid and one held against another generation is stale; neither is silently accepted.",
+			inputSchema: {
+				id: z.string().min(1),
+				revision: z.string().min(1),
+				reference: z.object({
+					id: z.string().min(1),
+					snapshotId: z.string().min(1),
+					snapshotRevision: z.string().min(1),
+					sourceId: z.string().min(1),
+					sourceHash: z.string().min(1),
+					excerptHash: z.string().min(1),
+					startLine: z.number().int(),
+					endLine: z.number().int(),
+				}),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: READ_ONLY,
+		},
+		async ({ id, revision, reference }) => {
+			const result = await requestSessionJson<Record<string, unknown>>(
+				requireAnySession(),
+				`/api/ai/evidence/${encodeURIComponent(id)}/verify`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ reference, revision }),
+				},
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
 		"ai_evidence_symbols",
 		{
 			title: "Find definitions or references in AI review evidence",

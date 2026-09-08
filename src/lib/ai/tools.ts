@@ -12,6 +12,7 @@ import {
 	AiSnapshotError,
 	type AiEvidenceReference,
 	type ReviewSnapshot,
+	type SnapshotIdentity,
 	type SnapshotSide,
 	type SourceProvenance,
 } from "./snapshots.js";
@@ -57,6 +58,8 @@ export interface SourceEntry {
 
 export interface ReviewMap {
 	revision: string;
+	/** Which local/PR/plan generation this capture is of. */
+	identity: SnapshotIdentity;
 	sources: SourceEntry[];
 	omissions: string[];
 	coverage: ReturnType<ReviewSnapshot["coverage"]>;
@@ -93,6 +96,7 @@ export function reviewMap(
 	const end = offset + page.length;
 	return {
 		revision: manifest.revision,
+		identity: manifest.identity,
 		sources: page.map((source) => ({
 			key: source.key,
 			path: source.path,
@@ -229,6 +233,45 @@ export function diffRead(
 	maxBytes = TOOL_LIMITS.batchBytes,
 ): BatchRead {
 	return readBatch(snapshot, requests, "unified-patch", maxBytes);
+}
+
+export interface CitationCheck {
+	anchorValid: true;
+	sourceVerified: boolean;
+	provenance: SourceProvenance;
+}
+
+/**
+ * Confirms a previously issued citation still anchors to this capture. A
+ * citation that was never issued here is invalid, and one held against a
+ * different generation is stale — neither is silently accepted, so a stored
+ * reference can be re-checked rather than trusted.
+ */
+export function verifyCitation(
+	snapshot: ReviewSnapshot,
+	reference: unknown,
+	revision: string,
+): CitationCheck {
+	const fields: (keyof AiEvidenceReference)[] = [
+		"id",
+		"snapshotId",
+		"snapshotRevision",
+		"sourceId",
+		"sourceHash",
+		"excerptHash",
+	];
+	const value = reference as Partial<AiEvidenceReference> | null;
+	if (
+		!value ||
+		typeof value !== "object" ||
+		fields.some((field) => typeof value[field] !== "string") ||
+		!Number.isSafeInteger(value.startLine) ||
+		!Number.isSafeInteger(value.endLine) ||
+		typeof revision !== "string" ||
+		!revision
+	)
+		throw new AiSnapshotError("invalid");
+	return snapshot.verify(value as AiEvidenceReference, revision);
 }
 
 export interface SymbolLocation {

@@ -197,6 +197,7 @@ import {
 	reviewMap,
 	sourceRead,
 	sourceSearch,
+	verifyCitation,
 	type ReadRequest,
 } from "./lib/ai/tools.js";
 import { resolvePlanSnapshot } from "./lib/ai/plan-snapshot.js";
@@ -1468,6 +1469,24 @@ export function createApp(
 				body.maxBytes === undefined ? undefined : Number(body.maxBytes);
 			const read = body.representation === "unified-patch" ? diffRead : sourceRead;
 			return c.json(read(snapshot, requests, maxBytes));
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/verify", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as { reference?: unknown; revision?: unknown };
+			const snapshot = retained(c);
+			return c.json(
+				verifyCitation(
+					snapshot,
+					body.reference,
+					typeof body.revision === "string" ? body.revision : "",
+				),
+			);
 		} catch (error) {
 			return evidenceError(c, error);
 		}

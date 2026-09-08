@@ -13,6 +13,7 @@ import {
   reviewMap,
   sourceRead,
   sourceSearch,
+  verifyCitation,
 } from "../tools.js";
 
 const identity: SnapshotIdentity = {
@@ -300,4 +301,65 @@ describe("locateInSnapshot", () => {
     );
     expect(found[0]).toMatchObject({ key: null, inScope: false });
   });
+});
+
+describe("snapshot identity and citation verification", () => {
+  it("names which generation the map describes", () => {
+    const map = reviewMap(snapshotOf());
+    expect(map.identity).toMatchObject({ kind: "plan", planId: "p", version: 1 });
+    expect(map.revision).toBeTruthy();
+  });
+
+  it("verifies a citation the capture issued", () => {
+    const snapshot = snapshotOf();
+    const batch = sourceRead(snapshot, [
+      { key: "a.ts", startLine: 1, endLine: 2 },
+    ]);
+    const [item] = batch.items;
+    if (!item.ok) throw new Error("expected a successful read");
+    expect(
+      verifyCitation(snapshot, item.value.evidence, snapshot.manifest.revision),
+    ).toMatchObject({ anchorValid: true, sourceVerified: true });
+  });
+
+  it("rejects a citation this capture never issued", () => {
+    const snapshot = snapshotOf();
+    const other = snapshotOf();
+    const batch = sourceRead(other, [{ key: "a.ts", startLine: 1, endLine: 1 }]);
+    const [item] = batch.items;
+    if (!item.ok) throw new Error("expected a successful read");
+    expectCode(
+      () =>
+        verifyCitation(snapshot, item.value.evidence, snapshot.manifest.revision),
+      "invalid",
+    );
+  });
+
+  it("rejects a citation held against another generation as stale", () => {
+    const snapshot = snapshotOf();
+    const batch = sourceRead(snapshot, [
+      { key: "a.ts", startLine: 1, endLine: 1 },
+    ]);
+    const [item] = batch.items;
+    if (!item.ok) throw new Error("expected a successful read");
+    expectCode(
+      () => verifyCitation(snapshot, item.value.evidence, "some-other-revision"),
+      "stale",
+    );
+  });
+
+  it.each([
+    ["a non-object", 42],
+    ["null", null],
+    ["a missing field", { id: "x" }],
+    ["a non-integer line", { id: "x", snapshotId: "x", snapshotRevision: "x", sourceId: "x", sourceHash: "x", excerptHash: "x", startLine: 1.5, endLine: 2 }],
+  ])("rejects %s as a citation", (_label, reference) =>
+    expectCode(
+      () => verifyCitation(snapshotOf(), reference, "rev"),
+      "invalid",
+    ),
+  );
+
+  it("rejects a blank revision", () =>
+    expectCode(() => verifyCitation(snapshotOf(), {}, ""), "invalid"));
 });

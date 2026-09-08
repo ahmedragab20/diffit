@@ -44,6 +44,7 @@ vi.mock("../lib/ai/local-snapshot.js", () => ({
 	}),
 }));
 import { DEFAULTS } from "../lib/diff-options.js";
+import { SESSION_TOKEN_HEADER } from "../lib/server-auth.js";
 
 vi.mock("../lib/git.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../lib/git.js")>();
@@ -1013,5 +1014,120 @@ describe("AI evidence symbol endpoint", () => {
 			body: JSON.stringify({ key: "a", line: 1, character: 0, kind: "definitions" }),
 		});
 		expect(response.status).toBe(404);
+	});
+});
+
+describe("AI evidence authorization", () => {
+	async function securedApp() {
+		const { createApp } = await import("../server.js");
+		return createApp(
+			"/tmp/diffing-ai-client",
+			DEFAULTS,
+			new InMemoryCommentStore(),
+			new InMemoryPlanStore(),
+			undefined,
+			false,
+			{ bindHost: "127.0.0.1", authToken: "secret-token" },
+			new InMemoryMockupStore(),
+			undefined,
+			new AiService([adapter()]),
+			new InMemoryAiConversationStore(),
+		);
+	}
+
+	// Retained captures are readable evidence; every route that reaches them
+	// must sit behind the same session auth as the rest of the API.
+	it.each([
+		["GET", "/api/ai/evidence"],
+		["GET", "/api/ai/evidence/any/map"],
+		["POST", "/api/ai/evidence/any/read"],
+		["POST", "/api/ai/evidence/any/search"],
+		["POST", "/api/ai/evidence/any/symbols"],
+		["POST", "/api/ai/evidence/any/verify"],
+	])("refuses %s %s without a session token", async (method, path) => {
+		const server = await securedApp();
+		const response = await server.request(path, {
+			method,
+			headers: { "content-type": "application/json" },
+			body: method === "POST" ? JSON.stringify({}) : undefined,
+		});
+		expect(response.status).toBe(401);
+	});
+
+	it("admits the same routes with the session token", async () => {
+		const server = await securedApp();
+		const response = await server.request("/api/ai/evidence", {
+			headers: { [SESSION_TOKEN_HEADER]: "secret-token" },
+		});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ snapshots: [] });
+	});
+});
+
+describe("AI evidence citation verification endpoint", () => {
+	it("verifies a citation the capture issued and refuses a foreign one", async () => {
+		const plans = new InMemoryPlanStore();
+		const plan = await plans.upsert({ title: "Stored", body: "alpha\nbravo" });
+		const server = await app(
+			vi.fn(async (_request, _signal, onEvent) => {
+				await onEvent({ type: "text-delta", text: "ok" });
+				return "ok";
+			}),
+			plans,
+		);
+		const run = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				trigger: "user",
+				conversationId: "plan",
+				modelId: "codex/subscription/codex/gpt-test",
+				action: "critique-plan",
+				surface: "plan",
+				context: { kind: "plan", planId: plan.id, version: 1, title: "client" },
+			}),
+		});
+		expect(run.status).toBe(200);
+		await run.text();
+		const listed = await (await server.request("/api/ai/evidence")).json();
+		const id = listed.snapshots[0].id as string;
+		const map = await (await server.request(`/api/ai/evidence/${id}/map`)).json();
+		const read = await (
+			await server.request(`/api/ai/evidence/${id}/read`, {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					requests: [{ key: map.sources[0].key, startLine: 1, endLine: 1 }],
+				}),
+			})
+		).json();
+		const reference = read.items[0].value.evidence;
+
+		const ok = await server.request(`/api/ai/evidence/${id}/verify`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ reference, revision: map.revision }),
+		});
+		expect(ok.status).toBe(200);
+		expect(await ok.json()).toMatchObject({ anchorValid: true });
+
+		// A citation the capture never issued must not be accepted.
+		const forged = await server.request(`/api/ai/evidence/${id}/verify`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				reference: { ...reference, excerptHash: "0".repeat(64) },
+				revision: map.revision,
+			}),
+		});
+		expect(forged.status).toBe(400);
+
+		// A citation held against another generation is stale, not accepted.
+		const stale = await server.request(`/api/ai/evidence/${id}/verify`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ reference, revision: "not-this-generation" }),
+		});
+		expect(stale.status).toBe(409);
 	});
 });
