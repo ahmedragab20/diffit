@@ -36,6 +36,10 @@ export interface ReviewSettingsPopoverProps {
 	ignoreAllSpace?: boolean;
 	/** Opt-in inline diagnostics while editing in place. */
 	editDiagnostics: boolean;
+	/** Opt-in language-server hover and go-to-declaration in the diff. */
+	codeIntel: boolean;
+	/** Why code intel cannot answer for this review, when it cannot. */
+	codeIntelUnavailable?: string;
 	onDiffStyleChange: (style: "split" | "unified") => void;
 	onDiffOptionsChange?: (options: DiffOptions) => void;
 	onDefaultTabSizeChange: (size: number) => void;
@@ -58,6 +62,7 @@ export interface ReviewSettingsPopoverProps {
 	onIgnoreSpaceChange?: (v: boolean) => void;
 	onIgnoreAllSpaceChange?: (v: boolean) => void;
 	onEditDiagnosticsChange: (v: boolean) => void;
+	onCodeIntelChange: (v: boolean) => void;
 	onOpenUiFontModal: () => void;
 	onOpenMonoFontModal: () => void;
 	showSource?: boolean;
@@ -147,6 +152,8 @@ export function ReviewSettingsPopover({
 	showStatusBar,
 	ignoreSpaceChange = false,
 	editDiagnostics = false,
+	codeIntel = false,
+	codeIntelUnavailable,
 	ignoreAllSpace = false,
 	onDiffStyleChange,
 	onDiffOptionsChange,
@@ -170,6 +177,7 @@ export function ReviewSettingsPopover({
 	onIgnoreSpaceChange,
 	onIgnoreAllSpaceChange,
 	onEditDiagnosticsChange,
+	onCodeIntelChange,
 	onOpenUiFontModal,
 	onOpenMonoFontModal,
 	showSource = true,
@@ -512,6 +520,22 @@ export function ReviewSettingsPopover({
 						onChange={(event) => onEditDiagnosticsChange(event.target.checked)}
 					/>
 					Edit diagnostics
+				</label>
+				<label
+					className="settings-item"
+					title={
+						codeIntelUnavailable
+							? `Code intel is unavailable for this review: ${codeIntelUnavailable}`
+							: "Hover a token for its type and docs, and modifier-click to jump to its declaration. Needs a language server configured for the file's extension."
+					}
+				>
+					<input
+						type="checkbox"
+						checked={codeIntel}
+						disabled={Boolean(codeIntelUnavailable)}
+						onChange={(event) => onCodeIntelChange(event.target.checked)}
+					/>
+					Code intel (hover, go to declaration)
 				</label>
 			</div>
 		</Popover>

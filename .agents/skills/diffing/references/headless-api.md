@@ -260,6 +260,8 @@ These HTTP surfaces have no general-purpose MCP/CLI mirror. Check authority befo
 | POST | `/api/open-file` | `{filePath, editor?}`; launches trusted external editor |
 | GET | `/api/repo-files` | Repository file list |
 | POST | `/api/search` | `{scope, query, limit?, regex?, changedPaths?}`; surrounding source, not just diff rows |
+| GET | `/api/code-intel/capabilities` | `{configured, extensions, unavailable?}`; says whether this review can answer a lookup at all |
+| POST | `/api/code-intel` | `{op, path, side, line, character, includeDeclaration?, staged?}`; hover/definition/references over the working tree, refusals name their reason |
 | GET | `/api/search/status` | Search backend status |
 | POST | `/api/search/track` | Search frecency update |
 | GET | `/api/merge-status` | Merge/conflict state |

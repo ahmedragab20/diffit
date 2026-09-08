@@ -66,14 +66,14 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified
 
 ### Stage 1 — hover, go-to-declaration, peek
 
-- [ ] 1.1 `src/lib/ai/lsp.ts` — `hover()`, `hoverBytes` limit, hover capability
-- [ ] 1.2 `src/lib/code-intel.ts` — availability rule, URI mapping, result shaping
-- [ ] 1.3 `src/server.ts` — `GET /api/code-intel/capabilities`, `POST /api/code-intel`
-- [ ] 1.4 `src/ui/hooks/useCodeIntel.ts` — capability query, debounce, abort, LRU
-- [ ] 1.5 `src/ui/components/CodeIntelPopover.tsx`
-- [ ] 1.6 `src/ui/components/DefinitionPeek.tsx`
-- [ ] 1.7 `src/ui/components/FileDiffCard.tsx` — wire the three token callbacks
-- [ ] 1.8 Settings + toolbar toggle
+- [x] 1.1 `src/lib/ai/lsp.ts` — `hover()`, `hoverBytes` limit, hover capability
+- [x] 1.2 `src/lib/code-intel.ts` — availability rule, URI mapping, result shaping
+- [x] 1.3 `src/server.ts` — `GET /api/code-intel/capabilities`, `POST /api/code-intel`
+- [x] 1.4 `src/ui/hooks/useCodeIntel.ts` — capability query, debounce, abort, LRU
+- [x] 1.5 `src/ui/components/CodeIntelPopover.tsx`
+- [x] 1.6 `src/ui/components/DefinitionPeek.tsx` (+ `src/ui/lib/definitionPeek.ts`)
+- [x] 1.7 `src/ui/components/FileDiffCard.tsx` — wire the three token callbacks
+- [x] 1.8 Settings + toolbar toggle
 
 ### Stage 2 — diagnostics while editing
 
@@ -101,8 +101,81 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified
 
 ## Gotchas found along the way
 
-_(appended as they are hit)_
+- **The capability probe runs regardless of the setting.** The plan said nothing
+  would be probed until `codeIntel` was on, but then the settings toggle cannot
+  explain why switching it on does nothing. One small `GET` per session is the
+  better trade. The promise that matters — *no token listener is attached* until
+  the setting is on **and** a server is configured — is unchanged.
+- **Dirty-file suppression is client-side.** The server has no idea a browser
+  holds an unsaved draft (`/api/edit-save` only writes), so `useCodeIntel` skips
+  lookups for a file with `editSession.dirty`. Covered by the hook test, not the
+  server availability matrix as the plan sketched.
+- **`isCustomMode` is a private local in `server.ts:305`**, not an export from
+  `diff-engine.ts`. `code-intel.ts` takes plain booleans instead of `DiffOptions`
+  so it stays pure and trivially testable.
+- **Indentation is per file.** `server.ts`, `App.tsx`, `Toolbar.tsx`,
+  `useSettings.ts` and `ReviewSettingsPopover.tsx` use tabs; `DiffViewer.tsx`,
+  `FileDiffCard.tsx`, `file-schema.ts` and the `src/ui/hooks` files use two
+  spaces. There is no formatter in this repo — no biome, prettier or eslint
+  config, and no lint script. Match the file you are in.
+- **Token hooks live inside the `options` prop**, not as top-level props:
+  `FileDiffOptions extends InteractionManagerBaseOptions<'diff'>`. There are
+  three `options` objects in `FileDiffCard.tsx` (edit, read, virtualized
+  fallback) and all three need them.
+- **`PrReviewApp.tsx` renders `ReviewSettingsPopover` directly**, so any new
+  required prop on that component has to be passed there too.
+- **A language server answers nothing about a file it was not given.** Probed
+  directly against `typescript-language-server`: hover without `didOpen` returns
+  `{"contents":[]}`; with it, the full type and JSDoc. Document sync was planned
+  for stage 2, but stage 1 does not work at all without it, so a minimal
+  read-only version (open off disk, keep open, `didChange` when mtime/size
+  moves) landed here. **This is also a live defect in the shipped AI symbol
+  path** — `ai/symbols.ts` never opens documents, so its definition/reference
+  lookups return empty against tsserver-family servers and report "no results".
+  Out of scope for this branch; `LspSession` now has what it needs to fix it.
+- **`LSP_LIMITS.totalBytes` was a lifetime cap, not a memory cap.** The decoder
+  added every received byte to a running total and failed the session past 16
+  MB. Harmless for short AI lookups; fatal once a session stays open and streams
+  diagnostics. Now bounds *buffered* bytes and is named `bufferedBytes`.
+- **`useTokenTransformer` is a worker-pool render option, not a per-file one.**
+  This is the one that cost the most time. Passing it in a card's `options` type
+  checks, reaches `DiffHunksRenderer`, and does nothing: the worker pool holds
+  its own `renderOptions`, so the flag has to go through
+  `poolManager.setRenderOptions(...)` in `App.tsx`. Without it the renderer emits
+  whole-line `data-diff-span` markup, no `data-char` token elements exist, and
+  `onTokenEnter` can never fire. Symptom: everything wired correctly, zero
+  requests, no errors anywhere.
+- **Diff code lives in a shadow root** (`<diffs-container>`). Fine for
+  `getBoundingClientRect` and for portalling a popover to `document.body`, but
+  DOM queries from outside must hop `shadowRoot` explicitly.
+- **`scrollIntoView` drags the horizontal axis too.** In the peek panel that hid
+  the start of every line; the fix resets `scrollLeft` after the scroll settles.
 
 ## Verification log
 
-_(command output that actually ran, appended per stage)_
+### Stage 1
+
+`npx vitest run` — 228 files, 2813 tests, all passing.
+`npx tsc --noEmit -p tsconfig.json` — clean. `npx vite build` — clean.
+
+End-to-end against a real `typescript-language-server`, with an isolated
+`HOME` so the developer's own settings were untouched:
+
+```
+GET /api/code-intel/capabilities
+  → {"configured":true,"extensions":["ts","tsx"]}
+
+POST /api/code-intel {"op":"hover","path":"src/lib/code-intel.ts",
+                      "side":"additions","line":239,"character":22}
+  → "```typescript\nfunction codeIntel(servers: LanguageServers, …)\n```
+     Look up a position in the review. Every refusal names its reason…"
+
+POST /api/code-intel {"op":"definition","path":"src/lib/code-intel.ts",
+                      "side":"additions","line":18,"character":20}
+  → src/lib/ai/language-servers.ts:25, inRepository: true
+```
+
+In the browser: hovering `LanguageServers` in the diff shows the type popover;
+⌘-click opens the peek panel at `src/lib/ai/language-servers.ts:25` on the
+`export class LanguageServers {` line. The settings toggle renders under
+Editing and reflects the stored value.

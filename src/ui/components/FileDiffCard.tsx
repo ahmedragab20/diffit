@@ -14,8 +14,12 @@ import {
   registerDiffTarget,
   scheduleDiffNavigation,
 } from "../lib/diffNavigation";
+import { openDefinitionPeek } from "../lib/definitionPeek";
+import { useCodeIntel, type CodeIntelTarget } from "../hooks/useCodeIntel";
+import { CodeIntelPopover } from "./CodeIntelPopover";
 import type {
   DiffLineAnnotation,
+  DiffTokenEventBaseProps,
   FileDiffMetadata,
   AnnotationSide,
   SelectedLineRange,
@@ -244,6 +248,10 @@ interface FileDiffCardProps {
   fileSearch?: FileSearchSession | null;
   /** Open the find-in-file bar on this file (from the header search button). */
   onOpenFileSearch?: (filePath: string) => void;
+  /** The `codeIntel` setting; false keeps token listeners off the renderer. */
+  codeIntelEnabled?: boolean;
+  /** The scope being displayed, which code intel must answer against. */
+  staged?: boolean;
 }
 
 export const FileDiffCard = memo(function FileDiffCard({
@@ -291,6 +299,8 @@ export const FileDiffCard = memo(function FileDiffCard({
   onEditExit,
   fileSearch,
   onOpenFileSearch,
+  codeIntelEnabled = false,
+  staged = false,
 }: FileDiffCardProps) {
   const [pending, setPending] = useState<PendingComment | null>(null);
   /**
@@ -697,6 +707,95 @@ export const FileDiffCard = memo(function FileDiffCard({
   );
 
   /**
+   * Hover and go-to-declaration over the review's language servers.
+   *
+   * A file with unsaved edits no longer matches what the server reads off
+   * disk, so the session's own dirty flag suppresses lookups for it rather
+   * than describing text the reviewer is no longer looking at.
+   */
+  const codeIntel = useCodeIntel({
+    enabled: codeIntelEnabled,
+    staged,
+    isDirty: useCallback(
+      () => Boolean(editSession?.dirty),
+      [editSession?.dirty],
+    ),
+  });
+
+  const toTarget = useCallback(
+    (props: {
+      lineNumber: number;
+      lineCharStart: number;
+      tokenText: string;
+      tokenElement: HTMLElement;
+      side: AnnotationSide;
+    }): CodeIntelTarget => ({
+      path: filePath,
+      side: props.side === "deletions" ? "deletions" : "additions",
+      line: props.lineNumber,
+      character: props.lineCharStart,
+      tokenText: props.tokenText,
+      anchor: props.tokenElement,
+    }),
+    [filePath],
+  );
+
+  const { hoverToken, clearHover, closeHover, resolveDefinition } = codeIntel;
+
+  /**
+   * Token callbacks for the renderer, or undefined when the setting is off so
+   * the diff mounts with no token listeners at all — the default.
+   *
+   * These are gated on the *setting*, not on whether a language server turned
+   * out to be reachable. The renderer only wraps tokens individually when a
+   * token callback exists at highlight time (`shouldUseTokenTransformer`), and
+   * it does not re-highlight when the callbacks appear later, so handing them
+   * over after the capability probe resolves would leave the file with no
+   * hoverable tokens at all. The callbacks themselves are inert until the hook
+   * reports ready, so nothing is requested in the meantime.
+   */
+  const tokenHandlers = useMemo(() => {
+    if (!codeIntelEnabled) return undefined;
+    return {
+      // MultiFileDiff and FileDiff do not infer this from the callbacks the
+      // way UnresolvedFile and the SSR paths do; without it the renderer never
+      // wraps tokens and no token event ever fires.
+      useTokenTransformer: true,
+      onTokenEnter: (props: DiffTokenEventBaseProps) => {
+        hoverToken(toTarget(props));
+      },
+      onTokenLeave: () => {
+        clearHover();
+      },
+      onTokenClick: async (
+        props: DiffTokenEventBaseProps,
+        event: MouseEvent,
+      ) => {
+        // Plain clicks still belong to selection; only a modified click nav.
+        if (!event.metaKey && !event.ctrlKey && !event.altKey) return;
+        event.preventDefault();
+        const target = toTarget(props);
+        closeHover();
+        const locations = await resolveDefinition(target);
+        const first = locations?.find((location) => location.inRepository);
+        if (!first) return;
+        openDefinitionPeek({
+          path: first.path,
+          line: first.line,
+          symbol: target.tokenText,
+        });
+      },
+    };
+  }, [
+    codeIntelEnabled,
+    hoverToken,
+    clearHover,
+    closeHover,
+    resolveDefinition,
+    toTarget,
+  ]);
+
+  /**
    * Creation-time editor options for the in-place edit surface. The factory
    * (from EditProvider) owns the Editor instance; these callbacks wire it to
    * the edit-session state in App.
@@ -934,6 +1033,13 @@ export const FileDiffCard = memo(function FileDiffCard({
       id={id}
       data-file-path={filePath}
     >
+      {codeIntel.hover && (
+        <CodeIntelPopover
+          hover={codeIntel.hover}
+          onHold={codeIntel.holdHover}
+          onClose={codeIntel.closeHover}
+        />
+      )}
       <div
         className="file-diff-card-header"
         onClick={() => {
@@ -1466,6 +1572,7 @@ export const FileDiffCard = memo(function FileDiffCard({
                 onEditComplete={() => "reject"}
                 editorOptions={editorOptions}
                 options={{
+                  ...tokenHandlers,
                   onPostRender,
                   diffStyle,
                   // Line selection + gutter utility are read-mode comment
@@ -1532,6 +1639,7 @@ export const FileDiffCard = memo(function FileDiffCard({
                 oldFile={{ name: oldFilePath, contents: oldContent ?? "" }}
                 newFile={{ name: filePath, contents: newContent ?? "" }}
                 options={{
+                  ...tokenHandlers,
                   onPostRender,
                   diffStyle,
                   enableGutterUtility: true,
@@ -1607,6 +1715,7 @@ export const FileDiffCard = memo(function FileDiffCard({
               >
                 fileDiff={fileDiff}
                 options={{
+                  ...tokenHandlers,
                   onPostRender,
                   diffStyle,
                   enableGutterUtility: true,

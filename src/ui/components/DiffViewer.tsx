@@ -45,6 +45,10 @@ interface DiffViewerProps {
   collapsedContextThreshold: number;
   expansionLineCount: number;
   autoCollapseLineThreshold: number;
+  /** Opt-in language-server hover and go-to-declaration in the diff. */
+  codeIntelEnabled?: boolean;
+  /** The scope being displayed; code intel must answer against it. */
+  staged?: boolean;
   onViewedChange: (filePath: string, viewed: boolean) => void;
   fileAnnotationsMap: Map<string, DiffLineAnnotation<ReviewComment>[]>;
   existingCommentsMap?: Map<string, PrExistingComment[]>;
@@ -157,6 +161,8 @@ export const DiffViewer = memo(function DiffViewer({
   collapsedContextThreshold,
   expansionLineCount,
   autoCollapseLineThreshold,
+  codeIntelEnabled,
+  staged,
   onViewedChange,
   fileAnnotationsMap,
   existingCommentsMap,
@@ -262,6 +268,8 @@ export const DiffViewer = memo(function DiffViewer({
               collapsedContextThreshold={collapsedContextThreshold}
               expansionLineCount={expansionLineCount}
               autoCollapseLineThreshold={autoCollapseLineThreshold}
+              codeIntelEnabled={codeIntelEnabled}
+              staged={staged}
               onViewedChange={onViewedChange}
               onAddComment={onAddComment}
               onDeleteComment={onDeleteComment}

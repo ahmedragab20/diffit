@@ -689,6 +689,11 @@ export function PrReviewApp() {
     // PR reviews are read-only: editing is a local working-tree feature.
     editDiagnostics: false,
     onEditDiagnosticsChange: () => {},
+    // A language server answers about the working tree, which a PR's new side
+    // is not. The toggle stays visible but says why it cannot be switched on.
+    codeIntel: false,
+    codeIntelUnavailable: "pull-request",
+    onCodeIntelChange: () => {},
     onDiffStyleChange: (value: "split" | "unified") =>
       update({ diffStyle: value }),
     onDefaultTabSizeChange: (value: number) =>

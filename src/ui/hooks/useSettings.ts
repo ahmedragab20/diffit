@@ -59,6 +59,11 @@ export interface Settings {
 	 * Off by default so users who want a noise-free review never see them.
 	 */
 	editDiagnostics: boolean;
+	/**
+	 * Opt-in language-server hover and go-to-declaration in the diff.
+	 * Off by default; requires a configured language server to do anything.
+	 */
+	codeIntel: boolean;
 	aiModel?: string | null;
 	aiReasoningEffort?: string | null;
 	aiServiceTier?: string | null;
@@ -103,6 +108,7 @@ const DEFAULTS: Settings = {
 	ignoreSpaceChange: false,
 	ignoreAllSpace: false,
 	editDiagnostics: false,
+	codeIntel: false,
 	aiModel: null,
 	aiReasoningEffort: null,
 	aiServiceTier: null,

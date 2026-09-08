@@ -76,6 +76,10 @@ interface ToolbarProps {
 	ignoreAllSpace: boolean;
 	/** Opt-in inline diagnostics while editing in place. */
 	editDiagnostics: boolean;
+	/** Opt-in language-server hover and go-to-declaration in the diff. */
+	codeIntel: boolean;
+	/** Why code intel cannot answer for this review, when it cannot. */
+	codeIntelUnavailable?: string;
 	onDiffStyleChange: (style: "split" | "unified") => void;
 	onDiffOptionsChange: (options: DiffOptions) => void;
 	onDefaultTabSizeChange: (size: number) => void;
@@ -98,6 +102,7 @@ interface ToolbarProps {
 	onIgnoreSpaceChange: (v: boolean) => void;
 	onIgnoreAllSpaceChange: (v: boolean) => void;
 	onEditDiagnosticsChange: (v: boolean) => void;
+	onCodeIntelChange: (v: boolean) => void;
 	onResolveAllOpen: () => void | Promise<void>;
 	onOpenUiFontModal: () => void;
 	onOpenMonoFontModal: () => void;
@@ -238,6 +243,8 @@ export const Toolbar = memo(function Toolbar({
 	ignoreSpaceChange,
 	ignoreAllSpace,
 	editDiagnostics,
+	codeIntel,
+	codeIntelUnavailable,
 	onDiffStyleChange,
 	onDiffOptionsChange,
 	onDefaultTabSizeChange,
@@ -260,6 +267,7 @@ export const Toolbar = memo(function Toolbar({
 	onIgnoreSpaceChange,
 	onIgnoreAllSpaceChange,
 	onEditDiagnosticsChange,
+	onCodeIntelChange,
 	onResolveAllOpen,
 	onOpenUiFontModal,
 	onOpenMonoFontModal,
@@ -421,6 +429,8 @@ export const Toolbar = memo(function Toolbar({
 					ignoreSpaceChange={ignoreSpaceChange}
 					ignoreAllSpace={ignoreAllSpace}
 					editDiagnostics={editDiagnostics}
+					codeIntel={codeIntel}
+					codeIntelUnavailable={codeIntelUnavailable}
 					onDiffStyleChange={onDiffStyleChange}
 					onDiffOptionsChange={onDiffOptionsChange}
 					onDefaultTabSizeChange={onDefaultTabSizeChange}
@@ -443,6 +453,7 @@ export const Toolbar = memo(function Toolbar({
 					onIgnoreSpaceChange={onIgnoreSpaceChange}
 					onIgnoreAllSpaceChange={onIgnoreAllSpaceChange}
 					onEditDiagnosticsChange={onEditDiagnosticsChange}
+					onCodeIntelChange={onCodeIntelChange}
 					onOpenUiFontModal={onOpenUiFontModal}
 					onOpenMonoFontModal={onOpenMonoFontModal}
 					showSource={!customMode}
