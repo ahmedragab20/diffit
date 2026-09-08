@@ -16,6 +16,25 @@ export const RAIL_WIDTH = Object.freeze({
 });
 
 /**
+ * The range actually available in this window. Announced to assistive
+ * technology, so it must match what a resize can really produce rather than
+ * the nominal bounds.
+ */
+export function railWidthBounds(viewportWidth: number): {
+	min: number;
+	max: number;
+} {
+	if (!Number.isFinite(viewportWidth))
+		return { min: RAIL_WIDTH.min, max: RAIL_WIDTH.max };
+	const available = viewportWidth - RAIL_WIDTH.gutter;
+	const max = Math.max(
+		RAIL_WIDTH.collapseBelow,
+		Math.min(RAIL_WIDTH.max, available),
+	);
+	return { min: Math.min(RAIL_WIDTH.min, max), max };
+}
+
+/**
  * Resolves a requested rail width against the viewport. Returns null when the
  * window cannot accommodate a usable rail at all, so the caller can collapse
  * it instead of rendering something unreadable.

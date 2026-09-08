@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { RAIL_WIDTH, clampRailWidth } from "../railWidth.js";
+import {
+  RAIL_WIDTH,
+  clampRailWidth,
+  railWidthBounds,
+} from "../railWidth.js";
 
 const WIDE = 1920;
 
@@ -81,5 +85,51 @@ describe("persisted width across window sizes", () => {
     const once = clampRailWidth(900, 1000);
     expect(once).not.toBeNull();
     expect(clampRailWidth(once!, 1000)).toBe(once);
+  });
+});
+
+describe("announced bounds match what a resize can produce", () => {
+  it("reports the nominal range on a wide window", () => {
+    expect(railWidthBounds(WIDE)).toEqual({
+      min: RAIL_WIDTH.min,
+      max: RAIL_WIDTH.max,
+    });
+  });
+
+  it("narrows the announced maximum with the window", () => {
+    // 900px leaves 540 for the rail, so announcing 720 would be a lie.
+    expect(railWidthBounds(900).max).toBe(540);
+  });
+
+  it("lowers the announced minimum when the window forces it", () => {
+    const bounds = railWidthBounds(640);
+    expect(bounds.max).toBe(280);
+    expect(bounds.min).toBeLessThanOrEqual(bounds.max);
+  });
+
+  it("never announces a minimum above its maximum", () => {
+    for (const viewport of [320, 480, 600, 720, 900, 1280, 2560]) {
+      const bounds = railWidthBounds(viewport);
+      expect(bounds.min).toBeLessThanOrEqual(bounds.max);
+    }
+  });
+
+  it("brackets every width the clamp can actually return", () => {
+    for (const viewport of [640, 900, 1280, 2560]) {
+      const bounds = railWidthBounds(viewport);
+      for (const requested of [0, 300, 500, 5000]) {
+        const width = clampRailWidth(requested, viewport);
+        if (width === null) continue;
+        expect(width).toBeGreaterThanOrEqual(bounds.min);
+        expect(width).toBeLessThanOrEqual(bounds.max);
+      }
+    }
+  });
+
+  it("falls back to the nominal range for a non-finite viewport", () => {
+    expect(railWidthBounds(Number.NaN)).toEqual({
+      min: RAIL_WIDTH.min,
+      max: RAIL_WIDTH.max,
+    });
   });
 });

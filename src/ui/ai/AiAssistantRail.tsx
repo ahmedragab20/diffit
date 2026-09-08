@@ -7,7 +7,7 @@ import {
 	useState,
 	type MouseEvent as ReactMouseEvent,
 } from "react";
-import { clampRailWidth } from "./railWidth.js";
+import { clampRailWidth, railWidthBounds } from "./railWidth.js";
 import {
 	Check,
 	Copy,
@@ -703,6 +703,12 @@ function AiAssistantRailOpen({
 		document.body.style.userSelect = "none";
 	};
 
+	// The announced range must match what a resize can really produce in this
+	// window, not the nominal bounds.
+	const announcedBounds = railWidthBounds(
+		typeof window === "undefined" ? Number.NaN : window.innerWidth,
+	);
+
 	const setKeyboardWidth = (next: number) => {
 		const width = clampRailWidth(
 			next,
@@ -930,8 +936,8 @@ function AiAssistantRailOpen({
 				role="separator"
 				aria-label="Resize AI assistant"
 				aria-orientation="vertical"
-				aria-valuemin={320}
-				aria-valuemax={720}
+				aria-valuemin={announcedBounds.min}
+				aria-valuemax={announcedBounds.max}
 				aria-valuenow={localWidth}
 				tabIndex={0}
 			>
