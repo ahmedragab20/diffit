@@ -192,6 +192,8 @@ import { AiSnapshotError } from "./lib/ai/snapshots.js";
 import { SnapshotStore } from "./lib/ai/snapshot-store.js";
 import { LanguageServers } from "./lib/ai/language-servers.js";
 import { AiStorage } from "./lib/ai/storage.js";
+import { NotebookStore } from "./lib/ai/notebook-store.js";
+import type { Decision, NotebookEntryInput } from "./lib/ai/notebook.js";
 import { sourceHistory } from "./lib/ai/history.js";
 import { sourceDiscussion } from "./lib/ai/discussion.js";
 import { lookupSymbols, type SymbolKind } from "./lib/ai/symbols.js";
@@ -1496,6 +1498,60 @@ export function createApp(
 	};
 	const optionalInt = (value: string | undefined): number | undefined =>
 		value === undefined ? undefined : Number(value);
+
+	/**
+	 * Notebook entries are authored against a retained capture and validated
+	 * before storage, so an entry that cannot cite the capture is never kept.
+	 * Deciding is a separate route: authoring never records an outcome.
+	 */
+	const notebook = aiStorage ? new NotebookStore(aiStorage) : null;
+	const requireNotebook = () => {
+		if (!notebook) throw new AiSnapshotError("unsupported");
+		return notebook;
+	};
+
+	app.get("/api/ai/evidence/:id/notebook", (c) => {
+		try {
+			const snapshot = retained(c);
+			return c.json(requireNotebook().read(snapshot.manifest.id));
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/notebook", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as { entry?: unknown };
+			const snapshot = retained(c);
+			const entry = await requireNotebook().author(
+				snapshot,
+				body.entry as NotebookEntryInput,
+			);
+			return c.json({ entry });
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
+
+	app.post("/api/ai/evidence/:id/decide", async (c) => {
+		try {
+			const body = (await c.req.json().catch(() => {
+				throw new AiSnapshotError("invalid");
+			})) as { entryId?: unknown; decision?: unknown; decidedBy?: unknown };
+			const snapshot = retained(c);
+			const entry = await requireNotebook().decide(
+				snapshot.manifest.id,
+				typeof body.entryId === "string" ? body.entryId : "",
+				body.decision as Decision,
+				typeof body.decidedBy === "string" ? body.decidedBy : "",
+			);
+			return c.json({ entry });
+		} catch (error) {
+			return evidenceError(c, error);
+		}
+	});
 
 	app.get("/api/ai/evidence", (c) =>
 		c.json({ snapshots: snapshotStore.list() }),

@@ -1096,6 +1096,10 @@ async function evidence(args: string[]): Promise<number> {
 				kind: { type: "string" },
 				"include-declaration": { type: "boolean" },
 				reference: { type: "string" },
+				entry: { type: "string" },
+				"entry-id": { type: "string" },
+				decision: { type: "string" },
+				by: { type: "string" },
 				pretty: { type: "boolean" },
 				help: { type: "boolean", short: "h" },
 			},
@@ -1109,7 +1113,7 @@ async function evidence(args: string[]): Promise<number> {
 	const [resource, positional, ...extra] = parsed.positionals;
 	const values = parsed.values;
 	if (values.help || !resource || extra.length > 0) {
-		console.error(`Usage: diffing evidence <list|map|read|search|symbols|verify|history|discussion> [<id>] [options]
+		console.error(`Usage: diffing evidence <list|map|read|search|symbols|verify|history|discussion|notebook|decide> [<id>] [options]
 
 Read the review snapshot a recent AI run captured. Read-only; no run is started.
   list
@@ -1120,6 +1124,8 @@ Read the review snapshot a recent AI run captured. Read-only; no run is started.
   verify     <id> --revision R --reference JSON
   history    <id> --key K [--limit N] [--cursor N]
   discussion <id> [--key K] [--limit N] [--cursor N]
+  notebook   <id> [--entry JSON]
+  decide     <id> --entry-id E --decision accepted|rejected|deferred --by WHO
 
 Listing and searching are not reading: they add nothing to returned-line coverage.
 Add --pretty for indented JSON. Compact JSON is the token-efficient default.`);
@@ -1135,6 +1141,8 @@ Add --pretty for indented JSON. Compact JSON is the token-efficient default.`);
 		"verify",
 		"history",
 		"discussion",
+		"notebook",
+		"decide",
 	]);
 	if (!known.has(resource)) {
 		console.error(`Unknown evidence resource: ${resource}`);
@@ -1286,6 +1294,51 @@ Add --pretty for indented JSON. Compact JSON is the token-efficient default.`);
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ reference, revision: values.revision }),
+			};
+			break;
+		}
+		case "notebook": {
+			path = `/api/ai/evidence/${id}/notebook`;
+			if (typeof values.entry === "string") {
+				let entry: unknown;
+				try {
+					entry = JSON.parse(values.entry);
+				} catch {
+					console.error("--entry must be JSON");
+					return EXIT_USAGE;
+				}
+				init = {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ entry }),
+				};
+			}
+			break;
+		}
+		case "decide": {
+			const decision = values.decision;
+			if (
+				typeof values["entry-id"] !== "string" ||
+				typeof values.by !== "string" ||
+				!values.by ||
+				(decision !== "accepted" &&
+					decision !== "rejected" &&
+					decision !== "deferred")
+			) {
+				console.error(
+					"diffing evidence decide: --entry-id, --decision accepted|rejected|deferred and --by are required",
+				);
+				return EXIT_USAGE;
+			}
+			path = `/api/ai/evidence/${id}/decide`;
+			init = {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					entryId: values["entry-id"],
+					decision,
+					decidedBy: values.by,
+				}),
 			};
 			break;
 		}

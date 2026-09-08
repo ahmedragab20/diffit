@@ -3419,6 +3419,108 @@ MCP connects only to the loopback diffing server and never terminates a user-own
 	);
 
 	server.registerTool(
+		"ai_notebook",
+		{
+			title: "Read the review notebook for a capture",
+			description:
+				"List notebook entries authored against one retained capture, with any decision recorded on each. Read-only.",
+			inputSchema: {
+				id: z.string().min(1),
+				revision: z.string().min(1).optional(),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: READ_ONLY,
+		},
+		async ({ id, revision }) => {
+			const suffix = revision ? `?revision=${encodeURIComponent(revision)}` : "";
+			const result = await requestSessionJson<Record<string, unknown>>(
+				requireAnySession(),
+				`/api/ai/evidence/${encodeURIComponent(id)}/notebook${suffix}`,
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
+		"ai_notebook_add",
+		{
+			title: "Author a cited notebook entry",
+			description:
+				"Add a finding, proposal or question to a capture's notebook. Every entry must cite the capture: a quote that does not match, or a citation minted elsewhere, is rejected. Authoring never records a decision.",
+			inputSchema: {
+				id: z.string().min(1),
+				revision: z.string().min(1).optional(),
+				entry: z.object({
+					id: z.string().min(1),
+					kind: z.enum(["finding", "proposal", "question"]),
+					title: z.string().min(1),
+					body: z.string().min(1),
+					uncertainty: z.enum(["low", "medium", "high"]),
+					links: z.array(z.string().min(1)).max(20).optional(),
+					citations: z
+						.array(
+							z.object({
+								key: z.string().min(1),
+								startLine: z.number().int().positive(),
+								endLine: z.number().int().positive(),
+								quote: z.string().min(1),
+								evidenceId: z.string().min(1),
+							}),
+						)
+						.min(1)
+						.max(20),
+				}),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: IDEMPOTENT_MUTATION,
+		},
+		async ({ id, revision, entry }) => {
+			const suffix = revision ? `?revision=${encodeURIComponent(revision)}` : "";
+			const result = await requestSessionJson<Record<string, unknown>>(
+				requireAnySession(),
+				`/api/ai/evidence/${encodeURIComponent(id)}/notebook${suffix}`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ entry }),
+				},
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
+		"ai_notebook_decide",
+		{
+			title: "Record a decision on a notebook entry",
+			description:
+				"Accept, reject or defer one notebook entry, recording who decided. Deciding is separate from authoring, and an earlier decision stays in the journal.",
+			inputSchema: {
+				id: z.string().min(1),
+				revision: z.string().min(1).optional(),
+				entryId: z.string().min(1),
+				decision: z.enum(["accepted", "rejected", "deferred"]),
+				decidedBy: z.string().min(1).max(200),
+			},
+			outputSchema: { result: z.unknown() },
+			annotations: IDEMPOTENT_MUTATION,
+		},
+		async ({ id, revision, entryId, decision, decidedBy }) => {
+			const suffix = revision ? `?revision=${encodeURIComponent(revision)}` : "";
+			const result = await requestSessionJson<Record<string, unknown>>(
+				requireAnySession(),
+				`/api/ai/evidence/${encodeURIComponent(id)}/decide${suffix}`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({ entryId, decision, decidedBy }),
+				},
+			);
+			return textResult(JSON.stringify(result), { result });
+		},
+	);
+
+	server.registerTool(
 		"ai_evidence_history",
 		{
 			title: "Commit history for a captured source",

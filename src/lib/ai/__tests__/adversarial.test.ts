@@ -223,7 +223,7 @@ describe("read-only authority", () => {
     expect(text).not.toMatch(/\bspawnSync\b/);
   });
 
-  it("annotates every evidence MCP tool read-only", () => {
+  it("keeps the evidence namespace strictly read-only", () => {
     const text = readFileSync(join(root, "src/mcp.ts"), "utf-8");
     const blocks = text.split("server.registerTool(").slice(1);
     const evidence = blocks.filter((block) =>
@@ -232,8 +232,28 @@ describe("read-only authority", () => {
     expect(evidence.length).toBeGreaterThanOrEqual(8);
     for (const block of evidence) {
       const name = /"(ai_evidence_[a-z_]+)"/.exec(block)?.[1];
+      // A writing tool must not borrow the read-only namespace.
       expect(block, `${name} must be read-only`).toContain(
         "annotations: READ_ONLY",
+      );
+    }
+  });
+
+  it("marks the notebook writers as non-destructive mutations", () => {
+    const text = readFileSync(join(root, "src/mcp.ts"), "utf-8");
+    const blocks = text.split("server.registerTool(").slice(1);
+    const writers = blocks.filter((block) =>
+      /^\s*"ai_notebook_(add|decide)"/.test(block),
+    );
+    expect(writers).toHaveLength(2);
+    for (const block of writers) {
+      const name = /"(ai_notebook_[a-z_]+)"/.exec(block)?.[1];
+      // Authoring and deciding write, but neither destroys anything.
+      expect(block, `${name} must be an idempotent mutation`).toContain(
+        "annotations: IDEMPOTENT_MUTATION",
+      );
+      expect(block, `${name} must not be destructive`).not.toContain(
+        "destructiveHint: true",
       );
     }
   });

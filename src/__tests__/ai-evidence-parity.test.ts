@@ -30,7 +30,7 @@ function mcpEvidenceCalls(): Call[] {
   const blocks = mcpSource.split("server.registerTool(").slice(1);
   const calls: Call[] = [];
   for (const block of blocks) {
-    const tool = /^\s*"(ai_evidence_[a-z_]+)"/.exec(block)?.[1];
+    const tool = /^\s*"(ai_(?:evidence|notebook)[a-z_]*)"/.exec(block)?.[1];
     if (!tool) continue;
     // The split already bounds each block at the next registration.
     const body = block;
