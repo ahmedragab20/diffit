@@ -266,3 +266,60 @@ describe("validation", () => {
     ).rejects.toMatchObject({ code: "limit" });
   });
 });
+
+describe("server wiring", () => {
+	it("journals a run's boundaries when a store is supplied", async () => {
+		const store = new AiStorage(dir);
+		const { streamAiRun } = await import("../run-stream.js");
+		const journal = {
+			record: async (entry: {
+				key: string;
+				runId: string;
+				conversationId: string;
+				kind: "request" | "result" | "error";
+				payload: unknown;
+			}) => {
+				await store.append(entry.key, {
+					id: entry.key,
+					runId: entry.runId,
+					conversationId: entry.conversationId,
+					kind: entry.kind,
+					createdAt: 1,
+					payload: entry.payload,
+				});
+			},
+		};
+		const events: unknown[] = [];
+		await streamAiRun(
+			{
+				run: async (_request, emit) => {
+					await emit({ type: "start", runId: "r1", modelId: "codex/test" });
+					await emit({ type: "complete", text: "answer" });
+					return "answer";
+				},
+				cancel: () => true,
+			},
+			{
+				trigger: "user",
+				conversationId: "c1",
+				modelId: "codex/test",
+				surface: "diff",
+				action: "ask",
+				context: { kind: "diff" },
+			},
+			{
+				writeSSE: async (frame) => events.push(frame),
+				onAbort: () => {},
+			},
+			new AbortController().signal,
+			undefined,
+			journal,
+		);
+		expect(store.list("r1").map((record) => record.kind)).toEqual([
+			"request",
+			"result",
+		]);
+		// A replayed store sees the same durable record after a restart.
+		expect(new AiStorage(dir).list("r1")).toHaveLength(2);
+	});
+});

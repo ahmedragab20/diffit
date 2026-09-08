@@ -251,3 +251,102 @@ describe("streamAiRun", () => {
 		]);
 	});
 });
+
+describe("run journalling", () => {
+	function journal() {
+		const entries: {
+			key: string;
+			runId: string;
+			kind: string;
+			payload: unknown;
+		}[] = [];
+		return {
+			entries,
+			record: vi.fn(async (entry: (typeof entries)[number]) => {
+				entries.push(entry);
+			}),
+		};
+	}
+
+	it("records the run boundaries and not every delta", async () => {
+		const h = harness();
+		const j = journal();
+		const s = service(async (emit) => {
+			await emit(started);
+			await emit({ type: "text-delta", text: "an" });
+			await emit({ type: "text-delta", text: "swer" });
+			await emit(completed);
+		});
+		await streamAiRun(s, request, h.stream, signal(), undefined, j);
+		expect(j.entries.map((entry) => entry.kind)).toEqual(["request", "result"]);
+		expect(j.entries[0].runId).toBe("r");
+		// The terminal record establishes what the run produced; deltas do not.
+		expect(j.entries[1].payload).toMatchObject({ type: "complete" });
+	});
+
+	it("uses a stable idempotency key per run and kind", async () => {
+		const h = harness();
+		const j = journal();
+		const s = service(async (emit) => {
+			await emit(started);
+			await emit(completed);
+		});
+		await streamAiRun(s, request, h.stream, signal(), undefined, j);
+		expect(j.entries.map((entry) => entry.key)).toEqual([
+			"r:request",
+			"r:result",
+		]);
+	});
+
+	it("records a terminal error once", async () => {
+		const h = harness();
+		const j = journal();
+		const s = service(async (emit) => {
+			await emit(started);
+			await emit({ type: "error", code: "provider_failed", message: "no" });
+		});
+		await streamAiRun(s, request, h.stream, signal(), undefined, j);
+		const errors = j.entries.filter((entry) => entry.kind === "error");
+		expect(errors).toHaveLength(1);
+		expect(errors[0].key).toBe("r:error");
+	});
+
+	it("records a thrown failure that never reached a terminal event", async () => {
+		const h = harness();
+		const j = journal();
+		const s = service(async (emit) => {
+			await emit(started);
+			throw new AiRunError("provider_failed");
+		});
+		await streamAiRun(s, request, h.stream, signal(), undefined, j);
+		expect(j.entries.map((entry) => entry.kind)).toEqual(["request", "error"]);
+		expect(j.entries[1].payload).toMatchObject({ code: "provider_failed" });
+	});
+
+	it("does not take down a run when journalling fails", async () => {
+		const h = harness();
+		const failing = {
+			record: vi.fn(async () => {
+				throw new Error("disk full");
+			}),
+		};
+		const s = service(async (emit) => {
+			await emit(started);
+			await emit(completed);
+		});
+		await streamAiRun(s, request, h.stream, signal(), undefined, failing);
+		// The stream must still deliver a normal, complete run.
+		expect(h.events.map((event) => event.type)).toEqual(["start", "complete"]);
+		expect(failing.record).toHaveBeenCalled();
+	});
+
+	it("runs unchanged when no journal is supplied", async () => {
+		const h = harness();
+		const s = service(async (emit) => {
+			await emit(started);
+			await emit(completed);
+		});
+		await streamAiRun(s, request, h.stream, signal());
+		expect(h.events.map((event) => event.type)).toEqual(["start", "complete"]);
+	});
+});

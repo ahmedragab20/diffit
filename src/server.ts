@@ -191,6 +191,7 @@ import { streamAiRun } from "./lib/ai/run-stream.js";
 import { AiSnapshotError } from "./lib/ai/snapshots.js";
 import { SnapshotStore } from "./lib/ai/snapshot-store.js";
 import { LanguageServers } from "./lib/ai/language-servers.js";
+import { AiStorage } from "./lib/ai/storage.js";
 import { sourceHistory } from "./lib/ai/history.js";
 import { sourceDiscussion } from "./lib/ai/discussion.js";
 import { lookupSymbols, type SymbolKind } from "./lib/ai/symbols.js";
@@ -376,6 +377,12 @@ export function createApp(
 	designSystemStore?: DesignSystemStore,
 	aiService?: AiService,
 	aiConversationStore?: AiConversationStore,
+	/**
+	 * Durable run journal. Omitted means runs are not journaled, which keeps
+	 * an embedded app from writing to a user's storage directory; the server
+	 * entry point supplies the real one.
+	 */
+	aiStorage?: AiStorage,
 ) {
 	const app = new Hono();
 	app.onError((error, c) => {
@@ -561,6 +568,30 @@ export function createApp(
 	const ai = aiService ?? new AiService();
 	// Retains each run's capture so external callers can navigate the same evidence.
 	const snapshotStore = new SnapshotStore();
+	/**
+	 * Durable record of run boundaries, when a store was supplied. Journalling
+	 * is best-effort: a storage failure never takes down a live run.
+	 */
+	const runJournal = aiStorage
+		? {
+				record: async (entry: {
+					key: string;
+					runId: string;
+					conversationId: string;
+					kind: "request" | "result" | "error";
+					payload: unknown;
+				}) => {
+					await aiStorage.append(entry.key, {
+						id: entry.key,
+						runId: entry.runId,
+						conversationId: entry.conversationId,
+						kind: entry.kind,
+						createdAt: Date.now(),
+						payload: entry.payload,
+					});
+				},
+			}
+		: undefined;
 	// No language server is presumed; symbol lookup stays unavailable until one
 	// is configured in settings.
 	const languageServers = new LanguageServers(
@@ -1954,7 +1985,7 @@ export function createApp(
 		}
 		try {
 			return streamSSE(c, (stream) =>
-				streamAiRun(ai, body, stream, c.req.raw.signal, prepared),
+				streamAiRun(ai, body, stream, c.req.raw.signal, prepared, runJournal),
 			);
 		} catch (error) {
 			ai.cancel(prepared.runId);
@@ -5259,6 +5290,11 @@ export async function startServer(options: {
 		prStoreForApp,
 		prMode,
 		options.security,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		new AiStorage(getProjectStorageDir(getRepoRoot())),
 	);
 
 	return new Promise((resolve, reject) => {
