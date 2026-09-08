@@ -3,7 +3,7 @@
 // enforcement, secret-safe diagnostics, and read-only tool authority. These
 // assert invariants rather than one code path, so a future change that widens
 // authority has to break a test to land.
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -282,5 +282,59 @@ describe("freshness gates", () => {
     expect(
       diffRead(snap, [{ key: "p", startLine: 1, endLine: 1 }]).items[0],
     ).toMatchObject({ ok: true });
+  });
+});
+
+describe("no automatic inference or unauthorized publication", () => {
+  const aiSources = (dir: string): string[] => {
+    const out: string[] = [];
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      if (statSync(path).isDirectory()) {
+        if (name === "__tests__") continue;
+        out.push(...aiSources(path));
+      } else if (/\.tsx?$/.test(name)) out.push(path);
+    }
+    return out;
+  };
+
+  const modules = [
+    ...aiSources(join(root, "src/lib/ai")),
+    ...aiSources(join(root, "src/ui/ai")),
+  ];
+
+  it.each([
+    "mergePullRequestViaGh",
+    "setPrOpenStateViaGh",
+    "updatePrMetadataViaGh",
+    "applyPrSuggestionViaGh",
+    "addCommentsToPendingReviewViaGh",
+    "github-pr-actions",
+  ])("no AI module reaches %s", (symbol) => {
+    // The AI surface must not be able to publish or mutate a pull request,
+    // however a run is prompted.
+    const offenders = modules.filter((path) =>
+      readFileSync(path, "utf-8").includes(symbol),
+    );
+    expect(offenders.map((path) => path.slice(root.length + 1))).toEqual([]);
+  });
+
+  it("starts inference only on an explicit user trigger", () => {
+    const triggers = new Set<string>();
+    for (const path of modules) {
+      for (const match of readFileSync(path, "utf-8").matchAll(
+        /trigger:\s*["'`](\w+)["'`]/g,
+      ))
+        triggers.add(match[1]);
+    }
+    // A background or automatic trigger would start inference unprompted.
+    expect([...triggers]).toEqual(["user"]);
+  });
+
+  it("keeps the server-side refusal of a non-user trigger", () => {
+    const request = readFileSync(join(root, "src/lib/ai/request.ts"), "utf-8");
+    const service = readFileSync(join(root, "src/lib/ai/service.ts"), "utf-8");
+    expect(request).toContain('trigger !== "user"');
+    expect(service).toContain('trigger !== "user"');
   });
 });
