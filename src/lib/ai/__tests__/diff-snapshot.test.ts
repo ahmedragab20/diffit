@@ -26,6 +26,29 @@ describe("resolveDiffSnapshot", () => {
     const quoted = 'diff --git "a/weird\\303\\251 name.ts" "b/weird\\303\\251 name.ts"\n--- "a/weird\\303\\251 name.ts"\n+++ "b/weird\\303\\251 name.ts"\n';
     expect(resolveDiffSnapshot(context({ kind: "file", filePath: "weirdé name.ts" }), capture(quoted), "/repo").snapshot.manifest.sources).toHaveLength(1);
   });
+  it("carries captured originals alongside the patch and says offsets are not file lines", () => {
+    const text = patch("src/a.ts");
+    const originals = [
+      { key: "old:src/a.ts", path: "src/a.ts", side: "old" as const, revision: "HEAD", content: "old\n", complete: true, provenance: "recorded" as const, representation: "original" as const },
+      { key: "new:src/a.ts", path: "src/a.ts", side: "new" as const, revision: "worktree", content: "new\n", complete: true, provenance: "reconstructed" as const, representation: "original" as const },
+    ];
+    const resolved = resolveDiffSnapshot(context(), { ...capture(text), originals }, "/repo");
+    const sources = resolved.snapshot.manifest.sources;
+    expect(sources.filter((s) => s.representation === "original")).toHaveLength(2);
+    expect(sources.filter((s) => s.representation === "unified-patch")).toHaveLength(1);
+    // With originals present the capture must stop claiming no coverage.
+    expect(resolved.snapshot.manifest.omissions.join(" ")).toContain("cite original-file lines");
+    expect(resolved.snapshot.manifest.omissions.join(" ")).not.toContain("Original-file coverage is not established");
+    // The original lines are real file lines and are readable as such.
+    expect(resolved.snapshot.read("new:src/a.ts", 1, 1).text).toBe("new");
+  });
+  it("keeps only the scoped path's originals and refuses an unsafe original path", () => {
+    const text = patch("src/a.ts") + patch("src/b.ts");
+    const original = (path: string) => ({ key: `new:${path}`, path, side: "new" as const, revision: "worktree", content: "x\n", complete: true, provenance: "recorded" as const, representation: "original" as const });
+    const scoped = resolveDiffSnapshot(context({ kind: "file", filePath: "src/a.ts" }), { ...capture(text), originals: [original("src/a.ts"), original("src/b.ts")] }, "/repo");
+    expect(scoped.snapshot.manifest.sources.filter((s) => s.representation === "original").map((s) => s.path)).toEqual(["src/a.ts"]);
+    code(() => resolveDiffSnapshot(context(), { ...capture(text), originals: [original("../escape.ts")] }, "/repo"), "invalid");
+  });
   it("rejects unsafe paths, missing scope, stale hashes, malformed/combined patches, and oversized patches", () => {
     code(() => resolveDiffSnapshot(context({ kind: "file", filePath: "../x" }), capture(patch("x")), "/repo"), "invalid");
     code(() => resolveDiffSnapshot(context({ kind: "file", filePath: "missing.ts" }), capture(patch("x")), "/repo"), "missing");

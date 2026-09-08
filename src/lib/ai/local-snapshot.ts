@@ -1,6 +1,14 @@
 import { execFile } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { promisify } from "node:util";
+import { join } from "node:path";
 import type { DiffOptions } from "../diff-options.js";
+import { toSafeLiteralRelativePath } from "../path.js";
+import {
+	ORIGINALS_LIMITS,
+	captureLocalOriginals,
+} from "./local-originals.js";
+import type { SnapshotSourceInput } from "./snapshots.js";
 import {
 	AiSnapshotError,
 	sourceHash,
@@ -137,6 +145,34 @@ function checkedPatch(result: LocalPatchResult) {
 	};
 }
 
+/**
+ * Reads a blob at a revision through the same read-only git invocation as the
+ * rest of this module. An empty revision names the index.
+ */
+function blobReader(root: string) {
+	return async (revision: string, path: string): Promise<string | null> => {
+		try {
+			return await git(root, ["show", "--end-of-options", `${revision}:${path}`]);
+		} catch {
+			return null;
+		}
+	};
+}
+
+/** Reads a working-tree file, refusing any path that escapes the repository. */
+function worktreeReader(root: string) {
+	return async (path: string): Promise<string | null> => {
+		const safe = toSafeLiteralRelativePath(path, root);
+		if (!safe) return null;
+		try {
+			const content = await readFile(join(root, safe), "utf8");
+			return content.length > ORIGINALS_LIMITS.maxFileBytes ? null : content;
+		} catch {
+			return null;
+		}
+	};
+}
+
 /** Optimistic capture: recheck refs, index and exact patch before inference; never call it an atomic filesystem transaction. */
 export async function captureLocalReview(
 	root: string,
@@ -156,13 +192,33 @@ export async function captureLocalReview(
 		patchHash: hashes.patchHash,
 	};
 	Object.freeze(identity);
+	const originals = await captureLocalOriginals(
+		{
+			patch: result.patch,
+			mode: before.mode,
+			baseSha: before.baseSha,
+			headSha: before.headSha,
+		},
+		blobReader(root),
+		worktreeReader(root),
+	);
+	const originalsHash = sourceHash(
+		JSON.stringify(
+			originals.sources.map((source) => [
+				source.key,
+				source.revision,
+				source.content === null ? null : sourceHash(source.content),
+			]),
+		),
+	);
 	const omissions = [
 		...(before.repositoryHeadSha
 			? []
 			: [
 					"Repository HEAD could not be established; no repository HEAD identity is claimed.",
 				]),
-		"Local capture is optimistic, not an atomic filesystem snapshot. Original files have not been captured.",
+		"Local capture is optimistic, not an atomic filesystem snapshot.",
+		...originals.omissions,
 		...(before.mode === "mixed"
 			? [
 					"Staged and unstaged patch occurrences are distinct; no single old/new revision pair is asserted.",
@@ -176,6 +232,7 @@ export async function captureLocalReview(
 	return {
 		identity,
 		patch: result.patch,
+		originals: originals.sources as SnapshotSourceInput[],
 		omissions,
 		async assertFresh() {
 			if (JSON.stringify(before) !== JSON.stringify(await state(root, opts)))
@@ -185,6 +242,28 @@ export async function captureLocalReview(
 				JSON.stringify(checkedPatch(await readPatch(structuredClone(opts))))
 			)
 				throw new AiSnapshotError("stale");
+			// Working-tree originals are not covered by the index hash, so the
+			// captured contents are re-read and compared before they are used.
+			const recheck = await captureLocalOriginals(
+				{
+					patch: result.patch,
+					mode: before.mode,
+					baseSha: before.baseSha,
+					headSha: before.headSha,
+				},
+				blobReader(root),
+				worktreeReader(root),
+			);
+			const recheckHash = sourceHash(
+				JSON.stringify(
+					recheck.sources.map((source) => [
+						source.key,
+						source.revision,
+						source.content === null ? null : sourceHash(source.content),
+					]),
+				),
+			);
+			if (recheckHash !== originalsHash) throw new AiSnapshotError("stale");
 			if (JSON.stringify(before) !== JSON.stringify(await state(root, opts)))
 				throw new AiSnapshotError("stale");
 		},
