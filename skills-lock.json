@@ -1,23 +1,65 @@
 {
   "version": 1,
   "skills": {
+    "diffing": {
+      "source": "ahmedragab20/diffing",
+      "sourceType": "github",
+      "skillPath": "skills/diffing/SKILL.md",
+      "computedHash": "ecddd704786692e985d34e7219b84b7a26e21684db2011bd655dff9c0c216fbd"
+    },
     "diffing-finish-review": {
       "source": "ahmedragab20/diffing",
       "sourceType": "github",
       "skillPath": "skills/diffing-finish-review/SKILL.md",
-      "computedHash": "11ef36837b463da449a118838c927a8d85f3f88ae4634de4a787331ffaf67e5b"
+      "computedHash": "daf84b816511edbbcd5f8251d3faddc2d0b9629992691de0748b2e3ecf288945"
+    },
+    "diffing-mockup-author": {
+      "source": "ahmedragab20/diffing",
+      "sourceType": "github",
+      "skillPath": "skills/diffing-mockup-author/SKILL.md",
+      "computedHash": "f533064bbc8f89b61deb1e8765f68b7297c5f882101844ffc8f8196d3ca9d993"
+    },
+    "diffing-mockup-review": {
+      "source": "ahmedragab20/diffing",
+      "sourceType": "github",
+      "skillPath": "skills/diffing-mockup-review/SKILL.md",
+      "computedHash": "7417b93d54aa28df76e953a22d3299ec773688f6f7a1d484a0b2a33bec327544"
+    },
+    "diffing-plan-review": {
+      "source": "ahmedragab20/diffing",
+      "sourceType": "github",
+      "skillPath": "skills/diffing-plan-review/SKILL.md",
+      "computedHash": "0efb31715bfde544b16e07a54079edc3a3907a647ea0c375770015040bf9ef6c"
+    },
+    "diffing-pr-address": {
+      "source": "ahmedragab20/diffing",
+      "sourceType": "github",
+      "skillPath": "skills/diffing-pr-address/SKILL.md",
+      "computedHash": "fc25cfa29f4c2120169eff6dde48298ea455ddda2eaad608d350d56fd54d833b"
+    },
+    "diffing-pr-read": {
+      "source": "ahmedragab20/diffing",
+      "sourceType": "github",
+      "skillPath": "skills/diffing-pr-read/SKILL.md",
+      "computedHash": "e10e88d4b53350206ab1dc7aac7e9a6b33f81e65aedc9bee504442983cf3e97b"
+    },
+    "diffing-release": {
+      "source": "ahmedragab20/diffing",
+      "sourceType": "github",
+      "skillPath": "skills/diffing-release/SKILL.md",
+      "computedHash": "943dad683227de40e9e942ae0a316c46e53f0a247447e0e6a6e21281ef8d6bcc"
     },
     "diffing-review": {
       "source": "ahmedragab20/diffing",
       "sourceType": "github",
       "skillPath": "skills/diffing-review/SKILL.md",
-      "computedHash": "7ceddfa190c721a353261b99481a120dc369b8f7167b9abd95c87a6c738faa79"
+      "computedHash": "3ebd1c4f0d09a64d0f3ee8404092a35c5cabba135d2376c80fabaa4ec6019682"
     },
     "diffing-start-review": {
       "source": "ahmedragab20/diffing",
       "sourceType": "github",
       "skillPath": "skills/diffing-start-review/SKILL.md",
-      "computedHash": "3a3ae3e3bd705f9b434991a47db6e734465acb3c4a7179e7c8184afe890e3eff"
+      "computedHash": "e47844619f7df1f777c01babedf34bec7e2a00d69400dda3e348247c53ebfc3e"
     }
   }
 }
