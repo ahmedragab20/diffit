@@ -7,6 +7,7 @@
  * explicitly out of scope. Symbol navigation therefore cannot become a way to
  * read files the run was never given.
  */
+import { pathToFileURL } from "node:url";
 import { LspError } from "./lsp.js";
 import type { LanguageServers } from "./language-servers.js";
 import { AiSnapshotError, type ReviewSnapshot } from "./snapshots.js";
@@ -62,8 +63,11 @@ export async function lookupSymbols(
 		throw new AiSnapshotError("unsupported");
 	if (query.line > source.lines) throw new AiSnapshotError("invalid");
 
-	const absolute = `${repositoryRoot.replace(/\/+$/, "")}/${source.path}`;
-	const uri = `file://${absolute}`;
+	// Built through pathToFileURL so spaces and other characters are encoded,
+	// matching how returned locations are decoded on the way back.
+	const uri = pathToFileURL(
+		`${repositoryRoot.replace(/\/+$/, "")}/${source.path}`,
+	).href;
 	let located: SymbolLocation[];
 	try {
 		const session = await servers.sessionFor(source.path);

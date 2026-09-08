@@ -118,6 +118,28 @@ describe("lookupSymbols", () => {
     }
   });
 
+  it("round-trips a path that needs percent-encoding", async () => {
+    // The outgoing uri is encoded and the returned one decoded; a space must
+    // survive both directions and still resolve inside the capture.
+    useServer("file:///repo/src/my%20dir/a.ts");
+    const servers = configured();
+    try {
+      const result = await lookupSymbols(
+        snapshotOf(source({ key: "a.ts", path: "src/my dir/a.ts" })),
+        servers,
+        ROOT,
+        { key: "a.ts", line: 1, character: 0, kind: "definitions" },
+      );
+      expect(result.locations[0]).toMatchObject({
+        key: "a.ts",
+        path: "src/my dir/a.ts",
+        inScope: true,
+      });
+    } finally {
+      await servers.close();
+    }
+  });
+
   it("names a location outside the capture without making it readable", async () => {
     useServer("file:///repo/src/elsewhere.ts");
     const servers = configured();
