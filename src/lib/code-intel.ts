@@ -11,10 +11,47 @@
  * Nothing here grants the server authority. It asks questions and reads
  * answers; no edit, command or file write is ever accepted.
  */
+import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { LspError, type LspLocation } from "./ai/lsp.js";
+import { LspError, type LspLocation, type LspSession } from "./ai/lsp.js";
 import type { LanguageServers } from "./ai/language-servers.js";
+
+/** Files above this are not worth pushing at a language server for a tooltip. */
+const MAX_DOCUMENT_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Extensions whose LSP `languageId` is not simply the extension. Servers use
+ * it to pick a parser, so a wrong one silently produces nothing.
+ */
+const LANGUAGE_IDS: Record<string, string> = {
+	ts: "typescript",
+	tsx: "typescriptreact",
+	mts: "typescript",
+	cts: "typescript",
+	js: "javascript",
+	jsx: "javascriptreact",
+	mjs: "javascript",
+	cjs: "javascript",
+	py: "python",
+	rs: "rust",
+	rb: "ruby",
+	kt: "kotlin",
+	cc: "cpp",
+	cxx: "cpp",
+	hpp: "cpp",
+	h: "c",
+	md: "markdown",
+	yml: "yaml",
+	sh: "shellscript",
+};
+
+function languageIdFor(path: string): string {
+	const name = path.slice(path.lastIndexOf("/") + 1);
+	const dot = name.lastIndexOf(".");
+	const extension = dot <= 0 ? "" : name.slice(dot + 1).toLowerCase();
+	return LANGUAGE_IDS[extension] ?? extension;
+}
 
 export type CodeIntelOp = "hover" | "definition" | "references";
 
@@ -27,6 +64,8 @@ export type CodeIntelUnavailable =
 	| "staged"
 	| "old-side"
 	| "outside-repository"
+	| "file-unreadable"
+	| "file-too-large"
 	| "server-error";
 
 /**
@@ -156,6 +195,44 @@ function toCodeIntelLocation(
 }
 
 /**
+ * Make sure the server holds the file's current text before it is asked about.
+ *
+ * Servers of the tsserver family answer nothing about a document they were
+ * never given, so a lookup that skips this silently returns "no results" — the
+ * exact lie this module exists to avoid. The document is kept open for the
+ * session's life; size and mtime are the freshness stamp, which is a cheap
+ * `stat` per lookup rather than a re-read.
+ */
+function syncDocument(
+	session: LspSession,
+	absolutePath: string,
+	uri: string,
+	repositoryPath: string,
+): CodeIntelUnavailable | undefined {
+	let stamp: string;
+	try {
+		const stats = statSync(absolutePath);
+		if (!stats.isFile()) return "file-unreadable";
+		if (stats.size > MAX_DOCUMENT_BYTES) return "file-too-large";
+		stamp = `${stats.size}:${stats.mtimeMs}`;
+	} catch {
+		return "file-unreadable";
+	}
+	const known = session.documentStamp(uri);
+	if (known === stamp) return undefined;
+	let text: string;
+	try {
+		text = readFileSync(absolutePath, "utf8");
+	} catch {
+		return "file-unreadable";
+	}
+	if (known === undefined)
+		session.openDocument(uri, languageIdFor(repositoryPath), text, stamp);
+	else session.changeDocument(uri, text, stamp);
+	return undefined;
+}
+
+/**
  * Look up a position in the review. Every refusal names its reason, and a
  * failing or absent language server is a refusal rather than an empty answer.
  */
@@ -186,6 +263,8 @@ export async function codeIntel(
 	const uri = pathToFileURL(absolute).href;
 	try {
 		const session = await servers.sessionFor(request.path);
+		const unreadable = syncDocument(session, absolute, uri, request.path);
+		if (unreadable) return { available: false, reason: unreadable };
 		if (request.op === "hover") {
 			const hover = await session.hover(uri, request.line, request.character);
 			return { available: true, op: "hover", hover };

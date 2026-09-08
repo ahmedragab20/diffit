@@ -8,13 +8,23 @@
  * bytes and time, and never grants the server authority: a server-initiated
  * request is answered with "method not found" and its notifications are
  * dropped. No workspace edit, command or file write is ever accepted.
+ *
+ * Documents are pushed, never pulled: servers of the tsserver family answer
+ * nothing about a file they were not given, even one sitting in the project on
+ * disk, so callers open the documents they ask about. That direction is safe —
+ * we tell the server what a file contains; it never tells us to change one.
  */
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { spawn } from "./child-process.js";
 
 export const LSP_LIMITS = Object.freeze({
 	frameBytes: 4 * 1024 * 1024,
-	totalBytes: 16 * 1024 * 1024,
+	/**
+	 * Bytes held in the decoder awaiting a complete frame. This bounds memory,
+	 * not lifetime throughput: a session that stays open to receive document
+	 * diagnostics streams far more than this over its life and is healthy.
+	 */
+	bufferedBytes: 16 * 1024 * 1024,
 	pendingRequests: 32,
 	locations: 500,
 	hoverBytes: 8 * 1024,
@@ -56,13 +66,11 @@ export interface LspLocation {
  */
 export class LspFrameDecoder {
 	private buffer = "";
-	private total = 0;
 
 	push(chunk: string): unknown[] {
-		this.total += Buffer.byteLength(chunk, "utf8");
-		if (this.total > LSP_LIMITS.totalBytes)
-			throw new LspError("resource_limit");
 		this.buffer += chunk;
+		if (Buffer.byteLength(this.buffer, "utf8") > LSP_LIMITS.bufferedBytes)
+			throw new LspError("resource_limit");
 		const frames: unknown[] = [];
 		while (true) {
 			const split = this.buffer.indexOf("\r\n\r\n");
@@ -186,6 +194,9 @@ export class LspSession {
 	private nextId = 1;
 	private failure: unknown;
 	private closed = false;
+	/** Open documents, by uri, holding the caller's freshness stamp. */
+	private readonly documents = new Map<string, string>();
+	private readonly versions = new Map<string, number>();
 
 	private constructor(private readonly child: ChildProcessWithoutNullStreams) {
 		const fail = () => this.abort(new LspError("unavailable"));
@@ -231,6 +242,9 @@ export class LspSession {
 							definition: { linkSupport: true },
 							references: {},
 							hover: { contentFormat: ["markdown", "plaintext"] },
+							// Full-text sync only. The server is told what a file
+							// contains; it is never asked to change one.
+							synchronization: { dynamicRegistration: false },
 						},
 					},
 					workspaceFolders: null,
@@ -271,6 +285,52 @@ export class LspSession {
 				context: { includeDeclaration },
 			}),
 		);
+	}
+
+	/**
+	 * Whether this session has already told the server about a document, and
+	 * the caller-supplied stamp it was last told about.
+	 *
+	 * Servers of the tsserver family answer nothing about a file they have not
+	 * been given, even when it sits in the project on disk, so a lookup has to
+	 * open its document first. The stamp is opaque here: the caller decides
+	 * what "unchanged" means (this client never touches the filesystem).
+	 */
+	documentStamp(uri: string): string | undefined {
+		return this.documents.get(uri);
+	}
+
+	/** Tell the server a document exists and what it contains. */
+	openDocument(
+		uri: string,
+		languageId: string,
+		text: string,
+		stamp: string,
+	): void {
+		this.notify("textDocument/didOpen", {
+			textDocument: { uri, languageId, version: 1, text },
+		});
+		this.documents.set(uri, stamp);
+		this.versions.set(uri, 1);
+	}
+
+	/** Replace an open document's contents wholesale. */
+	changeDocument(uri: string, text: string, stamp: string): void {
+		const version = (this.versions.get(uri) ?? 1) + 1;
+		this.notify("textDocument/didChange", {
+			textDocument: { uri, version },
+			contentChanges: [{ text }],
+		});
+		this.documents.set(uri, stamp);
+		this.versions.set(uri, version);
+	}
+
+	/** Forget a document. Safe to call for one that was never opened. */
+	closeDocument(uri: string): void {
+		if (!this.documents.has(uri)) return;
+		this.notify("textDocument/didClose", { textDocument: { uri } });
+		this.documents.delete(uri);
+		this.versions.delete(uri);
 	}
 
 	/** Hover markdown for a position, or null when the server has nothing to say. */

@@ -124,6 +124,22 @@ describe("LspFrameDecoder", () => {
 			expect.objectContaining({ code: "resource_limit" }),
 		);
 	});
+
+	// The bound is on bytes held awaiting a frame, not on lifetime throughput.
+	// A session kept open for document diagnostics streams far more than this
+	// over its life and is perfectly healthy.
+	it("accepts a stream whose total exceeds the buffer bound", () => {
+		const decoder = new LspFrameDecoder();
+		const body = JSON.stringify({
+			jsonrpc: "2.0",
+			method: "textDocument/publishDiagnostics",
+			params: { note: "y".repeat(64 * 1024) },
+		});
+		let decoded = 0;
+		const frames = Math.ceil(LSP_LIMITS.bufferedBytes / body.length) + 8;
+		for (let i = 0; i < frames; i++) decoded += decoder.push(frame(body)).length;
+		expect(decoded).toBe(frames);
+	});
 });
 
 describe("LspSession", () => {
@@ -286,6 +302,24 @@ describe("LspSession", () => {
 			);
 			expect(result.endsWith("…")).toBe(true);
 			expect(result.includes("�")).toBe(false);
+		} finally {
+			await lsp.close();
+		}
+	});
+
+	it("tracks the documents it has opened", async () => {
+		const lsp = await session();
+		try {
+			expect(lsp.documentStamp("file:///a.ts")).toBeUndefined();
+			lsp.openDocument("file:///a.ts", "typescript", "const a = 1;", "s1");
+			expect(lsp.documentStamp("file:///a.ts")).toBe("s1");
+			lsp.changeDocument("file:///a.ts", "const a = 2;", "s2");
+			expect(lsp.documentStamp("file:///a.ts")).toBe("s2");
+			lsp.closeDocument("file:///a.ts");
+			expect(lsp.documentStamp("file:///a.ts")).toBeUndefined();
+			// Closing again is a no-op rather than a stray notification.
+			lsp.closeDocument("file:///a.ts");
+			expect(lsp.documentStamp("file:///a.ts")).toBeUndefined();
 		} finally {
 			await lsp.close();
 		}

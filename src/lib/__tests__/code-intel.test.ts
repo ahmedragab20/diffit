@@ -1,12 +1,16 @@
 // @vitest-environment node
 // The child-process seam is mocked so a synthetic node child stands in for a
 // language server; no real language server is ever executed.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("../ai/child-process.js", () => ({ spawn: mocks.spawn }));
 
 import { spawn as realSpawn } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { LanguageServers } from "../ai/language-servers.js";
 import {
 	codeIntel,
@@ -14,7 +18,15 @@ import {
 	type CodeIntelRequest,
 } from "../code-intel.js";
 
-const ROOT = "/repo";
+/**
+ * A real directory: the module opens documents off disk before asking about
+ * them, so a fake root would make every lookup unreadable.
+ */
+const ROOT = mkdtempSync(join(tmpdir(), "code-intel-"));
+mkdirSync(join(ROOT, "src"), { recursive: true });
+writeFileSync(join(ROOT, "src/a.ts"), "export const a = 1;\n");
+
+afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
 
 /** Answers initialize, then returns a result as configured. */
 function useServer(resultJson: string) {
@@ -38,6 +50,41 @@ process.stdin.on('data', (chunk) => {
 			send({ jsonrpc: '2.0', id: message.id, result: { capabilities: {} } });
 		} else if (message.method && message.id !== undefined) {
 			send({ jsonrpc: '2.0', id: message.id, result: ${resultJson} });
+		}
+	}
+});
+`;
+	mocks.spawn.mockImplementation(() =>
+		realSpawn(process.execPath, ["-e", serverScript], {
+			stdio: ["pipe", "pipe", "pipe"],
+		}),
+	);
+}
+
+/** Answers a request with the list of methods the server has received. */
+function useEchoServer() {
+	const serverScript = `
+let buffer = Buffer.alloc(0);
+const seen = [];
+const send = (message) => {
+	const body = JSON.stringify(message);
+	process.stdout.write('Content-Length: ' + Buffer.byteLength(body) + '\\r\\n\\r\\n' + body);
+};
+process.stdin.on('data', (chunk) => {
+	buffer = Buffer.concat([buffer, chunk]);
+	while (true) {
+		const split = buffer.indexOf('\\r\\n\\r\\n');
+		if (split === -1) return;
+		const length = Number(/content-length:\\s*(\\d+)/i.exec(buffer.slice(0, split).toString())[1]);
+		const start = split + 4;
+		if (buffer.length < start + length) return;
+		const message = JSON.parse(buffer.slice(start, start + length).toString());
+		buffer = buffer.slice(start + length);
+		if (message.method) seen.push(message.method);
+		if (message.method === 'initialize') {
+			send({ jsonrpc: '2.0', id: message.id, result: { capabilities: {} } });
+		} else if (message.method && message.id !== undefined) {
+			send({ jsonrpc: '2.0', id: message.id, result: { contents: { kind: 'markdown', value: seen.join(' ') } } });
 		}
 	}
 });
@@ -194,7 +241,7 @@ describe("codeIntel", () => {
 	});
 
 	it("maps a definition inside the repository to a relative path", async () => {
-		useServer(JSON.stringify([{ uri: "file:///repo/src/a.ts", range }]));
+		useServer(JSON.stringify([{ uri: pathToFileURL(join(ROOT, "src/a.ts")).href, range }]));
 		const servers = configured();
 		try {
 			const result = await codeIntel(
@@ -266,6 +313,79 @@ describe("codeIntel", () => {
 				op: "definition",
 				locations: [],
 			});
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("refuses a file that is not on disk", async () => {
+		useServer(JSON.stringify(null));
+		const servers = configured();
+		try {
+			const result = await codeIntel(servers, ROOT, clean, request({ path: "src/missing.ts" }));
+			expect(result).toEqual({ available: false, reason: "file-unreadable" });
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("refuses a file past the document size limit", async () => {
+		writeFileSync(join(ROOT, "src/big.ts"), "x".repeat(4 * 1024 * 1024 + 1));
+		useServer(JSON.stringify(null));
+		const servers = configured();
+		try {
+			const result = await codeIntel(servers, ROOT, clean, request({ path: "src/big.ts" }));
+			expect(result).toEqual({ available: false, reason: "file-too-large" });
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("opens the document before asking about it", async () => {
+		useEchoServer();
+		const servers = configured();
+		try {
+			const result = await codeIntel(servers, ROOT, clean, request());
+			if (result.available && result.op === "hover") {
+				expect(result.hover).toContain("textDocument/didOpen");
+			} else {
+				throw new Error("Expected available hover result");
+			}
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("opens a document only once per session", async () => {
+		useEchoServer();
+		const servers = configured();
+		try {
+			await codeIntel(servers, ROOT, clean, request());
+			const result = await codeIntel(servers, ROOT, clean, request());
+			if (result.available && result.op === "hover" && result.hover) {
+				const count = result.hover.split("textDocument/didOpen").length - 1;
+				expect(count).toBe(1);
+			} else {
+				throw new Error("Expected available hover result");
+			}
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("sends a change when the file moved on since it was opened", async () => {
+		useEchoServer();
+		const servers = configured();
+		try {
+			await codeIntel(servers, ROOT, clean, request());
+			writeFileSync(join(ROOT, "src/a.ts"), "export const a = 2;\n");
+			await new Promise((r) => setTimeout(r, 12));
+			const result = await codeIntel(servers, ROOT, clean, request());
+			if (result.available && result.op === "hover") {
+				expect(result.hover).toContain("textDocument/didChange");
+			} else {
+				throw new Error("Expected available hover result");
+			}
 		} finally {
 			await servers.close();
 		}
