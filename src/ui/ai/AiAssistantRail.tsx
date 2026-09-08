@@ -144,6 +144,10 @@ type RunPhase =
 	| "canceled"
 	| "interrupted";
 
+function isRunBusy(phase: RunPhase): boolean {
+	return phase === "thinking" || phase === "streaming" || phase === "stopping";
+}
+
 function deriveRailActivity(
 	phase: RunPhase,
 	pending: PendingTurn | null,
@@ -620,10 +624,7 @@ function AiAssistantRailOpen({
 		if (
 			(!requested && requestedImages.length === 0) ||
 			!selectedModel ||
-			(phase !== "idle" &&
-				phase !== "error" &&
-				phase !== "canceled" &&
-				phase !== "interrupted")
+			isRunBusy(phase)
 		)
 			return;
 		if (requestedImages.length && !imageCapable) {
@@ -831,12 +832,13 @@ function AiAssistantRailOpen({
 	};
 
 	const newConversation = async () => {
-		if (phase !== "idle") return;
+		if (isRunBusy(phase)) return;
 		setDeletePending(false);
 		setRenaming(false);
 		setPrompt("");
 		setImageAttachments([]);
 		setPending(null);
+		setPhase("idle");
 		try {
 			const created = await createConversation({
 				surface,
@@ -864,7 +866,9 @@ function AiAssistantRailOpen({
 	};
 
 	const selectConversation = async (id: string) => {
-		if (phase !== "idle" || id === conversation?.id) return;
+		if (isRunBusy(phase) || id === conversation?.id) return;
+		setPending(null);
+		setPhase("idle");
 		setConversationLoading(true);
 		try {
 			const loaded = await getConversation(id);
@@ -907,7 +911,9 @@ function AiAssistantRailOpen({
 	};
 
 	const removeCurrentConversation = async () => {
-		if (!conversation || phase !== "idle") return;
+		if (!conversation || isRunBusy(phase)) return;
+		setPending(null);
+		setPhase("idle");
 		if (conversation.id.startsWith("local-")) {
 			setConversation(null);
 			setDeletePending(false);
@@ -1020,8 +1026,7 @@ function AiAssistantRailOpen({
 	];
 
 	const turns = conversation?.turns ?? [];
-	const isBusy =
-		phase === "thinking" || phase === "streaming" || phase === "stopping";
+	const isBusy = isRunBusy(phase);
 	const activity = deriveRailActivity(
 		phase,
 		pending,

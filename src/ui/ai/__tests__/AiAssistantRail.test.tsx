@@ -606,6 +606,77 @@ describe("AiAssistantRail", () => {
 		await waitFor(() => expect(mocks.run).toHaveBeenCalledTimes(2));
 	});
 
+	it.each([
+		[
+			"failed",
+			() => {
+				mocks.run.mockRejectedValue(new Error("provider exploded"));
+			},
+		],
+		[
+			"canceled",
+			() => {
+				mocks.run.mockResolvedValue({
+					text: "",
+					runId: "r-cancel",
+					warnings: [],
+					canceled: true,
+				});
+			},
+		],
+	])("creates a new conversation after a %s run", async (_label, armRun) => {
+		let created = 0;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input, init) => {
+				const url = String(input);
+				if (url.includes("/api/ai/conversations?") && !init?.method)
+					return new Response(JSON.stringify({ conversations: [] }), {
+						status: 200,
+					});
+				if (url.endsWith("/api/ai/conversations") && init?.method === "POST") {
+					created += 1;
+					return new Response(
+						JSON.stringify({
+							conversation: {
+								id: `c-${created}`,
+								title:
+									created === 1 ? "New conversation" : "Fresh conversation",
+								surface: "diff",
+								scopeKey: "diff:review:working-tree",
+								createdAt: created,
+								updatedAt: created,
+								turns: [],
+							},
+						}),
+						{ status: 201 },
+					);
+				}
+				return new Response(JSON.stringify({}), { status: 200 });
+			}),
+		);
+		armRun();
+		const user = userEvent.setup();
+		renderRail(
+			<AiAssistantRail
+				open
+				onClose={vi.fn()}
+				surface="diff"
+				context={{ kind: "diff" }}
+			/>,
+		);
+		await user.type(screen.getByRole("textbox", { name: "Ask AI" }), "Explain");
+		await user.click(screen.getByRole("button", { name: /Send/i }));
+		expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+		expect(created).toBe(1);
+		await user.click(screen.getByRole("button", { name: "New conversation" }));
+		await waitFor(() => expect(created).toBe(2));
+		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+		expect(
+			screen.getByRole("option", { name: "Fresh conversation" }),
+		).toBeInTheDocument();
+	});
+
 	it("labels unverified findings as unverified, never as authoritative", async () => {
 		const conversation = {
 			id: "c1",
