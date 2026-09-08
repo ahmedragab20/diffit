@@ -231,6 +231,65 @@ export function diffRead(
 	return readBatch(snapshot, requests, "unified-patch", maxBytes);
 }
 
+export interface SymbolLocation {
+	/** Set when the location falls inside the capture and can be read. */
+	key: string | null;
+	path: string;
+	startLine: number;
+	endLine: number;
+	/** A location outside the capture is named, never read. */
+	inScope: boolean;
+}
+
+/**
+ * Maps language-server locations onto the capture. A server may point anywhere
+ * in the repository; a location outside the captured evidence is reported as
+ * out of scope and is never read, so navigation cannot widen a run's scope.
+ */
+export function locateInSnapshot(
+	snapshot: ReviewSnapshot,
+	locations: readonly {
+		uri: string;
+		startLine: number;
+		endLine: number;
+	}[],
+	repositoryRoot: string,
+): SymbolLocation[] {
+	const byPath = new Map<string, string>();
+	for (const item of snapshot.manifest.sources)
+		if ((item.representation ?? "original") === "original")
+			byPath.set(item.path, item.key);
+	const root = repositoryRoot.replace(/\/+$/, "");
+	return locations.map((location) => {
+		const path = fileUriToPath(location.uri, root);
+		const key = path === null ? null : (byPath.get(path) ?? null);
+		return {
+			key,
+			path: path ?? location.uri,
+			startLine: location.startLine,
+			endLine: location.endLine,
+			inScope: key !== null,
+		};
+	});
+}
+
+/** Repository-relative path for a file URI, or null when it escapes the root. */
+function fileUriToPath(uri: string, root: string): string | null {
+	if (!uri.startsWith("file://")) return null;
+	let absolute: string;
+	try {
+		absolute = decodeURIComponent(uri.slice("file://".length));
+	} catch {
+		return null;
+	}
+	if (!absolute.startsWith("/")) return null;
+	if (absolute === root) return "";
+	if (!absolute.startsWith(`${root}/`)) return null;
+	const relative = absolute.slice(root.length + 1);
+	// A traversal segment can never denote a captured source.
+	return relative.split("/").includes("..") ? null : relative;
+}
+
 export interface SearchHit {
 	key: string;
 	line: number;

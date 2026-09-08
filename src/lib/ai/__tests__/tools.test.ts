@@ -9,6 +9,7 @@ import {
 import {
   TOOL_LIMITS,
   diffRead,
+  locateInSnapshot,
   reviewMap,
   sourceRead,
   sourceSearch,
@@ -246,4 +247,57 @@ describe("source.search", () => {
   it.each(["", "x".repeat(513)])("rejects malformed query %j", (query) =>
     expectCode(() => sourceSearch(snapshotOf(), query), "invalid"),
   );
+});
+
+describe("locateInSnapshot", () => {
+  const root = "/repo";
+  const located = (uri: string) =>
+    locateInSnapshot(
+      snapshotOf(source({ key: "a.ts", path: "src/a.ts" })),
+      [{ uri, startLine: 3, endLine: 3 }],
+      root,
+    )[0];
+
+  it("resolves a location that falls inside the capture", () => {
+    expect(located("file:///repo/src/a.ts")).toEqual({
+      key: "a.ts",
+      path: "src/a.ts",
+      startLine: 3,
+      endLine: 3,
+      inScope: true,
+    });
+  });
+
+  it("names a location outside the capture without making it readable", () => {
+    const outside = located("file:///repo/src/elsewhere.ts");
+    expect(outside).toMatchObject({ key: null, inScope: false });
+    expect(outside.path).toBe("src/elsewhere.ts");
+  });
+
+  it.each([
+    ["outside the repository root", "file:///etc/passwd"],
+    ["a traversal segment", "file:///repo/../etc/passwd"],
+    ["a non-file scheme", "https://example.com/a.ts"],
+    ["an untitled buffer", "untitled:Untitled-1"],
+  ])("refuses %s", (_label, uri) => {
+    expect(located(uri)).toMatchObject({ key: null, inScope: false });
+  });
+
+  it("decodes a percent-encoded path", () => {
+    expect(located("file:///repo/src/a%2Ets")).toMatchObject({
+      key: "a.ts",
+      inScope: true,
+    });
+  });
+
+  it("never resolves a patch source, whose lines are not file lines", () => {
+    const found = locateInSnapshot(
+      snapshotOf(
+        source({ key: "patch", path: "src/a.ts", representation: "unified-patch" }),
+      ),
+      [{ uri: "file:///repo/src/a.ts", startLine: 1, endLine: 1 }],
+      root,
+    );
+    expect(found[0]).toMatchObject({ key: null, inScope: false });
+  });
 });
