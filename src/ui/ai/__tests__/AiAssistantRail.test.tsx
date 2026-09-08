@@ -482,12 +482,217 @@ describe("AiAssistantRail", () => {
 		);
 		await user.click(screen.getByRole("button", { name: /Send/i }));
 		await waitFor(() =>
-			expect(screen.getByRole("status")).toHaveTextContent(
-				"Thinking about your request",
-			),
+			expect(
+				screen.getByText("Thinking about your request"),
+			).toBeInTheDocument(),
 		);
 		expect(composer).toHaveValue("");
 		release();
 		await waitFor(() => expect(screen.getByText("Done")).toBeInTheDocument());
+		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+	});
+
+	it("keeps completed turns in place while a later response streams", async () => {
+		const conversation = {
+			id: "c1",
+			title: "Existing",
+			surface: "diff",
+			scopeKey: "diff:review:working-tree",
+			createdAt: 1,
+			updatedAt: 1,
+			turns: [
+				{ id: "u1", role: "user", text: "why this?" },
+				{ id: "a1", role: "assistant", text: "settled answer" },
+			],
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input, init) => {
+				const url = String(input);
+				if (url.includes("/api/ai/conversations?") && !init?.method)
+					return new Response(
+						JSON.stringify({
+							conversations: [
+								{
+									id: "c1",
+									title: "Existing",
+									surface: "diff",
+									scopeKey: "diff:review:working-tree",
+									createdAt: 1,
+									updatedAt: 1,
+									turnCount: 2,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				if (url.includes("/api/ai/conversations/c1") && !init?.method)
+					return new Response(JSON.stringify({ conversation }), { status: 200 });
+				return new Response(JSON.stringify({}), { status: 200 });
+			}),
+		);
+		mocks.run.mockImplementation(async ({ onDelta }) => {
+			onDelta?.("par");
+			onDelta?.("partial stream");
+			return new Promise(() => {});
+		});
+		const user = userEvent.setup();
+		renderRail(
+			<AiAssistantRail
+				open
+				onClose={vi.fn()}
+				surface="diff"
+				context={{ kind: "diff" }}
+			/>,
+		);
+		expect(await screen.findByText("settled answer")).toBeInTheDocument();
+		await user.type(screen.getByRole("textbox", { name: "Ask AI" }), "next");
+		await user.click(screen.getByRole("button", { name: /Send/i }));
+		await waitFor(() =>
+			expect(document.querySelector('[data-streaming="true"]')?.textContent).toContain(
+				"partial stream",
+			),
+		);
+		expect(document.querySelector('[data-turn-id="a1"]')?.textContent).toContain(
+			"settled answer",
+		);
+		expect(screen.queryByRole("button", { name: "Try again" })).toBeNull();
+	});
+
+	it("offers retry only after a terminal failure", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input, init) => {
+				const url = String(input);
+				if (url.includes("/api/ai/conversations?") && !init?.method)
+					return new Response(JSON.stringify({ conversations: [] }), {
+						status: 200,
+					});
+				if (url.endsWith("/api/ai/conversations") && init?.method === "POST")
+					return new Response(
+						JSON.stringify({
+							conversation: {
+								id: "c-fail",
+								title: "New conversation",
+								surface: "diff",
+								scopeKey: "review",
+								createdAt: 1,
+								updatedAt: 1,
+								turns: [],
+							},
+						}),
+						{ status: 201 },
+					);
+				return new Response(JSON.stringify({}), { status: 200 });
+			}),
+		);
+		mocks.run.mockRejectedValue(new Error("provider exploded"));
+		const user = userEvent.setup();
+		renderRail(
+			<AiAssistantRail
+				open
+				onClose={vi.fn()}
+				surface="diff"
+				context={{ kind: "diff" }}
+			/>,
+		);
+		await user.type(screen.getByRole("textbox", { name: "Ask AI" }), "Explain");
+		await user.click(screen.getByRole("button", { name: /Send/i }));
+		expect(await screen.findByRole("button", { name: "Try again" })).toBeInTheDocument();
+		expect(
+			screen.getByText(/starts a new attempt and keeps the one above/),
+		).toBeInTheDocument();
+		await user.click(screen.getByRole("button", { name: "Try again" }));
+		await waitFor(() => expect(mocks.run).toHaveBeenCalledTimes(2));
+	});
+
+	it("labels unverified findings as unverified, never as authoritative", async () => {
+		const conversation = {
+			id: "c1",
+			title: "Existing",
+			surface: "diff",
+			scopeKey: "diff:review:working-tree",
+			createdAt: 1,
+			updatedAt: 1,
+			turns: [
+				{ id: "u1", role: "user", text: "risks?" },
+				{ id: "a1", role: "assistant", text: "see findings" },
+			],
+		};
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input, init) => {
+				const url = String(input);
+				if (url.includes("/api/ai/conversations?") && !init?.method)
+					return new Response(
+						JSON.stringify({
+							conversations: [
+								{
+									id: "c1",
+									title: "Existing",
+									surface: "diff",
+									scopeKey: "diff:review:working-tree",
+									createdAt: 1,
+									updatedAt: 1,
+									turnCount: 2,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				if (url.includes("/api/ai/conversations/c1") && !init?.method)
+					return new Response(JSON.stringify({ conversation }), { status: 200 });
+				if (url.includes("/api/ai/evidence/") && url.includes("/notebook"))
+					return new Response(
+						JSON.stringify({
+							entries: [
+								{
+									id: "f1",
+									kind: "finding",
+									title: "Inverted conversion",
+									body: "Divides where it should multiply.",
+									uncertainty: "medium",
+									citations: [
+										{
+											key: "a.ts",
+											startLine: 1,
+											endLine: 1,
+											quote: "total / 100",
+											evidenceId: "ev-1",
+										},
+									],
+									links: [],
+									snapshotRevision: "rev",
+									decision: null,
+									decidedBy: null,
+									decidedAt: null,
+								},
+							],
+						}),
+						{ status: 200 },
+					);
+				if (url.includes("/api/ai/evidence"))
+					return new Response(
+						JSON.stringify({ snapshots: [{ id: "snap-1" }] }),
+						{ status: 200 },
+					);
+				return new Response(JSON.stringify({}), { status: 200 });
+			}),
+		);
+		renderRail(
+			<AiAssistantRail
+				open
+				onClose={vi.fn()}
+				surface="diff"
+				context={{ kind: "diff" }}
+			/>,
+		);
+		expect(await screen.findByText("Inverted conversion")).toBeInTheDocument();
+		expect(
+			screen.getByText(/could not be verified against this capture/),
+		).toBeInTheDocument();
+		expect(screen.getByText("unverified")).toBeInTheDocument();
+		expect(document.querySelector('[data-unverified="true"]')).not.toBeNull();
+		expect(document.querySelector('[data-unverified="false"]')).toBeNull();
 	});
 });

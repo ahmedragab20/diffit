@@ -157,14 +157,13 @@ describe("retry is offered only after a terminal failure", () => {
   });
 });
 
-describe("it is a proposal, not a rollout", () => {
-  it("is not referenced by the shipped rail", () => {
-    // The plan requires human visual review before rollout, so this composes
-    // the reviewed parts without replacing what users currently see.
+describe("the shipped rail mounts it", () => {
+  it("is imported by the assistant rail App already mounts", () => {
     const rail = readFileSync(
       resolve(process.cwd(), "src/ui/ai/AiAssistantRail.tsx"),
       "utf8",
     );
-    expect(rail).not.toContain("TranscriptShell");
+    expect(rail).toContain('from "./TranscriptShell"');
+    expect(rail).toContain("<TranscriptShell");
   });
 });

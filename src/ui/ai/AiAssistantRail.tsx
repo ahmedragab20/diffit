@@ -37,8 +37,12 @@ import type {
 	AiConversation,
 	AiConversationSummary,
 } from "../../lib/ai/conversations";
-import { Markdown } from "../components/Markdown";
-import { TranscriptTurn } from "./TranscriptTurn";
+import {
+	EMPTY_ACTIVITY,
+	type RunActivity,
+} from "../../lib/ai/activity";
+import type { NotebookEntry } from "../../lib/ai/notebook";
+import { TranscriptShell } from "./TranscriptShell";
 import { FileMentionDropdown } from "../components/FileMentionDropdown";
 import { useFileMention } from "../hooks/useFileMention";
 import { useOptionalAi } from "./AiContext";
@@ -131,28 +135,87 @@ function localConversation(
 	};
 }
 
-function UserMessage({ turn }: { turn: AiConversationTurn }) {
-	const images = turn.context?.imageAttachments ?? [];
-	return (
-		<div className="ai-message ai-message-user">
-			<span>{turn.text}</span>
-			{images.length > 0 && (
-				<div className="ai-message-images">
-					{images.map((image) => (
-						<img
-							key={image.url}
-							src={image.url}
-							alt={image.name}
-							title={image.name}
-						/>
-					))}
-				</div>
-			)}
-		</div>
-	);
-}
+type RunPhase =
+	| "idle"
+	| "thinking"
+	| "streaming"
+	| "stopping"
+	| "error"
+	| "canceled"
+	| "interrupted";
 
-type RunPhase = "idle" | "thinking" | "streaming" | "stopping" | "error";
+function deriveRailActivity(
+	phase: RunPhase,
+	pending: PendingTurn | null,
+	elapsedMs: number,
+	hasTurns: boolean,
+): RunActivity {
+	const warnings = pending?.warnings ?? [];
+	const text = pending?.assistantText ?? "";
+	if (phase === "thinking")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "preparing",
+			warnings,
+			text,
+			partial: true,
+			elapsedMs,
+		};
+	if (phase === "streaming")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "responding",
+			warnings,
+			text,
+			partial: true,
+			elapsedMs,
+		};
+	if (phase === "stopping")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "cancel-requested",
+			warnings,
+			text,
+			partial: true,
+			elapsedMs,
+		};
+	if (phase === "error")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "failed",
+			warnings,
+			text,
+			partial: Boolean(text),
+			errorCode: "provider_failed",
+			elapsedMs,
+		};
+	if (phase === "canceled")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "canceled",
+			warnings,
+			text,
+			partial: true,
+			elapsedMs,
+		};
+	if (phase === "interrupted")
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "interrupted",
+			warnings,
+			text,
+			partial: true,
+			elapsedMs,
+		};
+	if (hasTurns)
+		return {
+			...EMPTY_ACTIVITY,
+			phase: "complete",
+			succeeded: true,
+			elapsedMs,
+		};
+	return EMPTY_ACTIVITY;
+}
 
 interface PendingTurn {
 	user: AiConversationTurn;
@@ -209,7 +272,9 @@ function AiAssistantRailOpen({
 	const [previewAttaching, setPreviewAttaching] = useState(false);
 	const [imageError, setImageError] = useState<string | null>(null);
 	const [draggingImage, setDraggingImage] = useState(false);
+	const [findings, setFindings] = useState<NotebookEntry[]>([]);
 	const runId = useRef<string | null>(null);
+	const runStartedAt = useRef<number | null>(null);
 	const abortController = useRef<AbortController | null>(null);
 	const resizeCleanup = useRef<(() => void) | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -452,6 +517,36 @@ function AiAssistantRailOpen({
 		};
 	}, [scopeKey, surface]);
 
+	useEffect(() => {
+		let alive = true;
+		const loadFindings = async () => {
+			try {
+				const list = await fetch("/api/ai/evidence");
+				if (!list.ok) return;
+				const body = (await list.json()) as { snapshots?: { id: string }[] };
+				const id = body.snapshots?.at(-1)?.id;
+				if (!id) {
+					if (alive) setFindings((current) => (current.length === 0 ? current : []));
+					return;
+				}
+				const notebookResponse = await fetch(
+					`/api/ai/evidence/${encodeURIComponent(id)}/notebook`,
+				);
+				if (!notebookResponse.ok) return;
+				const notebook = (await notebookResponse.json()) as {
+					entries?: NotebookEntry[];
+				};
+				if (alive) setFindings(notebook.entries ?? []);
+			} catch {
+				if (alive) setFindings((current) => (current.length === 0 ? current : []));
+			}
+		};
+		void loadFindings();
+		return () => {
+			alive = false;
+		};
+	}, [conversation?.id, conversation?.turns.length, scopeKey, surface]);
+
 	const { run, cancel, selectedModel, setRailWidth } = ai;
 
 	const queueDelta = (text: string) => {
@@ -525,7 +620,10 @@ function AiAssistantRailOpen({
 		if (
 			(!requested && requestedImages.length === 0) ||
 			!selectedModel ||
-			(phase !== "idle" && phase !== "error")
+			(phase !== "idle" &&
+				phase !== "error" &&
+				phase !== "canceled" &&
+				phase !== "interrupted")
 		)
 			return;
 		if (requestedImages.length && !imageCapable) {
@@ -557,6 +655,7 @@ function AiAssistantRailOpen({
 		abortController.current = controller;
 		setPending({ user: userTurn, assistantText: "", warnings: [] });
 		setPhase("thinking");
+		runStartedAt.current = Date.now();
 		forceScrollRef.current = true;
 		try {
 			const result = await run({
@@ -593,8 +692,7 @@ function AiAssistantRailOpen({
 				},
 			});
 			if (result.canceled || controller.signal.aborted) {
-				setPending(null);
-				setPhase("idle");
+				setPhase("canceled");
 				return;
 			}
 			const assistantTurn: AiConversationTurn = {
@@ -652,20 +750,24 @@ function AiAssistantRailOpen({
 			requestAnimationFrame(() => textareaRef.current?.focus());
 		} catch (nextError) {
 			if (controller.signal.aborted) {
-				setPending(null);
-				setPhase("idle");
+				setPhase("canceled");
 				return;
 			}
+			const message =
+				nextError instanceof Error ? nextError.message : String(nextError);
 			setPending((current) =>
 				current
 					? {
 							...current,
-							error:
-								nextError instanceof Error ? nextError.message : String(nextError),
+							error: message,
 						}
 					: current,
 			);
-			setPhase("error");
+			setPhase(
+				/incomplete|ended before completion/i.test(message)
+					? "interrupted"
+					: "error",
+			);
 		} finally {
 			runId.current = null;
 			abortController.current = null;
@@ -920,6 +1022,13 @@ function AiAssistantRailOpen({
 	const turns = conversation?.turns ?? [];
 	const isBusy =
 		phase === "thinking" || phase === "streaming" || phase === "stopping";
+	const activity = deriveRailActivity(
+		phase,
+		pending,
+		runStartedAt.current ? Date.now() - runStartedAt.current : 0,
+		turns.length > 0,
+	);
+	const showComposed = turns.length > 0 || pending !== null || findings.length > 0;
 
 	return (
 		<aside
@@ -1153,7 +1262,7 @@ function AiAssistantRailOpen({
 			</div>
 
 			<div
-				className={`ai-conversation ${!turns.length && !pending ? "is-empty" : ""}`}
+				className={`ai-conversation ${!showComposed ? "is-empty" : ""}`}
 				ref={conversationRef}
 				onScroll={(event) => {
 					const element = event.currentTarget;
@@ -1165,7 +1274,7 @@ function AiAssistantRailOpen({
 				}}
 				aria-live="polite"
 			>
-				{!turns.length && !pending && (
+				{!showComposed && (
 					<div className="ai-empty-state">
 						<div>
 							<Sparkles size={20} />
@@ -1177,66 +1286,38 @@ function AiAssistantRailOpen({
 						</p>
 					</div>
 				)}
-				{turns.map((turn) =>
-					turn.role === "user" ? (
-						<UserMessage key={turn.id} turn={turn} />
-					) : (
-						<TranscriptTurn
-							key={turn.id}
-							turn={turn}
-							copied={copiedId === turn.id}
-							onCopy={handleCopy}
-						/>
-					),
-				)}
-				{pending && (
-					<>
-						<UserMessage turn={pending.user} />
-						{pending.assistantText ? (
-							<article className="ai-response-document">
-								<Markdown
-									content={pending.assistantText}
-									className="markdown-body ai-response-markdown"
-								/>
-							</article>
-						) : phase === "thinking" || phase === "stopping" ? (
-							<div className="ai-thinking" role="status">
-								<span className="ai-thinking-mark" aria-hidden="true">
-									{Array.from({ length: 9 }, (_, index) => (
-										<i key={index} />
-									))}
-								</span>
-								<span>
-									{phase === "stopping"
-										? "Stopping this request"
-										: "Thinking about your request"}
-								</span>
-							</div>
-						) : null}
-						{pending.warnings.map((warning) => (
-							<div className="ai-run-warning" key={warning} role="status">
-								{warning}
-							</div>
-						))}
-						{pending.error && (
-							<div className="ai-run-error" role="alert">
-								<span>{pending.error}</span>
-								<button
-									type="button"
-									onClick={() => {
+				{showComposed && (
+					<TranscriptShell
+						turns={turns}
+						activity={activity}
+						streaming={
+							pending
+								? { turn: pending.user, text: pending.assistantText }
+								: null
+						}
+						findings={findings}
+						copiedId={copiedId}
+						onCopy={handleCopy}
+						onRetry={
+							pending &&
+							(phase === "error" ||
+								phase === "canceled" ||
+								phase === "interrupted")
+								? () => {
 										const retry = pending.user.text;
 										const retryImages = pending.user.context?.imageAttachments;
 										setPending(null);
 										setPhase("idle");
 										void start("ask", retry, retryImages);
-									}}
-									aria-label="Retry AI request"
-								>
-									Retry
-								</button>
-							</div>
-						)}
-					</>
+									}
+								: undefined
+						}
+					/>
+				)}
+				{pending?.error && (
+					<div className="ai-run-error" role="alert">
+						<span>{pending.error}</span>
+					</div>
 				)}
 				{!pending &&
 					runWarnings.map((warning) => (

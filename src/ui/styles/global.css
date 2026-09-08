@@ -15567,6 +15567,34 @@ button.toolbar-last-send-btn:hover {
   justify-content: flex-start;
 }
 
+.ai-transcript {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ai-transcript-empty {
+  margin: 0;
+  color: var(--gl-text-subtle);
+  font-size: 12px;
+}
+
+.ai-transcript-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-transcript-retry {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--gl-text-subtle);
+  font-size: 12px;
+}
+
 .ai-empty-state {
   max-width: 290px;
   margin: clamp(24px, 8vh, 72px) auto 0;

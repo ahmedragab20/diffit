@@ -137,6 +137,15 @@ for (const surface of surfaces) {
 				if (path === "/api/ai/conversations/fixture-conversation") {
 					return route.fulfill({ json: { conversation } });
 				}
+				if (path === "/api/ai/evidence") {
+					return route.fulfill({ json: { snapshots: [] } });
+				}
+				if (
+					path.startsWith("/api/ai/evidence/") &&
+					path.endsWith("/notebook")
+				) {
+					return route.fulfill({ json: { entries: [] } });
+				}
 			}
 			if (
 				path === "/api/ai/conversations/fixture-conversation" &&

@@ -1,4 +1,5 @@
 import { memo } from "react";
+import { Markdown } from "../components/Markdown";
 import { ActivityList } from "./ActivityList";
 import { FindingCard } from "./FindingCard";
 import { TranscriptTurn } from "./TranscriptTurn";
@@ -8,13 +9,9 @@ import type { AiConversationTurn } from "../../lib/ai/types";
 import type { CitationStatus } from "./FindingCard";
 
 /**
- * The composed transcript: completed turns, the active response, run activity
- * and cited findings in one column.
- *
- * This is a proposal, not a rollout. The plan requires human visual review to
- * "confirm that the result still looks and feels like diffing before rollout",
- * so it ships behind a default-off flag: nothing renders it unless someone
- * turns it on to look at it.
+ * The composed transcript the assistant rail mounts: completed turns, the
+ * in-flight response, run activity, cited findings, and retry after a
+ * terminal failure.
  *
  * Composition rules that are not cosmetic:
  *  - Completed turns render through the memoized component, so a streamed
@@ -36,6 +33,27 @@ export interface TranscriptShellProps {
 	onRetry?: () => void;
 }
 
+function UserTurn({ turn }: { turn: AiConversationTurn }) {
+	const images = turn.context?.imageAttachments ?? [];
+	return (
+		<article className="ai-message ai-message-user" data-turn-id={turn.id}>
+			<span>{turn.text}</span>
+			{images.length > 0 && (
+				<div className="ai-message-images">
+					{images.map((image) => (
+						<img
+							key={image.url}
+							src={image.url}
+							alt={image.name}
+							title={image.name}
+						/>
+					))}
+				</div>
+			)}
+		</article>
+	);
+}
+
 function TranscriptShellView({
 	turns,
 	activity,
@@ -50,10 +68,14 @@ function TranscriptShellView({
 		activity.phase === "failed" ||
 		activity.phase === "interrupted" ||
 		activity.phase === "canceled";
+	const waiting =
+		activity.phase === "preparing" ||
+		activity.phase === "responding" ||
+		activity.phase === "cancel-requested";
 
 	return (
 		<div className="ai-transcript" data-phase={activity.phase}>
-			{turns.length === 0 && !streaming && (
+			{turns.length === 0 && !streaming && findings.length === 0 && (
 				<p className="ai-transcript-empty">
 					Nothing has been asked in this conversation yet.
 				</p>
@@ -61,9 +83,7 @@ function TranscriptShellView({
 
 			{turns.map((turn) =>
 				turn.role === "user" ? (
-					<article className="ai-request-document" key={turn.id}>
-						{turn.text}
-					</article>
+					<UserTurn key={turn.id} turn={turn} />
 				) : (
 					<TranscriptTurn
 						key={turn.id}
@@ -88,13 +108,28 @@ function TranscriptShellView({
 
 			{streaming && (
 				<>
-					<article className="ai-request-document">
-						{streaming.turn.text}
-					</article>
-					{/* Kept out of the completed list: a stream never rewrites history. */}
-					<article className="ai-response-document" data-streaming="true">
-						{streaming.text}
-					</article>
+					<UserTurn turn={streaming.turn} />
+					{streaming.text ? (
+						<article className="ai-response-document" data-streaming="true">
+							<Markdown
+								content={streaming.text}
+								className="markdown-body ai-response-markdown"
+							/>
+						</article>
+					) : waiting ? (
+						<div className="ai-thinking" role="status">
+							<span className="ai-thinking-mark" aria-hidden="true">
+								{Array.from({ length: 9 }, (_, index) => (
+									<i key={index} />
+								))}
+							</span>
+							<span>
+								{activity.phase === "cancel-requested"
+									? "Stopping this request"
+									: "Thinking about your request"}
+							</span>
+						</div>
+					) : null}
 				</>
 			)}
 

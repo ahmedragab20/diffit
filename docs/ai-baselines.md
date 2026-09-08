@@ -43,7 +43,7 @@ Fixture changes require version/hash review; never quietly revise a baseline to 
 
 ## Browser component baseline
 
-`pnpm test:ai:e2e` runs `tests/ai-browser/baseline.spec.ts` against a host `fixture.tsx` that mounts the production `AiProvider`, `AiAssistantRail`, and styles. It covers nine cases: diff, PR diff, and plan on desktop, narrow, and reduced-motion viewports. HTTP requests are intercepted before navigation; external origins and unknown APIs are rejected. The fixture Vite config has no backend proxy or session-token bridge. Draft writes are synthetic and in-memory only.
+`pnpm test:ai:e2e` runs `tests/ai-browser/baseline.spec.ts` against a host `fixture.tsx` that mounts the production `AiProvider`, `AiAssistantRail`, and styles. It covers nine cases: diff, PR diff, and plan on desktop, narrow, and reduced-motion viewports. HTTP requests are intercepted before navigation; external origins and unknown APIs are rejected. The fixture serves empty `/api/ai/evidence` snapshots so the shipped rail's findings fetch is not treated as an unknown API. The fixture Vite config has no backend proxy or session-token bridge. Draft writes are synthetic and in-memory only.
 
 Install Chromium (POSIX shell syntax) with `PLAYWRIGHT_BROWSERS_PATH=0 pnpm exec playwright install chromium --only-shell`; the runner uses a workspace-local browser path. An explicitly installed executable can be selected with `DIFFING_AI_BROWSER_EXECUTABLE=/absolute/path/to/chromium pnpm test:ai:e2e`. There is no silent fallback. The Chromium download pinned by Playwright 1.63.0 timed out, so the observed baseline used explicit cached Chromium 151.0.7922.34. It is not pinned-browser or platform certification. Browser download is network setup; tests make no live provider calls.
 
