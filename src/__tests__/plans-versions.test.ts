@@ -147,6 +147,34 @@ describe('plan version history', () => {
     }
   })
 
+  it('records provenance for new and resubmitted versions while preserving older history', async () => {
+    const first = await store.upsert({ title: 'P', body: 'one' })
+    const second = await store.upsert({ id: first.id, title: 'P2', body: 'two' })
+    expect(second.versions.map((version) => version.provenance)).toEqual(['recorded', 'recorded'])
+    await store.update(first.id, { body: 'live edit' })
+    const edited = await store.get(first.id)
+    expect(edited?.version).toBe(2)
+    expect(edited?.versions[0].body).toBe('one')
+    expect(edited?.versions[0].provenance).toBe('recorded')
+    expect(edited?.versions[1]).toMatchObject({ body: 'live edit', provenance: 'recorded' })
+  })
+
+  it('marks backfilled legacy records reconstructed and does not relabel pre-existing records', async () => {
+    const legacy: Plan = {
+      id: 'legacy-provenance', title: 'Legacy', body: 'current', createdAt: 1, updatedAt: 2,
+      version: 3, decision: 'pending', comments: [], versions: undefined as unknown as Plan['versions'],
+    }
+    ;(store as unknown as { plans: Plan[] }).plans = [legacy]
+    const loaded = await store.get(legacy.id)
+    expect(loaded?.versions.every((version) => version.provenance === 'reconstructed')).toBe(true)
+    const prior = await store.upsert({ title: 'Existing', body: 'old' })
+    const raw = await store.getAll()
+    raw[1].versions[0].provenance = undefined
+    const resubmitted = await store.upsert({ id: prior.id, title: 'Existing 2', body: 'new' })
+    expect(resubmitted.versions[0].provenance).toBeUndefined()
+    expect(resubmitted.versions[1].provenance).toBe('recorded')
+  })
+
   it('backfills a comment missing createdAtPlanVersion with the current plan version', async () => {
     const plan = await store.upsert({ title: 'P', body: 'a' })
     await store.addComment(plan.id, makeComment({ id: 'c1' }))

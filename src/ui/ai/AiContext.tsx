@@ -8,13 +8,18 @@ import {
 	useState,
 	type ReactNode,
 } from "react";
+import { consumeSseData } from "../../lib/ai/sse";
+import {
+	AiStreamError,
+	parseAiCancelResponse,
+	parseAiRunEvent,
+} from "../../lib/ai/run-events";
 import type {
 	AiAction,
 	AiConnection,
 	AiCredentialRoute,
 	AiModel,
 	AiReviewContext,
-	AiRunEvent,
 	AiSourceId,
 	AiSurface,
 	AiConversationTurn,
@@ -25,6 +30,8 @@ interface AiResult {
 	text: string;
 	warnings: string[];
 	canceled?: boolean;
+	/** Local delivery stopped; provider termination is not yet confirmed. */
+	cancellationConfirmed?: false;
 }
 
 interface RunInput {
@@ -56,8 +63,16 @@ interface AiContextValue {
 	setReasoningEffort: (effort: string) => Promise<void>;
 	setRailWidth: (width: number) => Promise<void>;
 	setSettingsExpanded: (expanded: boolean) => Promise<void>;
-	connectKey: (source: AiSourceId, key: string, remember: boolean) => Promise<void>;
-	setup: (source: AiSourceId, route: AiCredentialRoute, providerId?: string) => Promise<string>;
+	connectKey: (
+		source: AiSourceId,
+		key: string,
+		remember: boolean,
+	) => Promise<void>;
+	setup: (
+		source: AiSourceId,
+		route: AiCredentialRoute,
+		providerId?: string,
+	) => Promise<string>;
 	disconnect: (source: AiSourceId) => Promise<void>;
 	run: (input: RunInput) => Promise<AiResult>;
 	cancel: (runId: string) => Promise<void>;
@@ -84,17 +99,25 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
 	const refresh = useCallback(async () => {
 		setError(null);
-		const [connectionResponse, modelResponse, settingsResponse] = await Promise.all([
-			fetch("/api/ai/connections"),
-			fetch("/api/ai/models"),
-			fetch("/api/settings"),
-		]);
+		const [connectionResponse, modelResponse, settingsResponse] =
+			await Promise.all([
+				fetch("/api/ai/connections"),
+				fetch("/api/ai/models"),
+				fetch("/api/settings"),
+			]);
 		if (!connectionResponse.ok) throw await jsonError(connectionResponse);
 		if (!modelResponse.ok) throw await jsonError(modelResponse);
-		const connectionBody = (await connectionResponse.json()) as { connections?: AiConnection[] };
+		const connectionBody = (await connectionResponse.json()) as {
+			connections?: AiConnection[];
+		};
 		const modelBody = (await modelResponse.json()) as { models?: AiModel[] };
 		const settings = settingsResponse.ok
-			? ((await settingsResponse.json()) as { aiModel?: string | null; aiReasoningEffort?: string | null; aiRailWidth?: number; aiSettingsExpanded?: boolean })
+			? ((await settingsResponse.json()) as {
+					aiModel?: string | null;
+					aiReasoningEffort?: string | null;
+					aiRailWidth?: number;
+					aiSettingsExpanded?: boolean;
+				})
 			: {};
 		const nextModels = modelBody.models ?? [];
 		const savedDefault = settings.aiModel || "";
@@ -104,7 +127,9 @@ export function AiProvider({ children }: { children: ReactNode }) {
 		setSelectedModel((current) => {
 			const requested = isInitialHydration ? savedDefault : current;
 			if (nextModels.some((model) => model.id === requested)) return requested;
-			return nextModels.find((model) => model.isDefault)?.id ?? nextModels[0]?.id ?? "";
+			return (
+				nextModels.find((model) => model.isDefault)?.id ?? nextModels[0]?.id ?? ""
+			);
 		});
 		if (isInitialHydration) {
 			setDefaultModelState(savedDefault);
@@ -117,7 +142,11 @@ export function AiProvider({ children }: { children: ReactNode }) {
 
 	useEffect(() => {
 		refresh()
-			.catch((nextError) => setError(nextError instanceof Error ? nextError.message : String(nextError)))
+			.catch((nextError) =>
+				setError(
+					nextError instanceof Error ? nextError.message : String(nextError),
+				),
+			)
 			.finally(() => setLoading(false));
 	}, [refresh]);
 
@@ -128,166 +157,249 @@ export function AiProvider({ children }: { children: ReactNode }) {
 			body: JSON.stringify(patch),
 		});
 		if (!response.ok) throw await jsonError(response);
-		window.dispatchEvent(new CustomEvent("diffing-ai-settings", { detail: patch }));
+		window.dispatchEvent(
+			new CustomEvent("diffing-ai-settings", { detail: patch }),
+		);
 	}, []);
 
-	const persistModel = useCallback(async (modelId: string) => {
-		setError(null);
-		setDefaultModelState(modelId);
-		setSelectedModel(modelId);
-		try {
-			await persistSettings({ aiModel: modelId });
-		} catch (nextError) {
-			setError(nextError instanceof Error ? nextError.message : String(nextError));
-		}
-	}, [persistSettings]);
+	const persistModel = useCallback(
+		async (modelId: string) => {
+			setError(null);
+			setDefaultModelState(modelId);
+			setSelectedModel(modelId);
+			try {
+				await persistSettings({ aiModel: modelId });
+			} catch (nextError) {
+				setError(
+					nextError instanceof Error ? nextError.message : String(nextError),
+				);
+			}
+		},
+		[persistSettings],
+	);
 
 	const selectModel = persistModel;
 	const setDefaultModel = persistModel;
 
-	const setReasoningEffort = useCallback(async (effort: string) => {
-		setReasoningState(effort);
-		await persistSettings({ aiReasoningEffort: effort || null });
-	}, [persistSettings]);
+	const setReasoningEffort = useCallback(
+		async (effort: string) => {
+			setReasoningState(effort);
+			await persistSettings({ aiReasoningEffort: effort || null });
+		},
+		[persistSettings],
+	);
 
-	const setRailWidth = useCallback(async (width: number) => {
-		const next = Math.max(320, Math.min(720, Math.round(width)));
-		setRailWidthState(next);
-		await persistSettings({ aiRailWidth: next });
-	}, [persistSettings]);
+	const setRailWidth = useCallback(
+		async (width: number) => {
+			const next = Math.max(320, Math.min(720, Math.round(width)));
+			setRailWidthState(next);
+			await persistSettings({ aiRailWidth: next });
+		},
+		[persistSettings],
+	);
 
-	const setSettingsExpanded = useCallback(async (expanded: boolean) => {
-		setSettingsExpandedState(expanded);
-		await persistSettings({ aiSettingsExpanded: expanded });
-	}, [persistSettings]);
+	const setSettingsExpanded = useCallback(
+		async (expanded: boolean) => {
+			setSettingsExpandedState(expanded);
+			await persistSettings({ aiSettingsExpanded: expanded });
+		},
+		[persistSettings],
+	);
 
 	useEffect(() => {
-		document.documentElement.style.setProperty("--ai-rail-width", `${railWidth}px`);
+		document.documentElement.style.setProperty(
+			"--ai-rail-width",
+			`${railWidth}px`,
+		);
 		return () => {
 			document.documentElement.style.removeProperty("--ai-rail-width");
 		};
 	}, [railWidth]);
 
-	const connectKey = useCallback(async (source: AiSourceId, key: string, remember: boolean) => {
-		const response = await fetch(`/api/ai/connections/${source}/key`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ apiKey: key, remember }),
-		});
-		if (!response.ok) throw await jsonError(response);
-		await refresh();
-	}, [refresh]);
+	const connectKey = useCallback(
+		async (source: AiSourceId, key: string, remember: boolean) => {
+			const response = await fetch(`/api/ai/connections/${source}/key`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ apiKey: key, remember }),
+			});
+			if (!response.ok) throw await jsonError(response);
+			await refresh();
+		},
+		[refresh],
+	);
 
-	const setup = useCallback(async (source: AiSourceId, route: AiCredentialRoute, providerId?: string) => {
-		const endpoint = route === "runtime-key" ? "configure-runtime-key" : "login";
-		const response = await fetch(`/api/ai/connections/${source}/${endpoint}`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ route, providerId }),
-		});
-		if (!response.ok) throw await jsonError(response);
-		const body = (await response.json()) as { command?: string };
-		return body.command || "";
-	}, []);
+	const setup = useCallback(
+		async (source: AiSourceId, route: AiCredentialRoute, providerId?: string) => {
+			const endpoint = route === "runtime-key" ? "configure-runtime-key" : "login";
+			const response = await fetch(`/api/ai/connections/${source}/${endpoint}`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ route, providerId }),
+			});
+			if (!response.ok) throw await jsonError(response);
+			const body = (await response.json()) as { command?: string };
+			return body.command || "";
+		},
+		[],
+	);
 
-	const disconnect = useCallback(async (source: AiSourceId) => {
-		const response = await fetch(`/api/ai/connections/${source}`, { method: "DELETE" });
-		if (!response.ok) throw await jsonError(response);
-		await refresh();
-	}, [refresh]);
+	const disconnect = useCallback(
+		async (source: AiSourceId) => {
+			const response = await fetch(`/api/ai/connections/${source}`, {
+				method: "DELETE",
+			});
+			if (!response.ok) throw await jsonError(response);
+			await refresh();
+		},
+		[refresh],
+	);
 
-	const run = useCallback(async ({ surface, action, context, prompt, conversationId, history, signal, onDelta, onStart, onWarning }: RunInput) => {
-		if (!selectedModel) throw new Error("Connect an AI source and choose a model first.");
-		const response = await fetch("/api/ai/run", {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				trigger: "user",
-				conversationId: conversationId || crypto.randomUUID(),
-				modelId: selectedModel,
-				reasoningEffort: reasoningEffort || undefined,
-				surface,
-				action,
-				prompt,
-				context,
-				history,
-			}),
+	const run = useCallback(
+		async ({
+			surface,
+			action,
+			context,
+			prompt,
+			conversationId,
+			history,
 			signal,
-		});
-		if (!response.ok) throw await jsonError(response);
-		if (!response.body) throw new Error("AI response stream is unavailable.");
-		const reader = response.body.getReader();
-		const decoder = new TextDecoder();
-		let buffer = "";
-		let text = "";
-		let runId: string | undefined;
-		const warnings: string[] = [];
-		const consume = (frame: string) => {
-			const data = frame
-				.split("\n")
-				.filter((line) => line.startsWith("data:"))
-				.map((line) => line.slice(5).trim())
-				.join("\n");
-			if (!data) return;
-			const event = JSON.parse(data) as AiRunEvent;
-			if (event.type === "start") {
-				runId = event.runId;
-				onStart?.(event.runId);
-			}
-			if (event.type === "text-delta") {
-				text += event.text;
-				onDelta?.(text);
-			}
-			if (event.type === "warning") { warnings.push(event.message); onWarning?.(event.message); }
-			if (event.type === "complete") text = event.text || text;
-			if (event.type === "error") throw new Error(event.message);
-		};
-		try {
-			while (true) {
-				const { value, done } = await reader.read();
-				buffer += decoder.decode(value, { stream: !done });
-				let boundary = buffer.indexOf("\n\n");
-				while (boundary >= 0) {
-					consume(buffer.slice(0, boundary));
-					buffer = buffer.slice(boundary + 2);
-					boundary = buffer.indexOf("\n\n");
+			onDelta,
+			onStart,
+			onWarning,
+		}: RunInput) => {
+			if (!selectedModel)
+				throw new Error("Connect an AI source and choose a model first.");
+			let text = "";
+			let runId: string | undefined;
+			let completed = false;
+			const warnings: string[] = [];
+			const consume = (data: string) => {
+				const event = parseAiRunEvent(data);
+				if (event.type === "error")
+					throw new AiStreamError(event.message, event.code);
+				if (event.type === "start") {
+					if (runId) throw new Error("AI stream contains a duplicate start event.");
+					runId = event.runId;
+					onStart?.(event.runId);
+					return;
 				}
-				if (done) break;
+				if (!runId) throw new Error("AI stream is missing its start event.");
+				if (event.type === "text-delta") {
+					text += event.text;
+					onDelta?.(text);
+				}
+				if (event.type === "warning") {
+					warnings.push(event.message);
+					onWarning?.(event.message);
+				}
+				if (event.type === "complete") {
+					text = event.text;
+					completed = true;
+					return true;
+				}
+			};
+			try {
+				signal?.throwIfAborted();
+				const response = await fetch("/api/ai/run", {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						trigger: "user",
+						conversationId: conversationId || crypto.randomUUID(),
+						modelId: selectedModel,
+						reasoningEffort: reasoningEffort || undefined,
+						surface,
+						action,
+						prompt,
+						context,
+						history,
+					}),
+					signal,
+				});
+				if (!response.ok) throw await jsonError(response);
+				if (!response.body) throw new Error("AI response stream is unavailable.");
+				await consumeSseData(response.body, consume, signal);
+				if (!completed)
+					throw new Error(
+						"AI response stream ended before completion. The response is incomplete.",
+					);
+			} catch (nextError) {
+				if (
+					signal?.aborted ||
+					(nextError instanceof AiStreamError && nextError.code === "cancelled")
+				)
+					return {
+						runId,
+						text,
+						warnings,
+						canceled: true,
+						cancellationConfirmed: false as const,
+					};
+				throw nextError;
 			}
-			if (buffer.trim()) consume(buffer);
-		} catch (nextError) {
-			if (signal?.aborted) return { runId, text, warnings, canceled: true };
-			throw nextError;
-		}
-		return { runId, text, warnings };
-	}, [reasoningEffort, selectedModel]);
+			return { runId, text, warnings };
+		},
+		[reasoningEffort, selectedModel],
+	);
 
 	const cancel = useCallback(async (runId: string) => {
-		await fetch(`/api/ai/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+		const response = await fetch(
+			`/api/ai/runs/${encodeURIComponent(runId)}/cancel`,
+			{
+				method: "POST",
+			},
+		);
+		if (!response.ok) throw await jsonError(response);
+		parseAiCancelResponse(await response.json());
 	}, []);
 
-	const value = useMemo<AiContextValue>(() => ({
-		connections,
-		models,
-		selectedModel,
-		defaultModel,
-		reasoningEffort,
-		railWidth,
-		settingsExpanded,
-		loading,
-		error,
-		refresh,
-		selectModel,
-		setDefaultModel,
-		setReasoningEffort,
-		setRailWidth,
-		setSettingsExpanded,
-		connectKey,
-		setup,
-		disconnect,
-		run,
-		cancel,
-	}), [connections, models, selectedModel, defaultModel, reasoningEffort, railWidth, settingsExpanded, loading, error, refresh, selectModel, setDefaultModel, setReasoningEffort, setRailWidth, setSettingsExpanded, connectKey, setup, disconnect, run, cancel]);
+	const value = useMemo<AiContextValue>(
+		() => ({
+			connections,
+			models,
+			selectedModel,
+			defaultModel,
+			reasoningEffort,
+			railWidth,
+			settingsExpanded,
+			loading,
+			error,
+			refresh,
+			selectModel,
+			setDefaultModel,
+			setReasoningEffort,
+			setRailWidth,
+			setSettingsExpanded,
+			connectKey,
+			setup,
+			disconnect,
+			run,
+			cancel,
+		}),
+		[
+			connections,
+			models,
+			selectedModel,
+			defaultModel,
+			reasoningEffort,
+			railWidth,
+			settingsExpanded,
+			loading,
+			error,
+			refresh,
+			selectModel,
+			setDefaultModel,
+			setReasoningEffort,
+			setRailWidth,
+			setSettingsExpanded,
+			connectKey,
+			setup,
+			disconnect,
+			run,
+			cancel,
+		],
+	);
 
 	return <AiContext.Provider value={value}>{children}</AiContext.Provider>;
 }

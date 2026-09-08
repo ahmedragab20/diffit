@@ -1,3 +1,9 @@
+import type {
+	AiSnapshotManifest,
+	ReviewSnapshot,
+	AiEvidenceReference,
+} from "./snapshots.js";
+
 export type AiSourceId =
 	| "codex"
 	| "claude"
@@ -16,21 +22,50 @@ export type AiConnectionStatus =
 	| "needs-configuration"
 	| "error";
 
+export interface AiProviderCapabilities {
+	protocol:
+		| "codex-app-server"
+		| "claude-stream-json"
+		| "opencode-json"
+		| "cursor-stream-json"
+		| "responses-sse"
+		| "anthropic-sse";
+	contractVersion: 1;
+	/** No installed runtime or account has been certified by a static declaration. */
+	runtimeVersion: string | null;
+	liveVerified: false;
+	routes: AiCredentialRoute[];
+	reasoningEffort: "model-catalog" | "unsupported";
+	serviceTier: "model-catalog" | "unsupported";
+	images: "model-catalog" | "unsupported";
+	toolAuthority: "disabled" | "runtime-managed-unverified";
+	investigation: false;
+}
+
 export interface AiConnection {
 	id: AiSourceId;
 	label: string;
 	status: AiConnectionStatus;
 	runtimeAvailable: boolean;
 	credentialRoutes: AiCredentialRoute[];
+	/** Verified active routes only; discovery must not copy the declared routes here. */
 	activeRoutes: AiCredentialRoute[];
+	/** Legacy `connected` status means available/configured, not authenticated. */
+	authentication?: {
+		evidence: "none" | "key-configured" | "runtime-status";
+		verified: false;
+		configuredRoutes: AiCredentialRoute[];
+	};
 	detail?: string;
 	setupCommand?: string;
 	modelCount?: number;
+	capabilities?: AiProviderCapabilities;
 }
 
 export interface AiModel {
 	id: string;
 	sourceId: AiSourceId;
+	/** Selection namespace; does not certify the runtime's credential or billing route. */
 	credentialRoute: AiCredentialRoute;
 	providerId: string;
 	modelId: string;
@@ -40,6 +75,8 @@ export interface AiModel {
 	reasoningEfforts?: string[];
 	serviceTiers?: string[];
 	supportsImages?: boolean;
+	catalogSource?: "runtime" | "provider" | "fallback";
+	capabilities?: AiProviderCapabilities;
 }
 
 export interface AiDiffSelection {
@@ -119,6 +156,8 @@ export interface AiPlanContext {
 	title: string;
 	version: number;
 	body?: string;
+	/** Explicit unsubmitted plan text; never substitutes for the stored version. */
+	bodyDraft?: string;
 	selectedText?: string;
 	section?: string;
 	draft?: string;
@@ -191,6 +230,7 @@ export interface AiRunRequest {
 	modelId: string;
 	surface: AiSurface;
 	action: AiAction;
+	mode?: "answer" | "investigate";
 	prompt?: string;
 	context: AiReviewContext;
 	reasoningEffort?: string;
@@ -198,17 +238,23 @@ export interface AiRunRequest {
 	history?: AiConversationTurn[];
 	/** Populated by the server after validating project-local image references. */
 	resolvedImages?: AiResolvedImageAttachment[];
+	/** Server-only source identity, rejected at the wire boundary. */
+	snapshot?: AiSnapshotManifest;
+	/** Server-only captured reader and the references actually included in the prompt. */
+	snapshotReader?: ReviewSnapshot;
+	evidence?: AiEvidenceReference[];
 }
 
 export type AiRunEvent =
 	| { type: "start"; runId: string; modelId: string }
 	| { type: "text-delta"; text: string }
 	| { type: "warning"; message: string }
-	| { type: "error"; message: string }
+	| { type: "error"; message: string; code?: string }
 	| { type: "complete"; text: string };
 
 export interface AiBackendAdapter {
 	id: AiSourceId;
+	capabilities?: AiProviderCapabilities;
 	supportsImages?: boolean;
 	connection(): Promise<AiConnection>;
 	models(): Promise<AiModel[]>;

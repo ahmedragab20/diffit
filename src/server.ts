@@ -184,7 +184,15 @@ import {
 	classifyPrComments,
 	buildReviewPayload,
 } from "./lib/github.js";
-import { AiService } from "./lib/ai/service.js";
+import { AiService, type AiPreparedRun } from "./lib/ai/service.js";
+import { AiRunError } from "./lib/ai/lifecycle.js";
+import { AiRequestError, readAiRunRequest } from "./lib/ai/request.js";
+import { streamAiRun } from "./lib/ai/run-stream.js";
+import { AiSnapshotError } from "./lib/ai/snapshots.js";
+import { resolvePlanSnapshot } from "./lib/ai/plan-snapshot.js";
+import { capturePrReview } from "./lib/ai/pr-snapshot.js";
+import { captureLocalReview } from "./lib/ai/local-snapshot.js";
+import { resolveDiffSnapshot } from "./lib/ai/diff-snapshot.js";
 import { ByteLruCache } from "./lib/ai/cache.js";
 import {
 	FileAiConversationStore,
@@ -197,7 +205,6 @@ import type {
 	AiCredentialRoute,
 	AiImageAttachmentReference,
 	AiResolvedImageAttachment,
-	AiRunEvent,
 	AiRunRequest,
 	AiSourceId,
 	AiSurface,
@@ -943,15 +950,29 @@ export function createApp(
 		return fetchPrFileContentViaGh(resolvedFromSession(session), safePath, sha);
 	};
 	const aiAttachmentCache = new ByteLruCache<Buffer>(4 * 1024 * 1024, 64);
-	const resolveAiAttachment = async (path: string): Promise<Buffer | null> => {
-		// Working-tree files must be capability-read on every request. An mtime
-		// cache would bypass access checks after a file is replaced by a symlink.
-		if (!prMode) return resolveFileVersion(path, "new");
-		const session = await prStore.get();
-		const cacheKey = `pr:${session?.headSha ?? "unknown"}:${path}`;
+	const resolveAiAttachment = async (
+		path: string,
+		session: PrSession | null,
+	): Promise<Buffer | null> => {
+		// Admission runs before cache lookup; one captured session owns key and fetch.
+		const safePath = toSafeLiteralRelativePath(path, repoRoot);
+		if (!safePath) throw new NativeFsError("invalid-path");
+		if (!prMode) return resolveFileVersion(safePath, "new");
+		if (!session) return null;
+		const cacheKey = JSON.stringify([
+			session.host ?? "github.com",
+			session.owner,
+			session.repo,
+			session.headSha,
+			safePath,
+		]);
 		const cached = aiAttachmentCache.get(cacheKey);
 		if (cached) return cached;
-		const buffer = await resolveFileVersion(path, "new");
+		const buffer = await fetchPrFileContentViaGh(
+			resolvedFromSession(session),
+			safePath,
+			session.headSha,
+		);
 		if (buffer) aiAttachmentCache.set(cacheKey, buffer);
 		return buffer;
 	};
@@ -1503,12 +1524,13 @@ export function createApp(
 	});
 
 	app.post("/api/ai/run", async (c) => {
-		const body = (await c.req.json().catch(() => null)) as AiRunRequest | null;
-		if (!body || body.trigger !== "user") {
-			return c.json(
-				{ error: "AI inference requires an explicit user trigger." },
-				400,
-			);
+		let body: AiRunRequest;
+		try {
+			body = await readAiRunRequest(c.req.raw);
+		} catch (error) {
+			const failure =
+				error instanceof AiRequestError ? error : new AiRequestError(400);
+			return c.json({ error: failure.message }, failure.status);
 		}
 		if (!body.modelId || !body.action || !body.surface || !body.context) {
 			return c.json(
@@ -1568,105 +1590,178 @@ export function createApp(
 					413,
 				);
 		}
-		const requestedImages = Array.isArray(body.context.imageAttachments)
-			? body.context.imageAttachments
-			: [];
-		if (requestedImages.length > MAX_AI_IMAGE_COUNT) {
-			return c.json(
-				{
-					error: `At most ${MAX_AI_IMAGE_COUNT} images can be attached to one AI request.`,
+		let prepared: AiPreparedRun;
+		try {
+			prepared = await ai.prepareRun(
+				body,
+				async (signal) => {
+					signal.throwIfAborted();
+					let capturedPr: PrSession | null = null;
+					let prCapture: ReturnType<typeof capturePrReview> | undefined;
+					let planCapture:
+						| Awaited<ReturnType<typeof resolvePlanSnapshot>>
+						| undefined;
+					let localCapture:
+						| Awaited<ReturnType<typeof captureLocalReview>>
+						| undefined;
+					const capturedOptions = JSON.stringify(diffOpts);
+					if (prMode) {
+						const current = await prStore.get();
+						signal.throwIfAborted();
+						capturedPr = current ? { ...current } : null;
+						prCapture = capturePrReview(capturedPr);
+					}
+					if (body.surface === "pr-diff" && !prCapture)
+						throw new AiSnapshotError("invalid");
+					if ("planId" in body.context) {
+						if (body.surface !== "plan") throw new AiSnapshotError("invalid");
+						planCapture = await resolvePlanSnapshot(body.context, plans);
+						signal.throwIfAborted();
+						body.context = planCapture.context;
+						body.snapshot = planCapture.snapshot.manifest;
+						body.snapshotReader = planCapture.snapshot;
+					} else if (body.surface === "plan") throw new AiSnapshotError("invalid");
+					else if (!("mockupId" in body.context)) {
+						if (body.surface !== (prMode ? "pr-diff" : "diff"))
+							throw new AiSnapshotError("invalid");
+						if (!prCapture)
+							localCapture = await captureLocalReview(
+								getRepoRoot(),
+								diffOpts,
+								executeDiffWithMeta,
+							);
+						signal.throwIfAborted();
+						const captured = resolveDiffSnapshot(
+							body.context,
+							prCapture ?? localCapture!,
+							getRepoRoot(),
+						);
+						body.context = captured.context;
+						body.snapshot = captured.snapshot.manifest;
+						body.snapshotReader = captured.snapshot;
+					}
+					const requestedImages = Array.isArray(body.context.imageAttachments)
+						? body.context.imageAttachments
+						: [];
+					if (requestedImages.length > MAX_AI_IMAGE_COUNT)
+						throw new AiRequestError(400, "Too many image attachments.");
+					const resolvedImages: AiResolvedImageAttachment[] = [];
+					for (const reference of requestedImages) {
+						if (
+							!reference ||
+							typeof reference.url !== "string" ||
+							typeof reference.name !== "string" ||
+							typeof reference.mimeType !== "string"
+						) {
+							throw new AiRequestError(
+								400,
+								"An image attachment reference is invalid.",
+							);
+						}
+						signal.throwIfAborted();
+						const resolvedImage = await resolveAiImageAttachment(reference);
+						signal.throwIfAborted();
+						if (!resolvedImage)
+							throw new AiRequestError(
+								404,
+								"An image attachment is unavailable or invalid.",
+							);
+						resolvedImages.push(resolvedImage);
+					}
+					const requestedPaths = [
+						...new Set(
+							(body.context.attachmentPaths ?? []).filter(
+								(path): path is string =>
+									typeof path === "string" && path.trim().length > 0,
+							),
+						),
+					];
+					if (requestedPaths.length > 8)
+						throw new AiRequestError(
+							400,
+							"At most 8 files can be attached to one AI request.",
+						);
+					const attachments: AiAttachment[] = [];
+					let remainingAttachmentBytes = 64 * 1024;
+					for (const path of requestedPaths) {
+						signal.throwIfAborted();
+						const buffer = await resolveAiAttachment(path, capturedPr);
+						signal.throwIfAborted();
+						if (!buffer)
+							throw new AiRequestError(404, "An attached file is unavailable.");
+						const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
+						if (sample.includes(0))
+							throw new AiRequestError(415, "Binary files cannot be attached.");
+						if (remainingAttachmentBytes <= 0) break;
+						const take = Math.min(buffer.length, 32 * 1024, remainingAttachmentBytes);
+						attachments.push({
+							path,
+							content: buffer.subarray(0, take).toString("utf8"),
+							truncated: take < buffer.length,
+						});
+						remainingAttachmentBytes -= take;
+					}
+					body.context = {
+						...body.context,
+						attachmentPaths: requestedPaths,
+						attachments,
+						imageAttachments: resolvedImages.map(({ url, name, mimeType, size }) => ({
+							url,
+							name,
+							mimeType,
+							size,
+						})),
+					};
+					body.resolvedImages = resolvedImages;
+					signal.throwIfAborted();
+					await planCapture?.assertFresh();
+					signal.throwIfAborted();
+					await localCapture?.assertFresh();
+					signal.throwIfAborted();
+					if (localCapture && capturedOptions !== JSON.stringify(diffOpts))
+						throw new AiSnapshotError("stale");
+					if (prCapture) prCapture.assertFresh(await prStore.get());
+					signal.throwIfAborted();
+					return body;
 				},
-				400,
+				c.req.raw.signal,
 			);
-		}
-		const resolvedImages: AiResolvedImageAttachment[] = [];
-		for (const reference of requestedImages) {
-			if (
-				!reference ||
-				typeof reference.url !== "string" ||
-				typeof reference.name !== "string" ||
-				typeof reference.mimeType !== "string"
-			) {
-				return c.json({ error: "An image attachment reference is invalid." }, 400);
-			}
-			const resolvedImage = await resolveAiImageAttachment(reference);
-			if (!resolvedImage)
+		} catch (error) {
+			if (error instanceof AiSnapshotError || error instanceof AiRequestError)
+				return c.json({ error: error.message }, error.status);
+			if (error instanceof AiRunError)
 				return c.json(
-					{
-						error: `Image attachment was not found or is invalid: ${reference.name}`,
-					},
-					404,
+					{ error: error.message, code: error.code },
+					error.code === "capacity"
+						? 503
+						: error.code.endsWith("timeout")
+							? 408
+							: error.code === "cancelled"
+								? 409
+								: error.code === "preparation_failed"
+									? 500
+									: 400,
 				);
-			resolvedImages.push(resolvedImage);
+			throw error;
 		}
-		const requestedPaths = [
-			...new Set(
-				(body.context.attachmentPaths ?? []).filter(
-					(path): path is string =>
-						typeof path === "string" && path.trim().length > 0,
-				),
-			),
-		];
-		if (requestedPaths.length > 8) {
-			return c.json(
-				{ error: "At most 8 files can be attached to one AI request." },
-				400,
+		try {
+			return streamSSE(c, (stream) =>
+				streamAiRun(ai, body, stream, c.req.raw.signal, prepared),
 			);
+		} catch (error) {
+			ai.cancel(prepared.runId);
+			throw error;
 		}
-		const attachments: AiAttachment[] = [];
-		let remainingAttachmentBytes = 64 * 1024;
-		for (const path of requestedPaths) {
-			const buffer = await resolveAiAttachment(path);
-			if (!buffer)
-				return c.json({ error: `Attached file was not found: ${path}` }, 404);
-			const sample = buffer.subarray(0, Math.min(buffer.length, 8192));
-			if (sample.includes(0))
-				return c.json({ error: `Binary files cannot be attached: ${path}` }, 415);
-			if (remainingAttachmentBytes <= 0) break;
-			const take = Math.min(buffer.length, 32 * 1024, remainingAttachmentBytes);
-			attachments.push({
-				path,
-				content: buffer.subarray(0, take).toString("utf8"),
-				truncated: take < buffer.length,
-			});
-			remainingAttachmentBytes -= take;
-		}
-		body.context = {
-			...body.context,
-			attachmentPaths: requestedPaths,
-			attachments,
-			imageAttachments: resolvedImages.map(({ url, name, mimeType, size }) => ({
-				url,
-				name,
-				mimeType,
-				size,
-			})),
-		};
-		body.resolvedImages = resolvedImages;
-		return streamSSE(c, async (stream) => {
-			let runId: string | null = null;
-			stream.onAbort(() => {
-				if (runId) ai.cancel(runId);
-			});
-			try {
-				await ai.run(body, async (event: AiRunEvent) => {
-					if (event.type === "start") runId = event.runId;
-					await stream.writeSSE({ event: event.type, data: JSON.stringify(event) });
-				});
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				await stream
-					.writeSSE({
-						event: "error",
-						data: JSON.stringify({ type: "error", message }),
-					})
-					.catch(() => {});
-			}
-		});
 	});
 
 	app.post("/api/ai/runs/:id/cancel", (c) => {
-		return c.json({ canceled: ai.cancel(c.req.param("id")) });
+		const requested = ai.cancel(c.req.param("id"));
+		return c.json({
+			canceled: requested, // Legacy acceptance flag, not a termination confirmation.
+			cancellationRequested: requested,
+			cancellationConfirmed: false,
+			status: requested ? "cancel-requested" : "not-active",
+		});
 	});
 
 	app.put("/api/settings", async (c) => {

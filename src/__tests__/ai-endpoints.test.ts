@@ -3,15 +3,57 @@ import { describe, expect, it, vi } from "vitest";
 import { InMemoryCommentStore } from "../lib/comments.js";
 import { InMemoryPlanStore } from "../lib/plans.js";
 import { InMemoryMockupStore } from "../lib/mockups.js";
+import { InMemoryPrSessionStore } from "../lib/pr-session.js";
+import type { PrSession, PrSessionStore } from "../lib/pr-session.js";
+import { fetchPrFileContentViaGh } from "../lib/github.js";
 import { InMemoryAiConversationStore } from "../lib/ai/conversations.js";
 import { AiService } from "../lib/ai/service.js";
+import { captureLocalReview } from "../lib/ai/local-snapshot.js";
 import type { AiBackendAdapter } from "../lib/ai/types.js";
+import type { AiRunPolicy } from "../lib/ai/lifecycle.js";
+import { AiSnapshotError, sourceHash } from "../lib/ai/snapshots.js";
+
+const localSnapshotState = vi.hoisted(() => ({
+	stale: false,
+	patch:
+		"diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-old\n+canonical\n",
+	gate: undefined as Promise<void> | undefined,
+	calls: 0,
+}));
+
+vi.mock("../lib/ai/local-snapshot.js", () => ({
+	captureLocalReview: vi.fn(async () => {
+		localSnapshotState.calls++;
+		if (localSnapshotState.gate) await localSnapshotState.gate;
+		return {
+			identity: {
+				kind: "local",
+				repositoryId: "test",
+				mode: "working",
+				baseSha: null,
+				headSha: null,
+				indexHash: "test",
+				patchHash: sourceHash(localSnapshotState.patch),
+			},
+			patch: localSnapshotState.patch,
+			omissions: [],
+			assertFresh: async () => {
+				if (localSnapshotState.stale) throw new AiSnapshotError("stale");
+			},
+		};
+	}),
+}));
 import { DEFAULTS } from "../lib/diff-options.js";
 
 vi.mock("../lib/git.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../lib/git.js")>();
 	return { ...actual, getRepoRoot: () => process.cwd() };
 });
+
+vi.mock("../lib/github.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../lib/github.js")>()),
+	fetchPrFileContentViaGh: vi.fn(async () => Buffer.from("synthetic source")),
+}));
 
 vi.mock("node:fs", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:fs")>();
@@ -51,19 +93,24 @@ function adapter(
 	};
 }
 
-async function app(run?: AiBackendAdapter["run"]) {
+async function app(
+	run?: AiBackendAdapter["run"],
+	plans = new InMemoryPlanStore(),
+	prStore?: PrSessionStore,
+	policy?: Partial<AiRunPolicy>,
+) {
 	const { createApp } = await import("../server.js");
 	return createApp(
 		"/tmp/diffing-ai-client",
 		DEFAULTS,
 		new InMemoryCommentStore(),
-		new InMemoryPlanStore(),
-		undefined,
-		false,
+		plans,
+		prStore,
+		!!prStore,
 		undefined,
 		new InMemoryMockupStore(),
 		undefined,
-		new AiService([adapter(run)]),
+		new AiService([adapter(run)], undefined, policy),
 		new InMemoryAiConversationStore(),
 	);
 }
@@ -123,6 +170,71 @@ describe("AI endpoints", () => {
 			expect(run).not.toHaveBeenCalled();
 		},
 	);
+
+	it.each([
+		{ label: "context primitive", patch: { context: 1 } },
+		{
+			label: "attachmentPaths string",
+			patch: { context: { kind: "diff", attachmentPaths: "x" } },
+		},
+		{ label: "unknown action", patch: { action: "unknown" } },
+		{ label: "resolved images", patch: { resolvedImages: [] } },
+	])(
+		"rejects malformed $label without invoking the adapter",
+		async ({ patch }) => {
+			const run = vi.fn(async () => "nope");
+			const server = await app(run);
+			const response = await server.request("/api/ai/run", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					trigger: "user",
+					conversationId: "bad",
+					modelId: "codex/subscription/codex/gpt-test",
+					action: "ask",
+					surface: "diff",
+					context: { kind: "diff" },
+					...patch,
+				}),
+			});
+			expect(response.status).toBe(400);
+			expect(run).not.toHaveBeenCalled();
+		},
+	);
+
+	it("rejects an oversized raw body without invoking the adapter", async () => {
+		const run = vi.fn(async () => "nope");
+		const server = await app(run);
+		const response = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json", "content-length": "1" },
+			body: JSON.stringify({
+				trigger: "user",
+				conversationId: "x",
+				modelId: "codex/subscription/codex/gpt-test",
+				action: "ask",
+				surface: "diff",
+				context: { kind: "diff" },
+				prompt: "x".repeat(4 * 1024 * 1024),
+			}),
+		});
+		expect(response.status).toBe(413);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it("reports cancellation of a missing run as inactive", async () => {
+		const server = await app();
+		const response = await server.request("/api/ai/runs/missing-run/cancel", {
+			method: "POST",
+		});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			canceled: false,
+			cancellationRequested: false,
+			cancellationConfirmed: false,
+			status: "not-active",
+		});
+	});
 
 	it("streams only after an explicit user-triggered request", async () => {
 		const run = vi.fn(async (_request, _signal, onEvent) => {
@@ -318,5 +430,382 @@ describe("AI endpoints", () => {
 			expect.anything(),
 			expect.anything(),
 		);
+	});
+});
+
+describe("AI preparation admission endpoints", () => {
+	const body = (conversationId: string) => ({
+		trigger: "user",
+		conversationId,
+		modelId: "codex/subscription/codex/gpt-test",
+		action: "ask",
+		surface: "diff",
+		context: { kind: "diff" },
+	});
+
+	it("returns a sanitized server error when source preparation fails", async () => {
+		vi
+			.mocked(captureLocalReview)
+			.mockRejectedValueOnce(new Error("sensitive diagnostic"));
+		const run = vi.fn(async () => "answer");
+		const server = await app(run);
+		const response = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body("failed-preparation")),
+		});
+		expect(response.status).toBe(500);
+		expect(await response.json()).toEqual({
+			error: "AI request preparation failed.",
+			code: "preparation_failed",
+		});
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it("returns capacity while the first local preparation is unresolved", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		localSnapshotState.gate = gate;
+		localSnapshotState.calls = 0;
+		const run = vi.fn(async (_request, _signal, onEvent) => {
+			await onEvent({ type: "text-delta", text: "answer" });
+			return "answer";
+		});
+		try {
+			const server = await app(run, new InMemoryPlanStore(), undefined, {
+				preparationMs: 1000,
+				maxConcurrent: 1,
+				maxPerSource: 1,
+			});
+			const first = server.request("/api/ai/run", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body("capacity-first")),
+			});
+			await vi.waitFor(() => expect(localSnapshotState.calls).toBe(1));
+			const second = await server.request("/api/ai/run", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body("capacity-second")),
+			});
+			expect(second.status).toBe(503);
+			expect(await second.json()).toMatchObject({ code: "capacity" });
+			expect(localSnapshotState.calls).toBe(1);
+			release();
+			const firstResponse = await first;
+			expect(firstResponse.status).toBe(200);
+			await firstResponse.text();
+			expect(run).toHaveBeenCalledTimes(1);
+		} finally {
+			release();
+			localSnapshotState.gate = undefined;
+			localSnapshotState.calls = 0;
+		}
+	});
+
+	it("returns cancellation promptly but retains capacity until preparation settles", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		localSnapshotState.gate = gate;
+		localSnapshotState.calls = 0;
+		const run = vi.fn(async (_request, _signal, onEvent) => {
+			await onEvent({ type: "text-delta", text: "answer" });
+			return "answer";
+		});
+		const controller = new AbortController();
+		try {
+			const server = await app(run, new InMemoryPlanStore(), undefined, {
+				preparationMs: 1000,
+				maxConcurrent: 1,
+				maxPerSource: 1,
+			});
+			const first = server.request("/api/ai/run", {
+				method: "POST",
+				signal: controller.signal,
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body("cancel-first")),
+			});
+			await vi.waitFor(() => expect(localSnapshotState.calls).toBe(1));
+			controller.abort();
+			const cancelled = await first;
+			expect(cancelled.status).toBe(409);
+			expect(await cancelled.json()).toMatchObject({ code: "cancelled" });
+			expect(run).not.toHaveBeenCalled();
+			const blocked = await server.request("/api/ai/run", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body("cancel-second")),
+			});
+			expect(blocked.status).toBe(503);
+			expect(await blocked.json()).toMatchObject({ code: "capacity" });
+			release();
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			const next = await server.request("/api/ai/run", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify(body("cancel-third")),
+			});
+			expect(next.status).toBe(200);
+			await next.text();
+			expect(run).toHaveBeenCalledTimes(1);
+		} finally {
+			release();
+			localSnapshotState.gate = undefined;
+			localSnapshotState.calls = 0;
+		}
+	});
+});
+
+describe("AI plan snapshot endpoint", () => {
+	function planRequest(
+		planId: string,
+		context: Record<string, unknown> = {},
+	): Record<string, unknown> {
+		return {
+			trigger: "user",
+			conversationId: "plan",
+			modelId: "codex/subscription/codex/gpt-test",
+			action: "critique-plan",
+			surface: "plan",
+			context: { kind: "plan", planId, version: 1, title: "client", ...context },
+		};
+	}
+
+	it("resolves canonical body/title and sends snapshot metadata", async () => {
+		const plans = new InMemoryPlanStore();
+		const plan = await plans.upsert({ title: "Stored", body: "canonical" });
+		let captured: Parameters<AiBackendAdapter["run"]>[0] | undefined;
+		const run = vi.fn(async (request, _signal, onEvent) => {
+			captured = request;
+			await onEvent({ type: "text-delta", text: "ok" });
+			return "ok";
+		});
+		const server = await app(run, plans);
+		const response = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(planRequest(plan.id)),
+		});
+		expect(response.status).toBe(200);
+		await response.text();
+		expect(captured?.context).toMatchObject({
+			body: "canonical",
+			title: "Stored",
+		});
+		expect(captured?.snapshot).toMatchObject({
+			identity: { kind: "plan", bodyHash: sourceHash("canonical") },
+		});
+	});
+
+	it("keeps body drafts explicit in context and prompt", async () => {
+		const plans = new InMemoryPlanStore();
+		const plan = await plans.upsert({ title: "Stored", body: "canonical" });
+		let captured: Parameters<AiBackendAdapter["run"]>[0] | undefined;
+		const run = vi.fn(async (request, _signal, onEvent) => {
+			captured = request;
+			await onEvent({ type: "text-delta", text: "ok" });
+			return "ok";
+		});
+		const server = await app(run, plans);
+		const response = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(planRequest(plan.id, { bodyDraft: "unsaved" })),
+		});
+		expect(response.status).toBe(200);
+		await response.text();
+		expect(captured?.context).toMatchObject({
+			body: "canonical",
+			bodyDraft: "unsaved",
+		});
+		expect(
+			captured?.snapshot?.sources.find((source) => source.key === "body-draft"),
+		).toMatchObject({ provenance: "draft" });
+		expect(captured?.prompt).toContain(
+			"Unsubmitted plan text (draft, not stored evidence)",
+		);
+		expect(captured?.prompt).toContain("lines-in-this-prompt");
+		expect(captured?.evidence?.length).toBeGreaterThan(0);
+		expect(captured?.snapshotReader).toBeUndefined();
+	});
+
+	it("rejects client snapshots, missing plans, and stale same-version bodies", async () => {
+		const plans = new InMemoryPlanStore();
+		const plan = await plans.upsert({ title: "Stored", body: "canonical" });
+		const run = vi.fn(async () => "no");
+		const server = await app(run, plans);
+		const forged = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				...planRequest(plan.id),
+				snapshot: { forged: true },
+			}),
+		});
+		expect(forged.status).toBe(400);
+		const missing = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(planRequest("missing")),
+		});
+		expect(missing.status).toBe(404);
+		await plans.update(plan.id, { body: "live edit" });
+		const stale = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(planRequest(plan.id, { body: "canonical" })),
+		});
+		expect(stale.status).toBe(409);
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it("captures canonical local diff evidence and strips the reader before adapter dispatch", async () => {
+		let captured: Parameters<AiBackendAdapter["run"]>[0] | undefined;
+		const run = vi.fn(async (request, _signal, onEvent) => {
+			captured = request;
+			await onEvent({ type: "text-delta", text: "ok" });
+			return "ok";
+		});
+		const server = await app(run);
+		const response = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				trigger: "user",
+				conversationId: "diff",
+				modelId: "codex/subscription/codex/gpt-test",
+				action: "ask",
+				surface: "diff",
+				context: { kind: "diff", patch: "forged browser patch" },
+			}),
+		});
+		expect(response.status).toBe(200);
+		await response.text();
+		expect(captured?.prompt).toContain("canonical");
+		expect(captured?.prompt).not.toContain("forged browser patch");
+		expect(captured?.evidence?.length).toBeGreaterThan(0);
+		expect(captured?.snapshotReader).toBeUndefined();
+		const ids = new Set(captured?.snapshot?.sources.map((source) => source.id));
+		for (const evidence of captured?.evidence ?? [])
+			expect(ids.has(evidence.sourceId)).toBe(true);
+	});
+
+	it("rejects stale local capture without invoking the adapter", async () => {
+		localSnapshotState.stale = true;
+		try {
+			const run = vi.fn(async () => "no");
+			const server = await app(run);
+			const response = await server.request("/api/ai/run", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					trigger: "user",
+					conversationId: "stale-local",
+					modelId: "codex/subscription/codex/gpt-test",
+					action: "ask",
+					surface: "diff",
+					context: { kind: "diff" },
+				}),
+			});
+			expect(response.status).toBe(409);
+			expect(run).not.toHaveBeenCalled();
+		} finally {
+			localSnapshotState.stale = false;
+		}
+	});
+
+	it("rejects client snapshot reader and evidence fields before adapter dispatch", async () => {
+		for (const field of [{ snapshotReader: {} }, { evidence: [] }]) {
+			const run = vi.fn(async () => "no");
+			const server = await app(run);
+			const response = await server.request("/api/ai/run", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					trigger: "user",
+					conversationId: "forged-fields",
+					modelId: "codex/subscription/codex/gpt-test",
+					action: "ask",
+					surface: "diff",
+					context: { kind: "diff" },
+					...field,
+				}),
+			});
+			expect(response.status).toBe(400);
+			expect(run).not.toHaveBeenCalled();
+		}
+	});
+
+	it("rejects a PR attachment read when the captured head changes", async () => {
+		vi.mocked(fetchPrFileContentViaGh).mockReset();
+		const prStore = new InMemoryPrSessionStore();
+		const oldHead = "a".repeat(40);
+		const newHead = "b".repeat(40);
+		const session: PrSession = {
+			ref: "#1",
+			owner: "o",
+			repo: "r",
+			pullNumber: 1,
+			headSha: oldHead,
+			baseSha: "c".repeat(40),
+			mergeBaseSha: "c".repeat(40),
+			title: "P",
+			url: "https://github.com/o/r/pull/1",
+			author: null,
+			additions: 1,
+			deletions: 0,
+			changedFiles: 1,
+			diff: "",
+			comments: [],
+			existingComments: [],
+		};
+		await prStore.set(session);
+		const run = vi.fn(
+			async (_request: Parameters<AiBackendAdapter["run"]>[0]) => "ok",
+		);
+		vi
+			.mocked(fetchPrFileContentViaGh)
+			.mockImplementationOnce(async (_resolved, _path, sha) => {
+				expect(sha).toBe(oldHead);
+				await prStore.update({ headSha: newHead });
+				return Buffer.from("old source");
+			});
+		const server = await app(run, new InMemoryPlanStore(), prStore);
+		const request = {
+			trigger: "user",
+			conversationId: "pr",
+			modelId: "codex/subscription/codex/gpt-test",
+			action: "ask",
+			surface: "pr-diff",
+			context: { kind: "diff", attachmentPaths: ["a.ts"] },
+		};
+		const raced = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(request),
+		});
+		expect(raced.status).toBe(409);
+		expect(run).not.toHaveBeenCalled();
+		vi
+			.mocked(fetchPrFileContentViaGh)
+			.mockResolvedValueOnce(Buffer.from("new source"));
+		const ok = await server.request("/api/ai/run", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(request),
+		});
+		expect(ok.status).toBe(200);
+		await ok.text();
+		expect(fetchPrFileContentViaGh).toHaveBeenCalledTimes(2);
+		expect(vi.mocked(fetchPrFileContentViaGh).mock.calls.at(-1)?.[2]).toBe(
+			newHead,
+		);
+		expect(run.mock.calls[0]?.[0].context.attachments).toMatchObject([
+			{ content: "new source" },
+		]);
 	});
 });
