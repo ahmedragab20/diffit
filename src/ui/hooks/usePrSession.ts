@@ -5,6 +5,8 @@ import type {
   PrSession,
   PrExistingComment,
   PrExistingReview,
+  PrIssueComment,
+  PrTimelineEvent,
   PrDecision,
   PrPublication,
 } from "../../lib/pr-session";
@@ -37,6 +39,10 @@ interface PrSessionResponse {
   reviewBody?: string;
   reviewDecision?: PrDecision;
   publication?: PrPublication;
+  body?: string;
+  createdAt?: string;
+  issueComments?: PrIssueComment[];
+  timelineEvents?: PrTimelineEvent[];
 }
 
 /**

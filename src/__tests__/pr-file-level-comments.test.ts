@@ -92,6 +92,9 @@ class MockCommentStore implements CommentStore {
   async updateReply() {
     return null
   }
+  async resolveAllOpen() {
+    return 0
+  }
 }
 
 class MockPlanStore implements PlanStore {

@@ -18,6 +18,7 @@ function makeCommits(n: number): CommitInfo[] {
     committerEmail: 'dev@example.com',
     committerDate: '2026-07-18T00:00:00Z',
     parents: [],
+    patch: '',
   }))
 }
 

@@ -113,6 +113,7 @@ const plans: Plan[] = [
     version: 1,
     decision: 'pending',
     comments: [],
+    versions: [],
   },
   {
     id: 'p2',
@@ -123,6 +124,7 @@ const plans: Plan[] = [
     version: 1,
     decision: 'pending',
     comments: [],
+    versions: [],
   },
 ]
 

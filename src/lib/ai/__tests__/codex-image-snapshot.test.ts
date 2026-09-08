@@ -1,9 +1,9 @@
 // @vitest-environment node
 // Codex adapter image contract: turn/start input must carry captured image
 // data URLs ({ type: "image", url }) and must never reopen local image paths
-// (no { type: "localImage", path } / absolutePath). node:child_process.spawn
-// is mocked with a fake EventEmitter child wired to PassThrough streams; the
-// real codex binary is never executed.
+// (no { type: "localImage", path } / absolutePath). The child-process seam is
+// mocked with a fake EventEmitter child wired to PassThrough streams, and the
+// model catalog is served offline; the real codex binary is never executed.
 import { describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
@@ -15,17 +15,21 @@ const harness = vi.hoisted(() => ({
 	spawnImpl: undefined as ((...args: unknown[]) => unknown) | undefined,
 }));
 
-vi.mock("node:child_process", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:child_process")>();
-	return {
-		...actual,
-		spawn: (...args: unknown[]) => {
-			if (!harness.spawnImpl)
-				throw new Error("unexpected spawn in test: " + String(args[0]));
-			return harness.spawnImpl(...args);
-		},
-	};
-});
+vi.mock("../child-process.js", () => ({
+	spawn: (...args: unknown[]) => {
+		if (!harness.spawnImpl)
+			throw new Error("unexpected spawn in test: " + String(args[0]));
+		return harness.spawnImpl(...args);
+	},
+}));
+
+// Image requests are option-gated against the catalog; serve it offline.
+vi.mock("../catalog.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../catalog.js")>()),
+	codexModelCatalog: async () => [
+		{ id: "test-model", displayName: "Test Model", supportsImages: true },
+	],
+}));
 
 const DATA_URL = "data:image/png;base64,iVBORw0KGgo=";
 const ABSOLUTE_PATH = "/never-open/captured.png";
@@ -71,7 +75,15 @@ function createFakeChild(onTurnStart: (input: unknown) => void): FakeChild {
 	child.stdin = new PassThrough();
 	child.stdout = new PassThrough();
 	child.stderr = new PassThrough();
-	child.kill = vi.fn(() => true);
+	// The adapter keeps ownership until close; a real SIGTERM ends the process.
+	child.kill = vi.fn(() => {
+		queueMicrotask(() => {
+			child.stdout.end();
+			child.stderr.end();
+			child.emit("close", 0, null);
+		});
+		return true;
+	});
 	let buffer = "";
 	child.stdin.on("data", (chunk: Buffer | string) => {
 		buffer += typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -102,12 +114,17 @@ function createFakeChild(onTurnStart: (input: unknown) => void): FakeChild {
 				onTurnStart(message.params?.input);
 				queueMicrotask(() =>
 					child.stdout.write(
-						`${JSON.stringify({ method: "item/agentMessage/delta", params: { delta: "checked" } })}\n`,
+						`${JSON.stringify({ id: 3, result: { turn: { id: "test-turn", status: "inProgress" } } })}\n`,
 					),
 				);
 				queueMicrotask(() =>
 					child.stdout.write(
-						`${JSON.stringify({ method: "turn/completed", params: {} })}\n`,
+						`${JSON.stringify({ method: "item/agentMessage/delta", params: { threadId: "test-thread", turnId: "test-turn", delta: "checked" } })}\n`,
+					),
+				);
+				queueMicrotask(() =>
+					child.stdout.write(
+						`${JSON.stringify({ method: "turn/completed", params: { threadId: "test-thread", turn: { id: "test-turn", status: "completed" } } })}\n`,
 					),
 				);
 			}

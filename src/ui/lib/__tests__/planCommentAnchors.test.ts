@@ -26,6 +26,8 @@ function c(partial: Partial<PlanComment> & { id: string; lineNumber: number }): 
     createdAt: 1,
     replies: [],
     sectionTitle: partial.sectionTitle,
+    lineContent: partial.lineContent ?? '',
+    createdAtPlanVersion: partial.createdAtPlanVersion ?? 1,
   } as PlanComment
 }
 

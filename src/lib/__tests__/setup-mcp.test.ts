@@ -23,7 +23,7 @@ describe('setup-mcp merge', () => {
     }
     const entry = buildDiffingMcpEntry('/abs/repo')
     const merged = mergeDiffingMcpConfig(existing, entry)
-    expect(merged.extra).toBe(true)
+    expect((merged as Record<string, unknown>).extra).toBe(true)
     expect(merged.mcpServers?.other).toEqual({ command: 'other-cmd', args: ['x'] })
     expect(merged.mcpServers?.diffing).toEqual({
       command: 'diffing',

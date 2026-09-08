@@ -8,6 +8,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMcpServer, MCP_VERSION } from '../mcp.js'
 import { buildGitDiffArgs } from '../lib/diff-options.js'
+import type { DiffOptions } from '../lib/diff-options.js'
 import { SESSION_TOKEN_HEADER } from '../lib/server-auth.js'
 import type { ServerLock } from '../lib/server-lock.js'
 
@@ -176,7 +177,7 @@ describe('diffing MCP', () => {
 
   it('starts once and then reuses the same MCP-owned loopback session', async () => {
     let lock: ServerLock | null = null
-    const startServerFn = vi.fn(async () => ({ port: 43123, prMode: false }))
+    const startServerFn = vi.fn(async (_opts: { diffOpts?: DiffOptions }) => ({ port: 43123, prMode: false }))
     const session = await connect({
       repoRoot,
       startServerFn,
@@ -203,7 +204,7 @@ describe('diffing MCP', () => {
         status: 'started',
         managedBy: 'mcp',
       })
-      expect(String(first.structuredContent?.url)).toBe(
+      expect(String((first.structuredContent as { url?: unknown } | undefined)?.url)).toBe(
         'http://127.0.0.1:43123',
       )
       expect(second.structuredContent).toMatchObject({ status: 'reused' })
@@ -253,7 +254,7 @@ describe('diffing MCP', () => {
         managedBy: 'mcp',
         diffArgs: ['--staged'],
       })
-      expect(String(status.structuredContent?.url)).toBe(
+      expect(String((status.structuredContent as { url?: unknown } | undefined)?.url)).toBe(
         'http://127.0.0.1:43123',
       )
     } finally {
@@ -398,7 +399,7 @@ describe('diffing MCP', () => {
         name: 'review_session_status',
         arguments: {},
       })
-      expect(String(status.structuredContent?.url)).toBe(
+      expect(String((status.structuredContent as { url?: unknown } | undefined)?.url)).toBe(
         'http://127.0.0.1:43125',
       )
 
@@ -559,7 +560,7 @@ describe('diffing MCP', () => {
 
   it('rejects output and runtime arguments before starting and never creates an output file', async () => {
     const outputPath = join(repoRoot, 'attacker-controlled.patch')
-    const startServerFn = vi.fn(async () => ({ port: 43125, prMode: false }))
+    const startServerFn = vi.fn(async (_opts: { diffOpts?: DiffOptions }) => ({ port: 43125, prMode: false }))
     const session = await connect({
       repoRoot,
       startServerFn,
@@ -591,7 +592,7 @@ describe('diffing MCP', () => {
   })
 
   it('rejects ignored modifiers without a custom anchor', async () => {
-    const startServerFn = vi.fn(async () => ({ port: 43125, prMode: false }))
+    const startServerFn = vi.fn(async (_opts: { diffOpts?: DiffOptions }) => ({ port: 43125, prMode: false }))
     const session = await connect({
       repoRoot,
       startServerFn,
@@ -623,7 +624,7 @@ describe('diffing MCP', () => {
   })
 
   it('rejects unsupported modifiers and invalid option values before startup', async () => {
-    const startServerFn = vi.fn(async () => ({ port: 43133, prMode: false }))
+    const startServerFn = vi.fn(async (_opts: { diffOpts?: DiffOptions }) => ({ port: 43133, prMode: false }))
     const session = await connect({
       repoRoot,
       startServerFn,
@@ -701,7 +702,7 @@ describe('diffing MCP', () => {
   })
 
   it('preserves every accepted modifier in the final Git argument array', async () => {
-    const startServerFn = vi.fn(async () => ({ port: 43134, prMode: false }))
+    const startServerFn = vi.fn(async (_opts: { diffOpts?: DiffOptions }) => ({ port: 43134, prMode: false }))
     const session = await connect({
       repoRoot,
       startServerFn,
@@ -744,7 +745,7 @@ describe('diffing MCP', () => {
         ).not.toBe(true)
         const call = startServerFn.mock.calls.at(-1)
         expect(call).toBeDefined()
-        expect(buildGitDiffArgs(call![0].diffOpts)).toContain(expected)
+        expect(buildGitDiffArgs(call![0].diffOpts!)).toContain(expected)
       }
       expect(startServerFn).toHaveBeenCalledTimes(acceptedCases.length)
     } finally {
@@ -754,7 +755,7 @@ describe('diffing MCP', () => {
 
   it('normalizes separate option values and honors modifiers with revision/path anchors', async () => {
     let lock: ServerLock | null = null
-    const startServerFn = vi.fn(async () => ({ port: 43132, prMode: false }))
+    const startServerFn = vi.fn(async (_opts: { diffOpts?: DiffOptions }) => ({ port: 43132, prMode: false }))
     const session = await connect({
       repoRoot,
       startServerFn,
@@ -771,7 +772,7 @@ describe('diffing MCP', () => {
         arguments: { diffArgs: ['--unified', '5', 'HEAD', '--', 'src'] },
       })
       expect(result.isError, JSON.stringify(result.content)).not.toBe(true)
-      const diffOpts = startServerFn.mock.calls[0][0].diffOpts
+      const diffOpts = startServerFn.mock.calls[0]![0].diffOpts!
       expect(diffOpts).toMatchObject({
         unifiedContext: 5,
         revisions: ['HEAD'],
@@ -844,7 +845,7 @@ describe('diffing MCP', () => {
       mode: 'web',
     }
     let reads = 0
-    const startServerFn = vi.fn(async () => ({ port: 1, prMode: false }))
+    const startServerFn = vi.fn(async (_opts: { diffOpts?: DiffOptions }) => ({ port: 1, prMode: false }))
     const session = await connect({
       repoRoot,
       startServerFn,
@@ -878,7 +879,7 @@ describe('diffing MCP', () => {
       version: MCP_VERSION,
       mode: 'web',
     }
-    const startServerFn = vi.fn(async () => ({ port: 1, prMode: false }))
+    const startServerFn = vi.fn(async (_opts: { diffOpts?: DiffOptions }) => ({ port: 1, prMode: false }))
     const session = await connect({
       repoRoot,
       startServerFn,
@@ -913,7 +914,7 @@ describe('diffing MCP', () => {
     }
     const fetchSpy = vi.fn()
     vi.stubGlobal('fetch', fetchSpy)
-    const startServerFn = vi.fn(async () => ({ port: 1, prMode: false }))
+    const startServerFn = vi.fn(async (_opts: { diffOpts?: DiffOptions }) => ({ port: 1, prMode: false }))
     const session = await connect({
       repoRoot,
       startServerFn,

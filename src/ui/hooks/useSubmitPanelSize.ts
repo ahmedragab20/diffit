@@ -127,7 +127,7 @@ export interface UseSubmitPanelSize {
   popoverStyle: CSSProperties
   /** Ref to attach to the panel root element so the resize drag can write the
    *  CSS var directly to it (bypassing React reconciliation on every frame). */
-  panelRef: React.RefObject<HTMLDivElement>
+  panelRef: React.RefObject<HTMLDivElement | null>
 }
 
 /**

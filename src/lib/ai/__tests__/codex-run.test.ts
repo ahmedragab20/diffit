@@ -2,10 +2,15 @@ import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
-vi.mock("node:child_process", async (importOriginal) => ({
-	...(await importOriginal<typeof import("node:child_process")>()),
-	spawn: mocks.spawn,
+const mocks = vi.hoisted(() => ({
+	spawn: vi.fn(),
+	codexModelCatalog: vi.fn(),
+}));
+vi.mock("../child-process.js", () => ({ spawn: mocks.spawn }));
+// Option gating reads the catalog; serve it offline so only the run spawns.
+vi.mock("../catalog.js", async (importOriginal) => ({
+	...(await importOriginal<typeof import("../catalog.js")>()),
+	codexModelCatalog: mocks.codexModelCatalog,
 }));
 
 import { createDefaultAdapters } from "../adapters.js";
@@ -57,7 +62,7 @@ const request: AiRunRequest = {
 	serviceTier: "fast",
 	resolvedImages: [fixtureImage],
 };
-function start(
+async function start(
 	sink: (event: AiRunEvent) => void | Promise<void> = vi.fn(),
 	signal = new AbortController().signal,
 ) {
@@ -77,6 +82,12 @@ function start(
 			state.settled = true;
 		},
 	);
+	// Options are validated before the run spawns, so wait for the child.
+	const spawns = mocks.spawn.mock.calls.length;
+	for (let tick = 0; tick < 100; tick++) {
+		if (mocks.spawn.mock.calls.length > spawns) break;
+		await Promise.resolve();
+	}
 	const child = [...children].at(-1)!;
 	return { child, pending, state };
 }
@@ -116,6 +127,17 @@ const sentTurn = (child: FakeChild) =>
 	);
 
 beforeEach(() => {
+	mocks.codexModelCatalog.mockReset();
+	mocks.codexModelCatalog.mockResolvedValue([
+		{
+			id: "test",
+			displayName: "Test",
+			isDefault: true,
+			reasoningEfforts: ["low", "medium", "high"],
+			serviceTiers: ["fast", "priority"],
+			supportsImages: true,
+		},
+	]);
 	mocks.spawn.mockReset();
 	mocks.spawn.mockImplementation(() => {
 		const child = new FakeChild();
@@ -140,7 +162,7 @@ describe("Codex app-server execution", () => {
 		"waits for close before success (code=%s, signal=%s)",
 		async (code, signal) => {
 			const sink = vi.fn();
-			const { child, pending, state } = start(sink);
+			const { child, pending, state } = await start(sink);
 			expect(mocks.spawn).toHaveBeenCalledOnce();
 			handshake(child);
 			delta(child);
@@ -158,7 +180,7 @@ describe("Codex app-server execution", () => {
 	);
 
 	it("preserves read-only handshake, model, settings and images", async () => {
-		const { child, pending } = start();
+		const { child, pending } = await start();
 		handshake(child);
 		await sentTurn(child);
 		expect(child.sent).toEqual([
@@ -212,7 +234,7 @@ describe("Codex app-server execution", () => {
 	});
 
 	it("rejects a nonzero exit despite a successful turn", async () => {
-		const { child, pending } = start();
+		const { child, pending } = await start();
 		handshake(child);
 		delta(child);
 		terminal(child);
@@ -233,7 +255,7 @@ describe("Codex app-server execution", () => {
 		[{ id: "turn-1" }, "protocol_error"],
 		[{ id: "other", status: "completed" }, "protocol_error"],
 	] as const)("rejects invalid terminal %j", async (turn, code) => {
-		const { child, pending, state } = start();
+		const { child, pending, state } = await start();
 		handshake(child);
 		delta(child);
 		terminal(child, turn);
@@ -244,7 +266,7 @@ describe("Codex app-server execution", () => {
 	});
 
 	it.each(["", " \n\t"])("rejects empty output %j", async (text) => {
-		const { child, pending } = start();
+		const { child, pending } = await start();
 		handshake(child);
 		delta(child, text);
 		terminal(child);
@@ -256,7 +278,7 @@ describe("Codex app-server execution", () => {
 	it.each(["thread", "turn", "terminal-thread"])(
 		"rejects unrelated %s identity",
 		async (kind) => {
-			const { child, pending } = start();
+			const { child, pending } = await start();
 			handshake(child);
 			if (kind === "terminal-thread")
 				terminal(child, { id: "turn-1", status: "completed" }, "other");
@@ -274,7 +296,7 @@ describe("Codex app-server execution", () => {
 
 	it("rejects clean EOF with partial text but no terminal", async () => {
 		const sink = vi.fn();
-		const { child, pending } = start(sink);
+		const { child, pending } = await start(sink);
 		handshake(child);
 		delta(child);
 		await vi.waitFor(() => expect(sink).toHaveBeenCalledOnce());
@@ -285,7 +307,7 @@ describe("Codex app-server execution", () => {
 	it.each(["not json\n", "[]\n", '"primitive"\n', '{"jsonrpc":"2.0"'])(
 		"rejects malformed JSON %j",
 		async (text) => {
-			const { child, pending } = start();
+			const { child, pending } = await start();
 			child.stdout.write(text);
 			child.close();
 			await expect(pending).rejects.toMatchObject({ code: "protocol_error" });
@@ -295,7 +317,7 @@ describe("Codex app-server execution", () => {
 	it.each([false, true])(
 		"rejects duplicate responses or approval requests (approval=%s)",
 		async (approval) => {
-			const { child, pending } = start();
+			const { child, pending } = await start();
 			handshake(child);
 			await sentTurn(child);
 			const before = child.sent.length;
@@ -315,7 +337,7 @@ describe("Codex app-server execution", () => {
 	it.each([false, true])(
 		"correlates a turn/started notification before its RPC response (different=%s)",
 		async (different) => {
-			const { child, pending } = start();
+			const { child, pending } = await start();
 			handshake(child, false);
 			notify(child, "turn/started", {
 				threadId: "thread-1",
@@ -340,7 +362,7 @@ describe("Codex app-server execution", () => {
 	it("does not spawn after pre-abort", async () => {
 		const controller = new AbortController();
 		controller.abort();
-		const { pending } = start(vi.fn(), controller.signal);
+		const { pending } = await start(vi.fn(), controller.signal);
 		await expect(pending).rejects.toMatchObject({ name: "AbortError" });
 		expect(mocks.spawn).not.toHaveBeenCalled();
 	});
@@ -348,7 +370,7 @@ describe("Codex app-server execution", () => {
 	it("requests cancellation but waits for close", async () => {
 		const controller = new AbortController();
 		const sink = vi.fn();
-		const { child, pending, state } = start(sink, controller.signal);
+		const { child, pending, state } = await start(sink, controller.signal);
 		handshake(child);
 		delta(child);
 		await vi.waitFor(() => expect(sink).toHaveBeenCalledOnce());
@@ -363,7 +385,7 @@ describe("Codex app-server execution", () => {
 		const sink = vi.fn(async () => {
 			throw new Error("synthetic secret");
 		});
-		const { child, pending } = start(sink);
+		const { child, pending } = await start(sink);
 		handshake(child);
 		delta(child, "one");
 		delta(child, "two");
@@ -382,7 +404,7 @@ describe("Codex app-server execution", () => {
 			release = resolve;
 		});
 		const sink = vi.fn((_event: AiRunEvent) => gate);
-		const { child, pending } = start(sink);
+		const { child, pending } = await start(sink);
 		try {
 			handshake(child);
 			delta(child, "one");
@@ -407,7 +429,7 @@ describe("Codex app-server execution", () => {
 		"bounds %s resources",
 		async (limit) => {
 			const sink = vi.fn();
-			const { child, pending } = start(sink);
+			const { child, pending } = await start(sink);
 			handshake(child);
 			if (limit === "frame")
 				child.stdout.write("x".repeat(DEFAULT_AI_RUN_POLICY.maxEventBytes + 1));
@@ -428,7 +450,7 @@ describe("Codex app-server execution", () => {
 
 	it("keeps ownership after the standalone deadline until close", async () => {
 		vi.useFakeTimers();
-		const { child, pending, state } = start();
+		const { child, pending, state } = await start();
 		await vi.advanceTimersByTimeAsync(DEFAULT_AI_RUN_POLICY.totalMs);
 		expect(child.kill).toHaveBeenCalledWith("SIGTERM");
 		expect(state.settled).toBe(false);

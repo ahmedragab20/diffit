@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn } from "./child-process.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type {

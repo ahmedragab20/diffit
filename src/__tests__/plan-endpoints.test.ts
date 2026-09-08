@@ -38,6 +38,7 @@ class MockCommentStore implements CommentStore {
   async addReply() { return null }
   async removeReply() { return null }
   async updateReply() { return null }
+  async resolveAllOpen() { return 0 }
 }
 
 const clientDir = '/tmp/test-client'
