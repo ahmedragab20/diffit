@@ -80,22 +80,22 @@ Legend: `[ ]` not started · `[~]` in progress · `[x]` done and verified
 - [x] 2.1 `src/lib/ai/lsp.ts` — document sync, accept `publishDiagnostics`
 - [x] 2.2 `src/lib/code-intel.ts` — draft registry, `Diagnostic` → marker
 - [x] 2.3 `src/server.ts` — `POST /api/code-intel/document`, SSE broadcast
-- [~] 2.4 `src/ui/hooks/useEditSessions.ts` — push versions, consume diagnostics
+- [x] 2.4 `src/ui/hooks/useEditSessions.ts` — push versions, consume diagnostics
 - [x] 2.5 `src/ui/lib/mergeMarkers.ts` — merge, dedupe, cap at 500
 - [x] 2.6 Status affordance (see the note below on what this became)
 
 ### Stage 3 — act on the code
 
-- [ ] 3.1 `src/lib/ai/lsp.ts` — rename, format, code actions, signature help, highlights
-- [ ] 3.2 `src/lib/code-intel.ts` — `WorkspaceEdit` → open-file `TextEdit[]` + spill count
-- [ ] 3.3 `src/server.ts` — extend the op union
-- [ ] 3.4 `src/ui/components/FileDiffCard.tsx` — selection actions, keymap bindings
-- [ ] 3.5 `src/ui/hooks/useCodeIntel.ts` — action fetchers and the apply path
-- [ ] 3.6 Edit prediction provider behind its own setting
+- [x] 3.1 `src/lib/ai/lsp.ts` — rename, format, code actions, signature help, highlights
+- [x] 3.2 `src/lib/code-intel.ts` — `WorkspaceEdit` → open-file `TextEdit[]` + spill count
+- [x] 3.3 `src/server.ts` — extend the op union
+- [x] 3.4 `src/ui/components/FileDiffCard.tsx` — selection actions, keymap bindings
+- [x] 3.5 `src/ui/hooks/useCodeIntel.ts` — action fetchers and the apply path
+- [x] 3.6 Edit prediction provider behind its own setting
 
 ### Wrap-up
 
-- [ ] User-facing docs (`docs/code-intel.md`)
+- [x] User-facing docs (`docs/code-intel.md`)
 - [ ] Full suite green (`pnpm test:ts`)
 - [ ] Manual end-to-end pass with a real `typescript-language-server`
 

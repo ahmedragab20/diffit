@@ -1857,6 +1857,7 @@ User-specific preferences, layout options, editor choices, and themes are persis
 }
 ```
 
+`languageServers` is accepted as an alias for `aiLanguageServers`.
 `aiLanguageServers` maps a file extension (no dot) to a language server, e.g.
 `{"ts": {"command": "typescript-language-server", "args": ["--stdio"]}}`. It is
 empty by default: diffing presumes no toolchain, so definition and reference
@@ -2260,6 +2261,21 @@ This is **not full repository containment**. Untracked/EditorConfig reads and tr
 Requires `path` and `version=old|new`; malformed/missing query values return `400`. Returns bytes with an extension-derived Content-Type and `Content-Security-Policy: sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:`. Missing content returns `404`.
 
 Local `new` reads the current working tree through the helper; local `old` reads `HEAD` through Git. Exact staged/revision/commit-series preview sides are not yet implemented. PR previews use the session base/head SHAs. Some legacy Git failures still appear as missing content; this limitation is tracked in A03/A07.
+
+#### `POST /api/edit-predict`
+
+Ghost-text edit prediction for a file already in the diff. Requires a configured AI model (`aiModel`). Off by default in the UI (Settings → Edit prediction); hold Alt to show a suggestion.
+
+```json
+{
+  "path": "src/file.ts",
+  "excerptText": "bounded slice around the cursor",
+  "cursorOffsetInExcerpt": 12,
+  "excerptStartLine": 40
+}
+```
+
+Returns `{ available: true, edits, newCursor }` or `{ available: false, reason }`. Edits are confined to this file.
 
 #### `POST /api/edit-save`
 
