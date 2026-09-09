@@ -13,6 +13,7 @@ import {
 	editSaveSchema,
 	codeIntelSchema,
 	codeIntelDocumentSchema,
+	editPredictSchema,
 	MAX_FILE_REQUEST_BYTES,
 } from "./lib/file-schema.js";
 import { serve } from "@hono/node-server";
@@ -186,7 +187,10 @@ import {
 	classifyPrComments,
 	buildReviewPayload,
 } from "./lib/github.js";
+import { createDefaultAdapters } from "./lib/ai/adapters.js";
+import { SystemSecretStore } from "./lib/ai/secrets.js";
 import { AiService, type AiPreparedRun } from "./lib/ai/service.js";
+import { runEditPrediction } from "./lib/edit-predict.js";
 import { AiRunError } from "./lib/ai/lifecycle.js";
 import { AiRequestError, readAiRunRequest } from "./lib/ai/request.js";
 import { streamAiRun } from "./lib/ai/run-stream.js";
@@ -1732,6 +1736,45 @@ export function createApp(
 			(published) => broadcast("code-intel-diagnostics", JSON.stringify(published)),
 		);
 		return c.json(result);
+	});
+
+	app.post("/api/edit-predict", async (c) => {
+		const parsed = editPredictSchema.safeParse(await readCommentJson(c));
+		if (!parsed.success)
+			return c.json({ error: "Invalid edit-predict request" }, 400);
+		const body = parsed.data;
+		if (body.path.startsWith("/") || body.path.includes(".."))
+			return c.json({ available: false, reason: "outside-repository" });
+		const modelId = loadSettings().aiModel;
+		if (!modelId)
+			return c.json({ available: false, reason: "not-configured" });
+		const source = modelId.split("/")[0] as AiSourceId;
+		const adapter = createDefaultAdapters(new SystemSecretStore()).find(
+			(entry) => entry.id === source,
+		);
+		if (!adapter)
+			return c.json({ available: false, reason: "not-configured" });
+		const request: AiRunRequest = {
+			trigger: "user",
+			conversationId: "edit-predict",
+			modelId,
+			surface: "diff",
+			action: "ask",
+			prompt: "",
+			context: { kind: "file", filePath: body.path },
+		};
+		try {
+			return c.json(
+				await runEditPrediction(
+					body,
+					async (prompt, signal) =>
+						adapter.run({ ...request, prompt }, signal, () => {}),
+					c.req.raw.signal ?? new AbortController().signal,
+				),
+			);
+		} catch {
+			return c.json({ available: false, reason: "server-error" });
+		}
 	});
 
 	app.post("/api/ai/evidence/:id/search", async (c) => {
