@@ -43,6 +43,7 @@ const defaultSettings = {
   ignoreAllSpace: false,
   editDiagnostics: false,
   codeIntel: false,
+  editPrediction: false,
   aiModel: null,
   aiReasoningEffort: null,
   aiServiceTier: null,

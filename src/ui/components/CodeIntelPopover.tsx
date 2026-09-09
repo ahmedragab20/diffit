@@ -101,7 +101,31 @@ export function CodeIntelPopover({ hover, onHold, onClose }: CodeIntelPopoverPro
       {hover.status === 'pending' ? (
         <span className="code-intel-popover-status">Starting language server…</span>
       ) : (
-        <Markdown content={hover.markdown ?? ''} className="code-intel-popover-body" />
+        <>
+          {hover.markdown ? (
+            <Markdown content={hover.markdown} className="code-intel-popover-body" />
+          ) : null}
+          {hover.signatures && hover.signatures.length > 0 ? (
+            <div className="code-intel-signatures">
+              {hover.signatures.map((signature, index) => (
+                <div key={`${signature.label}:${index}`} className="code-intel-signature">
+                  <code>{signature.label}</code>
+                  {signature.documentation ? (
+                    <Markdown
+                      content={signature.documentation}
+                      className="code-intel-popover-body"
+                    />
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {hover.highlights && hover.highlights.length > 1 ? (
+            <div className="code-intel-highlight-count">
+              {hover.highlights.length} occurrences in this file
+            </div>
+          ) : null}
+        </>
       )}
     </div>,
     document.body,

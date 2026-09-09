@@ -25,7 +25,7 @@ import type {
   FileContents,
   LineAnnotation,
 } from "@pierre/diffs";
-import type { Editor, EditorFactory } from "@pierre/diffs/edit";
+import type { Editor, EditorFactory, TextEdit } from "@pierre/diffs/edit";
 import { ensureEditModuleLoaded, getEditorClass } from "../lib/editModule";
 import { computeEditMarkers, type EditMarker } from "../lib/editMarkers";
 import { mergeMarkers } from "../lib/mergeMarkers";
@@ -170,7 +170,9 @@ export function useEditSessions({
    * screen.
    */
   const pushDraft = useCallback((path: string) => {
-    if (!codeIntelRef.current || !diagnosticsRef.current) return;
+    // Sync whenever code intel is on so hover, rename and format describe
+    // the draft. Markers still require Edit diagnostics as well.
+    if (!codeIntelRef.current) return;
     const session = sessionsRef.current.get(path);
     if (!session) return;
     const version = ++versionRef.current;
@@ -450,6 +452,24 @@ export function useEditSessions({
     });
   }, [dropDraft]);
 
+  /**
+   * Apply edits a language server produced to the open editor for a file.
+   *
+   * They go through `Editor.applyEdits`, so a rename or a format is a normal
+   * entry on the undo timeline — indistinguishable from having typed it, and
+   * undoable the same way. Returns false when the file has no open editor,
+   * which is the caller's cue that there was nothing to apply them to.
+   */
+  const applyServerEdits = useCallback(
+    (path: string, edits: TextEdit[]): boolean => {
+      const editor = editorsRef.current.get(path);
+      if (!editor || edits.length === 0) return false;
+      editor.applyEdits(edits);
+      return true;
+    },
+    [],
+  );
+
   const createEditor = useCallback<
     EditorFactory<EditSessionMetadata, undefined>
   >((editorType, options, editStateKey) => {
@@ -477,6 +497,7 @@ export function useEditSessions({
     saveAllDirty,
     discardEdit,
     exitEdit,
+    applyServerEdits,
     /** Stable factory for EditProvider; throws only if enterEdit wasn't awaited. */
     createEditor,
   };

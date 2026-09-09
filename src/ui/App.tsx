@@ -140,6 +140,7 @@ export function App() {
 		saveAllDirty,
 		discardEdit,
 		exitEdit,
+		applyServerEdits,
 		createEditor,
 	} = useEditSessions({
 		diagnosticsEnabled: settings.editDiagnostics === true,
@@ -1475,6 +1476,8 @@ export function App() {
 							onIgnoreAllSpaceChange={handleIgnoreAllSpaceChange}
 							onEditDiagnosticsChange={(v) => updateSettings({ editDiagnostics: v })}
 							onCodeIntelChange={(v) => updateSettings({ codeIntel: v })}
+							editPrediction={settings.editPrediction === true}
+							onEditPredictionChange={(v) => updateSettings({ editPrediction: v })}
 							onResolveAllOpen={handleResolveAllOpen}
 							onOpenUiFontModal={() => setUiFontModalOpen(true)}
 							onOpenMonoFontModal={() => setMonoFontModalOpen(true)}
@@ -1632,7 +1635,9 @@ export function App() {
 								expansionLineCount={settings.expansionLineCount}
 								autoCollapseLineThreshold={settings.autoCollapseLineThreshold}
 								codeIntelEnabled={settings.codeIntel === true}
+								editPredictionEnabled={settings.editPrediction === true}
 								staged={settings.staged}
+								onApplyEdits={applyServerEdits}
 								onViewedChange={handleViewedChange}
 								fileAnnotationsMap={fileAnnotationsMap}
 								onAddComment={addComment}

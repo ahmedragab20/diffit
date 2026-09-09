@@ -40,6 +40,8 @@ export interface ReviewSettingsPopoverProps {
 	codeIntel: boolean;
 	/** Why code intel cannot answer for this review, when it cannot. */
 	codeIntelUnavailable?: string;
+	/** Opt-in ghost-text edit prediction (Alt) while editing in place. */
+	editPrediction?: boolean;
 	onDiffStyleChange: (style: "split" | "unified") => void;
 	onDiffOptionsChange?: (options: DiffOptions) => void;
 	onDefaultTabSizeChange: (size: number) => void;
@@ -63,6 +65,7 @@ export interface ReviewSettingsPopoverProps {
 	onIgnoreAllSpaceChange?: (v: boolean) => void;
 	onEditDiagnosticsChange: (v: boolean) => void;
 	onCodeIntelChange: (v: boolean) => void;
+	onEditPredictionChange?: (v: boolean) => void;
 	onOpenUiFontModal: () => void;
 	onOpenMonoFontModal: () => void;
 	showSource?: boolean;
@@ -154,6 +157,7 @@ export function ReviewSettingsPopover({
 	editDiagnostics = false,
 	codeIntel = false,
 	codeIntelUnavailable,
+	editPrediction = false,
 	ignoreAllSpace = false,
 	onDiffStyleChange,
 	onDiffOptionsChange,
@@ -178,6 +182,7 @@ export function ReviewSettingsPopover({
 	onIgnoreAllSpaceChange,
 	onEditDiagnosticsChange,
 	onCodeIntelChange,
+	onEditPredictionChange,
 	onOpenUiFontModal,
 	onOpenMonoFontModal,
 	showSource = true,
@@ -538,6 +543,17 @@ export function ReviewSettingsPopover({
 						onChange={(event) => onCodeIntelChange(event.target.checked)}
 					/>
 					Code intel (hover, go to declaration)
+				</label>
+				<label
+					className="settings-item"
+					title="Hold Alt while editing to show a ghost-text suggestion from the configured AI model. Only files already in this diff are eligible. Off by default."
+				>
+					<input
+						type="checkbox"
+						checked={editPrediction}
+						onChange={(event) => onEditPredictionChange?.(event.target.checked)}
+					/>
+					Edit prediction (Alt)
 				</label>
 			</div>
 		</Popover>

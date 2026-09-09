@@ -17,10 +17,50 @@ export interface CodeIntelLocation {
   inRepository: boolean
 }
 
+/** An edit in the shape `Editor.applyEdits` takes. */
+export interface CodeIntelEdit {
+  range: {
+    start: { line: number; character: number }
+    end: { line: number; character: number }
+  }
+  newText: string
+}
+
+export interface CodeIntelEdits {
+  edits: CodeIntelEdit[]
+  /** Edits the server wanted to make in other files, which are never applied. */
+  otherEdits: number
+  otherFiles: number
+}
+
+export interface CodeIntelAction {
+  title: string
+  kind?: string
+  edits?: CodeIntelEdits
+  unavailable?: 'command-only' | 'other-files-only'
+}
+
+export interface CodeIntelSignature {
+  label: string
+  documentation?: string
+  activeParameter?: number
+}
+
+export interface CodeIntelRange {
+  startLine: number
+  startCharacter: number
+  endLine: number
+  endCharacter: number
+}
+
 type CodeIntelResponse =
   | { available: false; reason: string; detail?: string }
   | { available: true; op: 'hover'; hover: string | null }
   | { available: true; op: 'definition' | 'references'; locations: CodeIntelLocation[] }
+  | { available: true; op: 'rename' | 'format'; edits: CodeIntelEdits }
+  | { available: true; op: 'code-actions'; actions: CodeIntelAction[] }
+  | { available: true; op: 'signature'; signatures: CodeIntelSignature[] }
+  | { available: true; op: 'highlights'; highlights: CodeIntelRange[] }
 
 /** A position in the rendered diff, plus the element to anchor a popover to. */
 export interface CodeIntelTarget {
@@ -42,6 +82,10 @@ export interface HoverState {
   markdown: string | null
   /** Set when `status` is `unavailable`; explains why, never "no results". */
   reason?: string
+  /** Signatures for the call at this position, when the server has any. */
+  signatures?: CodeIntelSignature[]
+  /** Other occurrences of this symbol in the same file. */
+  highlights?: CodeIntelRange[]
 }
 
 const HOVER_DEBOUNCE_MS = 250
@@ -85,6 +129,24 @@ function loadCapabilities(): Promise<CodeIntelCapabilities> {
     // A probe that cannot be answered means the feature is off, not broken.
     .catch(() => ({ configured: false, extensions: [] }))
   return capabilitiesPromise
+}
+
+/**
+ * One request. Never cached here: actions and edits are computed against the
+ * live document and go stale the moment anything is applied.
+ */
+async function post(
+  body: Record<string, unknown>,
+  signal?: AbortSignal,
+): Promise<CodeIntelResponse> {
+  const res = await fetch('/api/code-intel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  if (!res.ok) return { available: false, reason: 'server-error' }
+  return (await res.json()) as CodeIntelResponse
 }
 
 function cacheKey(op: string, target: CodeIntelTarget, staged: boolean): string {
@@ -185,25 +247,15 @@ export function useCodeIntel({ enabled, staged, isDirty }: UseCodeIntelOptions) 
       const key = cacheKey(op, target, staged)
       const cached = answers.get(key)
       if (cached) return cached
-      const res = await fetch('/api/code-intel', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          op,
-          path: target.path,
-          side: target.side,
-          line: target.line,
-          character: target.character,
-          staged,
-        }),
-        signal,
-      })
-      if (!res.ok) {
-        const failed: CodeIntelResponse = { available: false, reason: 'server-error' }
-        return failed
-      }
-      const value = (await res.json()) as CodeIntelResponse
-      remember(key, value)
+      const value = await post({
+        op,
+        path: target.path,
+        side: target.side,
+        line: target.line,
+        character: target.character,
+        staged,
+      }, signal)
+      if (value.available) remember(key, value)
       return value
     },
     [staged],
@@ -254,7 +306,7 @@ export function useCodeIntel({ enabled, staged, isDirty }: UseCodeIntelOptions) 
         inFlight.current = controller
         setHover({ target, status: 'pending', markdown: null })
         ask('hover', target, controller.signal)
-          .then((value) => {
+          .then(async (value) => {
             if (!live.current || controller.signal.aborted) return
             if (!value.available)
               return setHover({
@@ -264,10 +316,39 @@ export function useCodeIntel({ enabled, staged, isDirty }: UseCodeIntelOptions) 
                 reason: value.reason,
               })
             if (value.op !== 'hover') return
+            const extras = await Promise.all([
+              post({
+                op: 'signature',
+                path: target.path,
+                side: target.side,
+                line: target.line,
+                character: target.character,
+                staged,
+              }, controller.signal).catch(() => null),
+              post({
+                op: 'highlights',
+                path: target.path,
+                side: target.side,
+                line: target.line,
+                character: target.character,
+                staged,
+              }, controller.signal).catch(() => null),
+            ])
+            if (!live.current || controller.signal.aborted) return
+            const signatures =
+              extras[0]?.available && extras[0].op === 'signature'
+                ? extras[0].signatures
+                : undefined
+            const highlights =
+              extras[1]?.available && extras[1].op === 'highlights'
+                ? extras[1].highlights
+                : undefined
             setHover({
               target,
-              status: value.hover ? 'ready' : 'empty',
+              status: value.hover || signatures?.length ? 'ready' : 'empty',
               markdown: value.hover,
+              signatures,
+              highlights,
             })
           })
           .catch(() => {
@@ -276,7 +357,7 @@ export function useCodeIntel({ enabled, staged, isDirty }: UseCodeIntelOptions) 
           })
       }, HOVER_DEBOUNCE_MS)
     },
-    [ask, cancel, isDirty, ready],
+    [ask, cancel, isDirty, ready, staged],
   )
 
   /** Called from `onTokenClick`; resolves immediately, no debounce. */
@@ -288,6 +369,78 @@ export function useCodeIntel({ enabled, staged, isDirty }: UseCodeIntelOptions) 
       return value.locations
     },
     [ask, isDirty, ready],
+  )
+
+  /** The edits a rename would make in this file, plus what it wanted elsewhere. */
+  const renameAt = useCallback(
+    async (
+      path: string,
+      line: number,
+      character: number,
+      newName: string,
+    ): Promise<CodeIntelEdits | { reason: string }> => {
+      if (!ready) return { reason: 'not-configured' }
+      const value = await post({
+        op: 'rename',
+        path,
+        side: 'additions',
+        line,
+        character,
+        newName,
+        staged,
+      })
+      if (!value.available) return { reason: value.reason }
+      return value.op === 'rename' ? value.edits : { reason: 'server-error' }
+    },
+    [ready, staged],
+  )
+
+  /** The edits that reformat a whole file. */
+  const formatFile = useCallback(
+    async (
+      path: string,
+      tabSize: number,
+    ): Promise<CodeIntelEdits | { reason: string }> => {
+      if (!ready) return { reason: 'not-configured' }
+      const value = await post({
+        op: 'format',
+        path,
+        side: 'additions',
+        line: 1,
+        character: 0,
+        tabSize,
+        insertSpaces: true,
+        staged,
+      })
+      if (!value.available) return { reason: value.reason }
+      return value.op === 'format' ? value.edits : { reason: 'server-error' }
+    },
+    [ready, staged],
+  )
+
+  /** Actions offered for a selection, including the ones we cannot apply. */
+  const codeActionsFor = useCallback(
+    async (
+      path: string,
+      startLine: number,
+      startCharacter: number,
+      endLine: number,
+      endCharacter: number,
+    ): Promise<CodeIntelAction[]> => {
+      if (!ready) return []
+      const value = await post({
+        op: 'code-actions',
+        path,
+        side: 'additions',
+        line: startLine,
+        character: startCharacter,
+        endLine,
+        endCharacter,
+        staged,
+      })
+      return value.available && value.op === 'code-actions' ? value.actions : []
+    },
+    [ready, staged],
   )
 
   useEffect(() => cancel, [cancel])
@@ -302,6 +455,9 @@ export function useCodeIntel({ enabled, staged, isDirty }: UseCodeIntelOptions) 
       holdHover,
       closeHover,
       resolveDefinition,
+      renameAt,
+      formatFile,
+      codeActionsFor,
     }),
     [
       ready,
@@ -312,6 +468,9 @@ export function useCodeIntel({ enabled, staged, isDirty }: UseCodeIntelOptions) 
       holdHover,
       closeHover,
       resolveDefinition,
+      renameAt,
+      formatFile,
+      codeActionsFor,
     ],
   )
 }

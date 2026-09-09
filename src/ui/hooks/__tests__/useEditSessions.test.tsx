@@ -514,7 +514,7 @@ describe('useEditSessions', () => {
       expect(documentPosts()).toHaveLength(0)
     })
 
-    it('pushes nothing when edit diagnostics are off', async () => {
+    it('still syncs the draft when edit diagnostics are off', async () => {
       mockApi()
       const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(false, true) })
       await act(async () => {
@@ -526,11 +526,8 @@ describe('useEditSessions', () => {
         result.current.handleEditAttach('a/b.ts', editor as any)
       })
 
-      await act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 400))
-      })
-
-      expect(documentPosts()).toHaveLength(0)
+      await waitFor(() => expect(documentPosts()).toHaveLength(1))
+      expect(editor.setMarkers).toHaveBeenCalledWith([])
     })
 
     it('merges server markers into the built-in ones', async () => {

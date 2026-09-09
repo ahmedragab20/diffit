@@ -80,6 +80,7 @@ interface ToolbarProps {
 	codeIntel: boolean;
 	/** Why code intel cannot answer for this review, when it cannot. */
 	codeIntelUnavailable?: string;
+	editPrediction?: boolean;
 	onDiffStyleChange: (style: "split" | "unified") => void;
 	onDiffOptionsChange: (options: DiffOptions) => void;
 	onDefaultTabSizeChange: (size: number) => void;
@@ -103,6 +104,7 @@ interface ToolbarProps {
 	onIgnoreAllSpaceChange: (v: boolean) => void;
 	onEditDiagnosticsChange: (v: boolean) => void;
 	onCodeIntelChange: (v: boolean) => void;
+	onEditPredictionChange?: (v: boolean) => void;
 	onResolveAllOpen: () => void | Promise<void>;
 	onOpenUiFontModal: () => void;
 	onOpenMonoFontModal: () => void;
@@ -245,6 +247,8 @@ export const Toolbar = memo(function Toolbar({
 	editDiagnostics,
 	codeIntel,
 	codeIntelUnavailable,
+	editPrediction,
+	onEditPredictionChange,
 	onDiffStyleChange,
 	onDiffOptionsChange,
 	onDefaultTabSizeChange,
@@ -431,6 +435,8 @@ export const Toolbar = memo(function Toolbar({
 					editDiagnostics={editDiagnostics}
 					codeIntel={codeIntel}
 					codeIntelUnavailable={codeIntelUnavailable}
+					editPrediction={editPrediction}
+					onEditPredictionChange={onEditPredictionChange}
 					onDiffStyleChange={onDiffStyleChange}
 					onDiffOptionsChange={onDiffOptionsChange}
 					onDefaultTabSizeChange={onDefaultTabSizeChange}

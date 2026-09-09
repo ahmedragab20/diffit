@@ -179,10 +179,12 @@ describe('useCodeIntel', () => {
       await vi.runAllTimersAsync()
     })
 
-    const postCalls = fetchMock.mock.calls.filter(
-      (call) => call[0] === '/api/code-intel',
-    )
-    expect(postCalls).toHaveLength(1)
+    const hoverPosts = fetchMock.mock.calls.filter((call) => {
+      if (call[0] !== '/api/code-intel') return false
+      const body = JSON.parse(String((call[1] as RequestInit).body)) as { op?: string }
+      return body.op === 'hover'
+    })
+    expect(hoverPosts).toHaveLength(1)
   })
 
   it('asks nothing for a file with unsaved edits', async () => {
@@ -256,8 +258,12 @@ describe('useCodeIntel', () => {
       await vi.runAllTimersAsync()
     })
 
-    const postCalls = fetchMock.mock.calls.filter((call) => call[0] === '/api/code-intel')
-    expect(postCalls).toHaveLength(1)
+    const hoverPosts = fetchMock.mock.calls.filter((call) => {
+      if (call[0] !== '/api/code-intel') return false
+      const body = JSON.parse(String((call[1] as RequestInit).body)) as { op?: string }
+      return body.op === 'hover'
+    })
+    expect(hoverPosts).toHaveLength(1)
   })
 
   it('surfaces an explicit refusal rather than an empty hover', async () => {
@@ -343,5 +349,100 @@ describe('useCodeIntel', () => {
     })
 
     expect(locations).toEqual([{ path: 'src/b.ts', line: 3, character: 0, endLine: 3, endCharacter: 4, inRepository: true }])
+  })
+
+  it('returns rename edits for the open file', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/capabilities')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ configured: true, extensions: ['ts'] }),
+        })
+      }
+      const body = JSON.parse(String(init?.body)) as { op?: string }
+      if (body.op === 'rename') {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              available: true,
+              op: 'rename',
+              edits: {
+                edits: [
+                  {
+                    range: {
+                      start: { line: 0, character: 0 },
+                      end: { line: 0, character: 3 },
+                    },
+                    newText: 'bar',
+                  },
+                ],
+                otherEdits: 0,
+                otherFiles: 0,
+              },
+            }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ available: true, op: 'hover', hover: 'test' }),
+      })
+    })
+
+    const { useCodeIntel } = await import('../useCodeIntel')
+    const { result } = renderHook(() => useCodeIntel({ enabled: true, staged: false }))
+
+    await act(async () => {
+      await vi.runAllTimersAsync()
+    })
+
+    const edits = await result.current.renameAt('src/a.ts', 1, 0, 'bar')
+    expect(edits).toEqual({
+      edits: [
+        {
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 3 } },
+          newText: 'bar',
+        },
+      ],
+      otherEdits: 0,
+      otherFiles: 0,
+    })
+  })
+
+  it('returns a multi-file rename without applying it', async () => {
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/capabilities')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ configured: true, extensions: ['ts'] }),
+        })
+      }
+      const body = JSON.parse(String(init?.body)) as { op?: string }
+      if (body.op === 'rename') {
+        return Promise.resolve({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              available: true,
+              op: 'rename',
+              edits: { edits: [], otherEdits: 12, otherFiles: 4 },
+            }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ available: true, op: 'hover', hover: 'test' }),
+      })
+    })
+
+    const { useCodeIntel } = await import('../useCodeIntel')
+    const { result } = renderHook(() => useCodeIntel({ enabled: true, staged: false }))
+
+    await act(async () => {
+      await vi.runAllTimersAsync()
+    })
+
+    const edits = await result.current.renameAt('src/a.ts', 1, 0, 'bar')
+    expect(edits).toEqual({ edits: [], otherEdits: 12, otherFiles: 4 })
   })
 })
