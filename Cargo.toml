@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/diffing-core", "crates/diffing-tui"]
 
 [workspace.package]
-version = "0.20.2"
+version = "0.21.0"
 edition = "2021"
 rust-version = "1.78"
 license = "MIT"

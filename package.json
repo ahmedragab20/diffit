@@ -1,6 +1,6 @@
 {
   "name": "diffing",
-  "version": "0.20.2",
+  "version": "0.21.0",
   "description": "local-first CLI for reviewing, navigating, and discussing git diffs with AI",
   "type": "module",
   "license": "MIT",

@@ -1,3 +1,10 @@
+## 0.21.0
+
+### Minor Changes
+
+- 9047415: Keep loopback agent API sockets blocking after accept
+- 78a1022: Editor-first diffs — LSP hover, go-to-declaration, diagnostics (#13)
+
 ## 0.20.2
 
 ### Patch Changes
