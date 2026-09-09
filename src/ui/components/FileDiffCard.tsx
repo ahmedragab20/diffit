@@ -14,19 +14,34 @@ import {
   registerDiffTarget,
   scheduleDiffNavigation,
 } from "../lib/diffNavigation";
+import { openDefinitionPeek } from "../lib/definitionPeek";
+import {
+  useCodeIntel,
+  type CodeIntelAction,
+  type CodeIntelEdits,
+  type CodeIntelTarget,
+} from "../hooks/useCodeIntel";
+import { decideCodeIntelApply } from "../lib/codeIntelApply";
+import { createEditPredictProvider } from "../lib/editPredictProvider";
+import { InputDialog } from "../primitives/InputDialog";
+import { CodeIntelPopover } from "./CodeIntelPopover";
 import type {
   DiffLineAnnotation,
+  DiffTokenEventBaseProps,
   FileDiffMetadata,
   AnnotationSide,
   SelectedLineRange,
   FileContents,
   VirtualFileMetrics,
 } from "@pierre/diffs";
-import type { Editor, EditorOptions } from "@pierre/diffs/edit";
+import type { Editor, EditorOptions, TextEdit } from "@pierre/diffs/edit";
 
 /** Structural slice of the library's SelectionActionContext (not exported). */
 interface EditSelectionActionContext {
-  selection: { start: { line: number }; end: { line: number } };
+  selection: {
+    start: { line: number; character: number };
+    end: { line: number; character: number };
+  };
   getSelectionText: () => string;
   close: () => void;
 }
@@ -244,6 +259,17 @@ interface FileDiffCardProps {
   fileSearch?: FileSearchSession | null;
   /** Open the find-in-file bar on this file (from the header search button). */
   onOpenFileSearch?: (filePath: string) => void;
+  /** The `codeIntel` setting; false keeps token listeners off the renderer. */
+  codeIntelEnabled?: boolean;
+  /** The scope being displayed, which code intel must answer against. */
+  staged?: boolean;
+  /**
+   * Apply language-server edits to this file's open editor. Returns false when
+   * there is nothing to apply them to.
+   */
+  onApplyEdits?: (filePath: string, edits: TextEdit[]) => boolean;
+  /** Opt-in ghost-text edit prediction (Alt) for this file. */
+  editPredictionEnabled?: boolean;
 }
 
 export const FileDiffCard = memo(function FileDiffCard({
@@ -291,6 +317,10 @@ export const FileDiffCard = memo(function FileDiffCard({
   onEditExit,
   fileSearch,
   onOpenFileSearch,
+  codeIntelEnabled = false,
+  staged = false,
+  onApplyEdits,
+  editPredictionEnabled = false,
 }: FileDiffCardProps) {
   const [pending, setPending] = useState<PendingComment | null>(null);
   /**
@@ -697,6 +727,204 @@ export const FileDiffCard = memo(function FileDiffCard({
   );
 
   /**
+   * Hover and go-to-declaration over the review's language servers.
+   *
+   * Drafts are synced while this card is in edit mode, so a dirty file is
+   * still answerable — the server has been told what is on screen.
+   */
+  const codeIntel = useCodeIntel({
+    enabled: codeIntelEnabled,
+    staged,
+  });
+
+  const toTarget = useCallback(
+    (props: {
+      lineNumber: number;
+      lineCharStart: number;
+      tokenText: string;
+      tokenElement: HTMLElement;
+      side: AnnotationSide;
+    }): CodeIntelTarget => ({
+      path: filePath,
+      side: props.side === "deletions" ? "deletions" : "additions",
+      line: props.lineNumber,
+      character: props.lineCharStart,
+      tokenText: props.tokenText,
+      anchor: props.tokenElement,
+    }),
+    [filePath],
+  );
+
+  const {
+    hoverToken,
+    clearHover,
+    closeHover,
+    resolveDefinition,
+    renameAt,
+    formatFile,
+    codeActionsFor,
+  } = codeIntel;
+
+  /**
+   * The card's own handle on the editor, so it can read the caret for a rename
+   * without routing every keystroke back through the app.
+   */
+  const editorRef = useRef<Editor<
+    "file-diff",
+    CardAnnotationMetadata
+  > | null>(null);
+  const [renamePrompt, setRenamePrompt] = useState<{
+    line: number;
+    character: number;
+    symbol: string;
+  } | null>(null);
+  const [codeIntelNotice, setCodeIntelNotice] = useState<string | null>(null);
+
+  /** One-based caret position in the open editor, or null when there is none. */
+  const caretPosition = useCallback(() => {
+    const selection = editorRef.current?.getViewState().selections?.[0];
+    if (!selection) return null;
+    return {
+      line: selection.start.line + 1,
+      character: selection.start.character,
+    };
+  }, []);
+
+  /**
+   * Hand a server's edits to the editor, or report why they were not applied.
+   * A rename that spills into other files is reported and left untouched.
+   */
+  useEffect(() => {
+    const anchor = codeIntel.hover?.highlights?.length
+      ? codeIntel.hover.target.anchor
+      : null;
+    if (!anchor) return;
+    anchor.classList.add("code-intel-occurrence");
+    return () => anchor.classList.remove("code-intel-occurrence");
+  }, [codeIntel.hover]);
+
+  const applyCodeIntelEdits = useCallback(
+    (result: CodeIntelEdits | { reason: string }, verb: string) => {
+      const decision = decideCodeIntelApply(result, verb);
+      if (decision.apply) onApplyEdits?.(filePath, decision.edits);
+      setCodeIntelNotice(decision.notice);
+    },
+    [filePath, onApplyEdits],
+  );
+
+  /**
+   * Rename and format while editing in place.
+   *
+   * The library's keymap only binds its own built-in commands, so these two
+   * live on the card instead. Both go through `Editor.applyEdits`, which puts
+   * them on the undo timeline like anything typed by hand.
+   */
+  useEffect(() => {
+    const card = cardRef.current;
+    if (!card || !editing || !codeIntel.ready) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "F2") {
+        const at = caretPosition();
+        if (!at) return;
+        event.preventDefault();
+        setCodeIntelNotice(null);
+        setRenamePrompt({ ...at, symbol: "" });
+        return;
+      }
+      // Shift+Alt+F, the format shortcut every editor already uses.
+      if (event.shiftKey && event.altKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        setCodeIntelNotice(null);
+        void formatFile(filePath, tabSize).then((result) =>
+          applyCodeIntelEdits(result, "Format"),
+        );
+      }
+    };
+    card.addEventListener("keydown", onKeyDown);
+    return () => card.removeEventListener("keydown", onKeyDown);
+  }, [
+    applyCodeIntelEdits,
+    caretPosition,
+    codeIntel.ready,
+    editing,
+    filePath,
+    formatFile,
+    tabSize,
+  ]);
+
+  /**
+   * Token callbacks for the renderer, or undefined when the setting is off so
+   * the diff mounts with no token listeners at all — the default.
+   *
+   * These are gated on the *setting*, not on whether a language server turned
+   * out to be reachable. The renderer only wraps tokens individually when a
+   * token callback exists at highlight time (`shouldUseTokenTransformer`), and
+   * it does not re-highlight when the callbacks appear later, so handing them
+   * over after the capability probe resolves would leave the file with no
+   * hoverable tokens at all. The callbacks themselves are inert until the hook
+   * reports ready, so nothing is requested in the meantime.
+   */
+  const tokenHandlers = useMemo(() => {
+    if (!codeIntelEnabled) return undefined;
+    return {
+      // MultiFileDiff and FileDiff do not infer this from the callbacks the
+      // way UnresolvedFile and the SSR paths do; without it the renderer never
+      // wraps tokens and no token event ever fires.
+      useTokenTransformer: true,
+      onTokenEnter: (props: DiffTokenEventBaseProps) => {
+        hoverToken(toTarget(props));
+      },
+      onTokenLeave: () => {
+        clearHover();
+      },
+      onTokenClick: async (
+        props: DiffTokenEventBaseProps,
+        event: MouseEvent,
+      ) => {
+        // Plain clicks still belong to selection; only a modified click nav.
+        if (!event.metaKey && !event.ctrlKey && !event.altKey) return;
+        event.preventDefault();
+        const target = toTarget(props);
+        closeHover();
+        const locations = await resolveDefinition(target);
+        const first = locations?.find((location) => location.inRepository);
+        if (!first) return;
+        openDefinitionPeek({
+          path: first.path,
+          line: first.line,
+          symbol: target.tokenText,
+        });
+      },
+    };
+  }, [
+    codeIntelEnabled,
+    hoverToken,
+    clearHover,
+    closeHover,
+    resolveDefinition,
+    toTarget,
+  ]);
+
+  /**
+   * The language-server half of the selection widget, or undefined when code
+   * intel is off — in which case the widget has no "Fix…" button at all.
+   */
+  const selectionCodeActions = useMemo<SelectionCodeActions | undefined>(() => {
+    if (!codeIntel.ready) return undefined;
+    return {
+      fetch: (startLine, startCharacter, endLine, endCharacter) =>
+        codeActionsFor(
+          filePath,
+          startLine,
+          startCharacter,
+          endLine,
+          endCharacter,
+        ),
+      apply: (edits, title) => applyCodeIntelEdits(edits, title),
+    };
+  }, [applyCodeIntelEdits, codeActionsFor, codeIntel.ready, filePath]);
+
+  /**
    * Creation-time editor options for the in-place edit surface. The factory
    * (from EditProvider) owns the Editor instance; these callbacks wire it to
    * the edit-session state in App.
@@ -706,13 +934,35 @@ export const FileDiffCard = memo(function FileDiffCard({
   >(
     () => ({
       onAttach: (editor) => {
+        editorRef.current = editor;
         onEditAttach?.(filePath, editor);
       },
       enabledSelectionAction: true,
       renderSelectionAction: (ctx) =>
-        buildEditSelectionAction(ctx, filePath, handleEditSelectionComment),
+        buildEditSelectionAction(
+          ctx,
+          filePath,
+          handleEditSelectionComment,
+          selectionCodeActions,
+        ),
+      ...(editPredictionEnabled
+        ? {
+            editPrediction: {
+              mode: "subtle" as const,
+              provider: createEditPredictProvider(),
+              include: [filePath],
+            },
+          }
+        : {}),
     }),
-    [filePath, onEditChange, onEditAttach, handleEditSelectionComment],
+    [
+      filePath,
+      onEditChange,
+      onEditAttach,
+      handleEditSelectionComment,
+      selectionCodeActions,
+      editPredictionEnabled,
+    ],
   );
 
   const getStatusBadge = () => {
@@ -934,6 +1184,43 @@ export const FileDiffCard = memo(function FileDiffCard({
       id={id}
       data-file-path={filePath}
     >
+      {codeIntel.hover && (
+        <CodeIntelPopover
+          hover={codeIntel.hover}
+          onHold={codeIntel.holdHover}
+          onClose={codeIntel.closeHover}
+        />
+      )}
+      <InputDialog
+        open={renamePrompt !== null}
+        title="Rename symbol"
+        description="Rewrites every use the language server can see in this file. Uses elsewhere are reported, never changed."
+        label="New name"
+        confirmLabel="Rename"
+        maxLength={200}
+        onCancel={() => setRenamePrompt(null)}
+        onConfirm={(value) => {
+          const at = renamePrompt;
+          setRenamePrompt(null);
+          if (!at || !value.trim()) return;
+          void renameAt(filePath, at.line, at.character, value.trim()).then(
+            (result) => applyCodeIntelEdits(result, "Rename"),
+          );
+        }}
+      />
+      {codeIntelNotice && (
+        <div className="code-intel-notice" role="status">
+          {codeIntelNotice}
+          <button
+            type="button"
+            className="code-intel-notice-close"
+            aria-label="Dismiss"
+            onClick={() => setCodeIntelNotice(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
       <div
         className="file-diff-card-header"
         onClick={() => {
@@ -1466,6 +1753,7 @@ export const FileDiffCard = memo(function FileDiffCard({
                 onEditComplete={() => "reject"}
                 editorOptions={editorOptions}
                 options={{
+                  ...tokenHandlers,
                   onPostRender,
                   diffStyle,
                   // Line selection + gutter utility are read-mode comment
@@ -1532,6 +1820,7 @@ export const FileDiffCard = memo(function FileDiffCard({
                 oldFile={{ name: oldFilePath, contents: oldContent ?? "" }}
                 newFile={{ name: filePath, contents: newContent ?? "" }}
                 options={{
+                  ...tokenHandlers,
                   onPostRender,
                   diffStyle,
                   enableGutterUtility: true,
@@ -1607,6 +1896,7 @@ export const FileDiffCard = memo(function FileDiffCard({
               >
                 fileDiff={fileDiff}
                 options={{
+                  ...tokenHandlers,
                   onPostRender,
                   diffStyle,
                   enableGutterUtility: true,
@@ -1883,6 +2173,62 @@ export function buildUnsafeCSS(
   `;
 }
 
+/** What the selection widget needs to offer language-server code actions. */
+export interface SelectionCodeActions {
+  fetch: (
+    startLine: number,
+    startCharacter: number,
+    endLine: number,
+    endCharacter: number,
+  ) => Promise<CodeIntelAction[]>;
+  apply: (edits: CodeIntelEdits, title: string) => void;
+}
+
+/**
+ * Replace the widget's contents with the actions a language server offered.
+ *
+ * An action that cannot be applied here is shown disabled with the reason
+ * rather than hidden: "this quick fix only touches other files" and "this one
+ * runs a server command, which we do not do" are both worth knowing.
+ */
+function renderCodeActions(
+  el: HTMLElement,
+  actions: CodeIntelAction[],
+  ctx: EditSelectionActionContext,
+  codeActions: SelectionCodeActions,
+): void {
+  el.replaceChildren();
+  if (actions.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "edit-selection-action-empty";
+    empty.textContent = "No actions here";
+    el.append(empty);
+    return;
+  }
+  for (const action of actions) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "edit-selection-action-btn";
+    btn.textContent = action.title;
+    if (action.unavailable) {
+      btn.disabled = true;
+      btn.title =
+        action.unavailable === "command-only"
+          ? "This action runs a command in the language server, which diffing does not do"
+          : "This action only changes other files, which are never edited from here";
+    } else {
+      btn.title = "Apply this fix to the open file";
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        const edits = action.edits;
+        ctx.close();
+        if (edits) codeActions.apply(edits, action.title);
+      });
+    }
+    el.append(btn);
+  }
+}
+
 /**
  * Build the floating selection-action popover for the edit surface.
  *
@@ -1891,11 +2237,14 @@ export function buildUnsafeCSS(
  * - "Comment" opens the existing comment composer anchored to the selection's
  *   line range (additions side — the only editable side).
  * - "Copy link" copies a permalink to the selection's first line.
+ * - "Fix…" asks the language server what it can do with the selection, and is
+ *   absent entirely when code intel is off.
  */
 function buildEditSelectionAction(
   ctx: EditSelectionActionContext,
   filePath: string,
   onComment: (range: { start: number; end: number }, text: string) => void,
+  codeActions?: SelectionCodeActions,
 ): HTMLElement {
   const el = document.createElement("div");
   el.className = "edit-selection-action";
@@ -1935,5 +2284,26 @@ function buildEditSelectionAction(
   });
 
   el.append(commentBtn, linkBtn);
+
+  if (codeActions) {
+    const fixBtn = document.createElement("button");
+    fixBtn.type = "button";
+    fixBtn.className = "edit-selection-action-btn";
+    fixBtn.textContent = "Fix…";
+    fixBtn.title = "Ask the language server what it can do with this selection";
+    fixBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      fixBtn.disabled = true;
+      fixBtn.textContent = "Asking…";
+      const start = ctx.selection.start;
+      const end = ctx.selection.end;
+      codeActions
+        .fetch(start.line + 1, start.character, end.line + 1, end.character)
+        .then((actions) => renderCodeActions(el, actions, ctx, codeActions))
+        .catch(() => renderCodeActions(el, [], ctx, codeActions));
+    });
+    el.append(fixBtn);
+  }
+
   return el;
 }

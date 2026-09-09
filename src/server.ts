@@ -11,6 +11,9 @@ import { NativeFsError, getNativeRepositoryFs } from "./lib/native-fs.js";
 import {
 	saveFileSchema,
 	editSaveSchema,
+	codeIntelSchema,
+	codeIntelDocumentSchema,
+	editPredictSchema,
 	MAX_FILE_REQUEST_BYTES,
 } from "./lib/file-schema.js";
 import { serve } from "@hono/node-server";
@@ -184,7 +187,10 @@ import {
 	classifyPrComments,
 	buildReviewPayload,
 } from "./lib/github.js";
+import { createDefaultAdapters } from "./lib/ai/adapters.js";
+import { SystemSecretStore } from "./lib/ai/secrets.js";
 import { AiService, type AiPreparedRun } from "./lib/ai/service.js";
+import { runEditPrediction } from "./lib/edit-predict.js";
 import { AiRunError } from "./lib/ai/lifecycle.js";
 import { AiRequestError, readAiRunRequest } from "./lib/ai/request.js";
 import { streamAiRun } from "./lib/ai/run-stream.js";
@@ -197,6 +203,12 @@ import type { Decision, NotebookEntryInput } from "./lib/ai/notebook.js";
 import { sourceHistory } from "./lib/ai/history.js";
 import { sourceDiscussion } from "./lib/ai/discussion.js";
 import { lookupSymbols, type SymbolKind } from "./lib/ai/symbols.js";
+import {
+	closeDraft,
+	codeIntel,
+	codeIntelCapabilities,
+	syncDraft,
+} from "./lib/code-intel.js";
 import {
 	diffRead,
 	reviewMap,
@@ -1658,6 +1670,110 @@ export function createApp(
 			);
 		} catch (error) {
 			return evidenceError(c, error);
+		}
+	});
+
+	/**
+	 * Code intel for the review UI: hover, definition and references over the
+	 * same language-server pool the AI path uses.
+	 *
+	 * A language server answers about the working tree, so `code-intel.ts`
+	 * decides whether this review is one it can answer for at all. Every
+	 * refusal names its reason; the client never has to infer "no server" from
+	 * an empty result.
+	 */
+	app.get("/api/code-intel/capabilities", (c) =>
+		c.json(
+			codeIntelCapabilities(languageServers, {
+				customMode,
+				prMode,
+				staged: diffOpts.staged,
+			}),
+		),
+	);
+
+	app.post("/api/code-intel", async (c) => {
+		const parsed = codeIntelSchema.safeParse(await readCommentJson(c));
+		if (!parsed.success)
+			return c.json({ error: "Invalid code-intel request" }, 400);
+		const { staged, ...request } = parsed.data;
+		return c.json(
+			await codeIntel(
+				languageServers,
+				repoRoot,
+				{
+					customMode,
+					prMode,
+					// The UI can toggle staged after startup, so it states the scope
+					// it is displaying; the startup default stands when it does not.
+					staged: staged ?? diffOpts.staged,
+				},
+				request,
+			),
+		);
+	});
+
+	/**
+	 * The draft an open editor holds, pushed so diagnostics describe what the
+	 * reviewer is looking at rather than what is still on disk. Diagnostics come
+	 * back over the existing `/api/live` channel, carrying the version they were
+	 * computed against so a stale batch can be recognised and dropped.
+	 */
+	app.post("/api/code-intel/document", async (c) => {
+		const parsed = codeIntelDocumentSchema.safeParse(await readCommentJson(c));
+		if (!parsed.success)
+			return c.json({ error: "Invalid code-intel document request" }, 400);
+		const body = parsed.data;
+		if (body.op === "close") {
+			await closeDraft(languageServers, repoRoot, body.path);
+			return c.json({ ok: true });
+		}
+		const result = await syncDraft(
+			languageServers,
+			repoRoot,
+			{ customMode, prMode, staged: diffOpts.staged },
+			body,
+			(published) => broadcast("code-intel-diagnostics", JSON.stringify(published)),
+		);
+		return c.json(result);
+	});
+
+	app.post("/api/edit-predict", async (c) => {
+		const parsed = editPredictSchema.safeParse(await readCommentJson(c));
+		if (!parsed.success)
+			return c.json({ error: "Invalid edit-predict request" }, 400);
+		const body = parsed.data;
+		if (body.path.startsWith("/") || body.path.includes(".."))
+			return c.json({ available: false, reason: "outside-repository" });
+		const modelId = loadSettings().aiModel;
+		if (!modelId)
+			return c.json({ available: false, reason: "not-configured" });
+		const source = modelId.split("/")[0] as AiSourceId;
+		const adapter = createDefaultAdapters(new SystemSecretStore()).find(
+			(entry) => entry.id === source,
+		);
+		if (!adapter)
+			return c.json({ available: false, reason: "not-configured" });
+		const request: AiRunRequest = {
+			trigger: "user",
+			conversationId: "edit-predict",
+			modelId,
+			surface: "diff",
+			action: "ask",
+			prompt: "",
+			context: { kind: "file", filePath: body.path },
+		};
+		try {
+			return c.json(
+				await runEditPrediction(
+					body,
+					async (prompt, signal) =>
+						adapter.run({ ...request, prompt }, signal, () => {}),
+					c.req.raw.signal ?? new AbortController().signal,
+				),
+			);
+		} catch {
+			return c.json({ available: false, reason: "server-error" });
 		}
 	});
 

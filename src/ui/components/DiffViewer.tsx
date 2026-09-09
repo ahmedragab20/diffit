@@ -8,7 +8,7 @@ import type {
   AnnotationSide,
   FileContents,
 } from "@pierre/diffs";
-import type { Editor } from "@pierre/diffs/edit";
+import type { Editor, TextEdit } from "@pierre/diffs/edit";
 import type { ReviewComment } from "../../lib/types";
 import type { AiDiffSelection } from "../../lib/ai/types";
 import type { PrExistingComment } from "../../lib/pr-session";
@@ -45,6 +45,14 @@ interface DiffViewerProps {
   collapsedContextThreshold: number;
   expansionLineCount: number;
   autoCollapseLineThreshold: number;
+  /** Opt-in language-server hover and go-to-declaration in the diff. */
+  codeIntelEnabled?: boolean;
+  /** The scope being displayed; code intel must answer against it. */
+  staged?: boolean;
+  /** Opt-in ghost-text edit prediction while editing a file already in the diff. */
+  editPredictionEnabled?: boolean;
+  /** Apply language-server edits to a file's open editor. */
+  onApplyEdits?: (filePath: string, edits: TextEdit[]) => boolean;
   onViewedChange: (filePath: string, viewed: boolean) => void;
   fileAnnotationsMap: Map<string, DiffLineAnnotation<ReviewComment>[]>;
   existingCommentsMap?: Map<string, PrExistingComment[]>;
@@ -157,6 +165,10 @@ export const DiffViewer = memo(function DiffViewer({
   collapsedContextThreshold,
   expansionLineCount,
   autoCollapseLineThreshold,
+  codeIntelEnabled,
+  staged,
+  editPredictionEnabled,
+  onApplyEdits,
   onViewedChange,
   fileAnnotationsMap,
   existingCommentsMap,
@@ -262,6 +274,10 @@ export const DiffViewer = memo(function DiffViewer({
               collapsedContextThreshold={collapsedContextThreshold}
               expansionLineCount={expansionLineCount}
               autoCollapseLineThreshold={autoCollapseLineThreshold}
+              codeIntelEnabled={codeIntelEnabled}
+              staged={staged}
+              editPredictionEnabled={editPredictionEnabled}
+              onApplyEdits={onApplyEdits}
               onViewedChange={onViewedChange}
               onAddComment={onAddComment}
               onDeleteComment={onDeleteComment}

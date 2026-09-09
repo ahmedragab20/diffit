@@ -12,6 +12,15 @@ const MockEditor = vi.hoisted(() =>
   },
 )
 
+// Hoisted live handlers so tests can drive diagnostics.
+const liveHandlers = vi.hoisted(() => new Map<string, (raw: string) => void>())
+vi.mock('../../live', () => ({
+  subscribeLive: (event: string, handler: (raw: string) => void) => {
+    liveHandlers.set(event, handler)
+    return () => liveHandlers.delete(event)
+  },
+}))
+
 vi.mock('../../lib/editModule', () => ({
   ensureEditModuleLoaded: vi.fn(async () => {}),
   getEditorClass: () => MockEditor,
@@ -31,7 +40,7 @@ const reviewComment: ReviewComment = {
   replies: [],
 }
 
-/** Default /api/file-text + /api/edit-save routing. */
+/** Default /api/file-text + /api/edit-save + /api/code-intel/document routing. */
 function mockApi({
   content = 'const x = 1',
   hash = 'abc123',
@@ -51,6 +60,9 @@ function mockApi({
         ? saveResponse()
         : Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, hash: 'saved123' }) })
     }
+    if (u.includes('/api/code-intel/document')) {
+      return Promise.resolve({ ok: true, json: async () => ({ ok: true }) })
+    }
     return Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
   })
 }
@@ -64,7 +76,15 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-const hookProps = (diagnosticsEnabled: boolean) => ({ diagnosticsEnabled })
+const hookProps = (diagnosticsEnabled: boolean, codeIntelEnabled = false) => ({
+  diagnosticsEnabled,
+  codeIntelEnabled,
+})
+
+const documentPosts = () =>
+  mockFetch.mock.calls
+    .filter(([url]) => String(url).includes('/api/code-intel/document'))
+    .map(([, init]) => JSON.parse(String((init as RequestInit).body)))
 
 describe('useEditSessions', () => {
   it('enterEdit fetches file-text, seeds the session (draft/hash/dirty), and encodes the path', async () => {
@@ -452,6 +472,253 @@ describe('useEditSessions', () => {
     expect(expected.length).toBeGreaterThan(0)
     await waitFor(() => {
       expect(editor.setMarkers).toHaveBeenCalledWith(expected)
+    })
+  })
+
+  describe('useEditSessions code intel', () => {
+    it('pushes the draft to the language server on attach', async () => {
+      mockApi()
+      const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(true, true) })
+      await act(async () => {
+        await result.current.enterEdit('a/b.ts')
+      })
+
+      const editor = new MockEditor()
+      act(() => {
+        result.current.handleEditAttach('a/b.ts', editor as any)
+      })
+
+      await waitFor(() => expect(documentPosts()).toHaveLength(1))
+      const post = documentPosts()[0]
+      expect(post.op).toBe('change')
+      expect(post.path).toBe('a/b.ts')
+      expect(typeof post.version).toBe('number')
+    })
+
+    it('pushes nothing when code intel is off', async () => {
+      mockApi()
+      const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(true, false) })
+      await act(async () => {
+        await result.current.enterEdit('a/b.ts')
+      })
+
+      const editor = new MockEditor()
+      act(() => {
+        result.current.handleEditAttach('a/b.ts', editor as any)
+      })
+
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 400))
+      })
+
+      expect(documentPosts()).toHaveLength(0)
+    })
+
+    it('still syncs the draft when edit diagnostics are off', async () => {
+      mockApi()
+      const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(false, true) })
+      await act(async () => {
+        await result.current.enterEdit('a/b.ts')
+      })
+
+      const editor = new MockEditor()
+      act(() => {
+        result.current.handleEditAttach('a/b.ts', editor as any)
+      })
+
+      await waitFor(() => expect(documentPosts()).toHaveLength(1))
+      expect(editor.setMarkers).toHaveBeenCalledWith([])
+    })
+
+    it('merges server markers into the built-in ones', async () => {
+      mockApi()
+      const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(true, true) })
+      await act(async () => {
+        await result.current.enterEdit('a/b.ts')
+      })
+
+      const editor = new MockEditor()
+      act(() => {
+        result.current.handleEditAttach('a/b.ts', editor as any)
+      })
+
+      await waitFor(() => expect(documentPosts()).toHaveLength(1))
+
+      act(() => {
+        liveHandlers.get('code-intel-diagnostics')!(
+          JSON.stringify({
+            path: 'a/b.ts',
+            markers: [
+              {
+                severity: 'error',
+                message: 'boom',
+                source: 'typescript',
+                start: { line: 0, character: 0 },
+                end: { line: 0, character: 5 },
+              },
+            ],
+          }),
+        )
+      })
+
+      await waitFor(() => {
+        const calls = editor.setMarkers.mock.calls
+        expect(calls.length).toBeGreaterThan(0)
+        const lastCall = calls[calls.length - 1][0]
+        expect(lastCall).toContainEqual(expect.objectContaining({ message: 'boom' }))
+      })
+    })
+
+    it('drops a batch that names a different version', async () => {
+      mockApi()
+      const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(true, true) })
+      await act(async () => {
+        await result.current.enterEdit('a/b.ts')
+      })
+
+      const editor = new MockEditor()
+      act(() => {
+        result.current.handleEditAttach('a/b.ts', editor as any)
+      })
+
+      await waitFor(() => expect(documentPosts()).toHaveLength(1))
+
+      act(() => {
+        liveHandlers.get('code-intel-diagnostics')!(
+          JSON.stringify({
+            path: 'a/b.ts',
+            version: 9999,
+            markers: [
+              {
+                severity: 'error',
+                message: 'boom',
+                source: 'typescript',
+                start: { line: 0, character: 0 },
+                end: { line: 0, character: 5 },
+              },
+            ],
+          }),
+        )
+      })
+
+      // A rejected batch still refreshes the markers; what matters is that the
+      // server's marker is not among them.
+      const lastCall =
+        editor.setMarkers.mock.calls[editor.setMarkers.mock.calls.length - 1][0]
+      expect(lastCall).not.toContainEqual(
+        expect.objectContaining({ message: 'boom' }),
+      )
+    })
+
+    it('ignores a batch for a file with no open draft', async () => {
+      mockApi()
+      const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(true, true) })
+      await act(async () => {
+        await result.current.enterEdit('a/b.ts')
+      })
+
+      const editor = new MockEditor()
+      act(() => {
+        result.current.handleEditAttach('a/b.ts', editor as any)
+      })
+
+      await waitFor(() => expect(documentPosts()).toHaveLength(1))
+
+      const initialCalls = editor.setMarkers.mock.calls.length
+      act(() => {
+        liveHandlers.get('code-intel-diagnostics')!(
+          JSON.stringify({
+            path: 'other/file.ts',
+            markers: [
+              {
+                severity: 'error',
+                message: 'boom',
+                source: 'typescript',
+                start: { line: 0, character: 0 },
+                end: { line: 0, character: 5 },
+              },
+            ],
+          }),
+        )
+      })
+
+      // Wait a bit to ensure no async state changes happen
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      })
+
+      // setMarkers should not have been called for the other file; check that no boom exists
+      for (const call of editor.setMarkers.mock.calls) {
+        expect(call[0]).not.toContainEqual(expect.objectContaining({ message: 'boom' }))
+      }
+    })
+
+    it('drops held server markers when the next draft is pushed', async () => {
+      mockApi()
+      const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(true, true) })
+      await act(async () => {
+        await result.current.enterEdit('a/b.ts')
+      })
+
+      const editor = new MockEditor()
+      act(() => {
+        result.current.handleEditAttach('a/b.ts', editor as any)
+      })
+
+      await waitFor(() => expect(documentPosts()).toHaveLength(1))
+
+      act(() => {
+        liveHandlers.get('code-intel-diagnostics')!(
+          JSON.stringify({
+            path: 'a/b.ts',
+            markers: [
+              {
+                severity: 'error',
+                message: 'boom',
+                source: 'typescript',
+                start: { line: 0, character: 0 },
+                end: { line: 0, character: 5 },
+              },
+            ],
+          }),
+        )
+      })
+
+      await waitFor(() => {
+        const lastCall = editor.setMarkers.mock.calls[editor.setMarkers.mock.calls.length - 1][0]
+        expect(lastCall).toContainEqual(expect.objectContaining({ message: 'boom' }))
+      })
+
+      act(() => {
+        result.current.handleEditChange('a/b.ts', { contents: 'const x = 2' } as any)
+      })
+
+      await waitFor(() => expect(documentPosts().length).toBeGreaterThan(1), { timeout: 1500 })
+
+      const lastCall = editor.setMarkers.mock.calls[editor.setMarkers.mock.calls.length - 1][0]
+      expect(lastCall).not.toContainEqual(expect.objectContaining({ message: 'boom' }))
+    })
+
+    it('closes the document when the edit session ends', async () => {
+      mockApi()
+      const { result } = renderHook((p) => useEditSessions(p), { initialProps: hookProps(true, true) })
+      await act(async () => {
+        await result.current.enterEdit('a/b.ts')
+      })
+
+      const editor = new MockEditor()
+      act(() => {
+        result.current.handleEditAttach('a/b.ts', editor as any)
+      })
+
+      await waitFor(() => expect(documentPosts()).toHaveLength(1))
+
+      act(() => {
+        result.current.exitEdit('a/b.ts')
+      })
+
+      const posts = documentPosts()
+      expect(posts).toContainEqual(expect.objectContaining({ op: 'close', path: 'a/b.ts' }))
     })
   })
 })

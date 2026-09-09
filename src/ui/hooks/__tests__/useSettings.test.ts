@@ -42,6 +42,8 @@ const defaultSettings = {
   ignoreSpaceChange: false,
   ignoreAllSpace: false,
   editDiagnostics: false,
+  codeIntel: false,
+  editPrediction: false,
   aiModel: null,
   aiReasoningEffort: null,
   aiServiceTier: null,

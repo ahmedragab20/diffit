@@ -39,6 +39,11 @@ export class LanguageServers {
 		return Object.keys(this.config).length > 0;
 	}
 
+	/** Extensions with a configured server, so a UI can say what it supports. */
+	get extensions(): string[] {
+		return Object.keys(this.config);
+	}
+
 	supports(path: string): boolean {
 		return this.config[extensionOf(path)] !== undefined;
 	}

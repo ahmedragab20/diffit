@@ -23,6 +23,8 @@ import { buildChangedLineKeys, buildDiffFileSet } from "./lib/diffIndex";
 import { countDiffChanges } from "./lib/diffStats";
 import { reconcileDiffFiles } from "./lib/reconcileDiffFiles";
 import { navigateToFile, cancelDiffNavigation } from "./lib/diffNavigation";
+import { useCodeIntelCapabilities } from "./hooks/useCodeIntel";
+import { DefinitionPeek } from "./components/DefinitionPeek";
 import { SHIKI_THEME_MAP } from "./utils";
 import type { ReviewComment } from "../lib/types";
 import { useDiff } from "./hooks/useDiff";
@@ -138,9 +140,11 @@ export function App() {
 		saveAllDirty,
 		discardEdit,
 		exitEdit,
+		applyServerEdits,
 		createEditor,
 	} = useEditSessions({
 		diagnosticsEnabled: settings.editDiagnostics === true,
+		codeIntelEnabled: settings.codeIntel === true,
 	});
 
 	// Scope gate: in-place edits mutate the working tree, so they are only
@@ -693,6 +697,14 @@ export function App() {
 		[fileSearch.open],
 	);
 
+	/**
+	 * Probed once per session, regardless of the setting, so the settings
+	 * toggle can say why code intel is unavailable instead of switching on
+	 * and silently doing nothing. No token listener is attached until the
+	 * setting is on and a server is actually configured.
+	 */
+	const codeIntelCapabilities = useCodeIntelCapabilities();
+
 	const searchNavContext = useMemo(
 		() => ({
 			diffFileSet: buildDiffFileSet(filteredFiles),
@@ -1204,11 +1216,16 @@ export function App() {
 					light:
 						shikiConfig.type === "light" ? shikiConfig.themeName : "github-light",
 				},
+				// Token-level markup is a pool-wide render option, not a per-file
+				// one: without it the worker emits whole-line spans and no token
+				// event can fire. It costs a span per token, so it is tied to the
+				// code-intel setting rather than left on for every review.
+				useTokenTransformer: settings.codeIntel === true,
 			})
 			.catch((err) => {
 				console.error("Failed to set worker pool render options:", err);
 			});
-	}, [poolManager, shikiConfig]);
+	}, [poolManager, shikiConfig, settings.codeIntel]);
 
 	// Pre-warm the Shiki highlighter on the main thread for snappier first paint
 	useEffect(() => {
@@ -1449,6 +1466,8 @@ export function App() {
 							ignoreSpaceChange={settings.ignoreSpaceChange ?? false}
 							ignoreAllSpace={settings.ignoreAllSpace ?? false}
 							editDiagnostics={settings.editDiagnostics === true}
+							codeIntel={settings.codeIntel === true}
+							codeIntelUnavailable={codeIntelCapabilities?.unavailable}
 							onDensityChange={handleDensityChange}
 							onAutoCollapseLineThresholdChange={handleAutoCollapseChange}
 							onRequireViewAllBeforeSendChange={handleRequireViewAllChange}
@@ -1456,6 +1475,9 @@ export function App() {
 							onIgnoreSpaceChange={handleIgnoreSpaceChange}
 							onIgnoreAllSpaceChange={handleIgnoreAllSpaceChange}
 							onEditDiagnosticsChange={(v) => updateSettings({ editDiagnostics: v })}
+							onCodeIntelChange={(v) => updateSettings({ codeIntel: v })}
+							editPrediction={settings.editPrediction === true}
+							onEditPredictionChange={(v) => updateSettings({ editPrediction: v })}
 							onResolveAllOpen={handleResolveAllOpen}
 							onOpenUiFontModal={() => setUiFontModalOpen(true)}
 							onOpenMonoFontModal={() => setMonoFontModalOpen(true)}
@@ -1612,6 +1634,10 @@ export function App() {
 								collapsedContextThreshold={settings.collapsedContextThreshold}
 								expansionLineCount={settings.expansionLineCount}
 								autoCollapseLineThreshold={settings.autoCollapseLineThreshold}
+								codeIntelEnabled={settings.codeIntel === true}
+								editPredictionEnabled={settings.editPrediction === true}
+								staged={settings.staged}
+								onApplyEdits={applyServerEdits}
 								onViewedChange={handleViewedChange}
 								fileAnnotationsMap={fileAnnotationsMap}
 								onAddComment={addComment}
@@ -1661,6 +1687,15 @@ export function App() {
 						lineWrap={settings.lineWrap}
 						showLineNumbers={settings.showLineNumbers}
 						lineHoverHighlight={settings.lineHoverHighlight}
+					/>
+					<DefinitionPeek
+						diffFileSet={searchNavContext.diffFileSet}
+						theme={settings.theme || "rose-pine"}
+						fontSize={settings.fontSize}
+						monoFontFamily={monoFontFamily}
+						defaultTabSize={settings.defaultTabSize}
+						lineWrap={settings.lineWrap}
+						showLineNumbers={settings.showLineNumbers}
 					/>
 					{!zenMode && (
 						<VimStatusBar

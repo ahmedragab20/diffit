@@ -109,6 +109,11 @@ export interface Settings {
 	 */
 	aiLanguageServers?: Record<string, AiLanguageServer>;
 	/**
+	 * Alias for `aiLanguageServers`. Accepted on load because the key is no
+	 * longer AI-only; the canonical stored name stays `aiLanguageServers`.
+	 */
+	languageServers?: Record<string, AiLanguageServer>;
+	/**
 	 * Read-only AI evidence navigation (`/api/ai/evidence*` and the matching MCP
 	 * tools). Enabled by default; setting it false is the rollback lever and
 	 * takes effect per request, without restarting the server.
@@ -204,8 +209,9 @@ export function loadSettings(): Settings {
 			settings.defaultMode = DEFAULTS.defaultMode;
 		}
 		settings.aiLanguageServers = sanitizeLanguageServers(
-			settings.aiLanguageServers,
+			settings.languageServers ?? settings.aiLanguageServers,
 		);
+		delete settings.languageServers;
 		return settings;
 	} catch {
 		return { ...DEFAULTS };

@@ -264,7 +264,20 @@ describe("read-only authority", () => {
     expect(text).toContain("Method not found");
     expect(text).not.toContain("applyEdit");
     expect(text).not.toContain("executeCommand");
-    expect(text).not.toContain("workspace/didChange");
+    // Document sync goes one way and is document-scoped: the client tells the
+    // server what a file holds. No workspace-scoped method is spoken at all.
+    expect(text).not.toContain("workspace/");
+    expect(text).toContain("textDocument/didOpen");
+  });
+
+  it("keeps the review UI's code intel free of mutating methods", () => {
+    const text = readFileSync(join(root, "src/lib/code-intel.ts"), "utf-8");
+    // The module hands edits to the local editor, which is the client acting on
+    // the user's behalf. What it must never do is ask the server to act: no
+    // workspace-scoped method is spoken, and a code action whose only mechanism
+    // is a server command is reported unavailable rather than run.
+    expect(text).not.toContain("workspace/");
+    expect(text).toContain('"command-only"');
   });
 });
 

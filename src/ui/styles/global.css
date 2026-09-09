@@ -7654,6 +7654,148 @@ file-tree,
 
 /* Tooltip (Base UI Tooltip) — must clear sticky plan/diff chrome (z≈5–100)
    and sit above popovers so hover help isn't clipped under the header. */
+.edit-selection-action-empty {
+  padding: 0 var(--space-2);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* Code intel: the one-line report a rename or format leaves behind, including
+   the edits it deliberately did not apply outside this file. */
+.code-intel-notice {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-normal);
+}
+.code-intel-notice-close {
+  margin-left: auto;
+  padding: 0 var(--space-1);
+  font-size: var(--text-base);
+  line-height: 1;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+}
+
+/* Definition peek: the file a go-to-declaration landed in, shown beside the
+   review rather than replacing it. */
+.definition-peek {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 1400;
+  display: flex;
+  flex-direction: column;
+  width: min(720px, calc(100vw - var(--space-8)));
+  height: min(560px, calc(100vh - var(--space-8)));
+  background: var(--bg-primary);
+  border: 1px solid var(--border-normal);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+}
+.definition-peek-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-normal);
+  color: var(--text-secondary);
+  font-family: var(--font-sans);
+  font-size: var(--text-xs);
+}
+.definition-peek-path {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+}
+.definition-peek-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2.5px 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  background: var(--accent-subtle);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.definition-peek-body {
+  flex: 1;
+  overflow: auto;
+}
+
+/* Code intel: hover contents anchored to a token in the diff. Positioned in
+   JS against a raw DOM anchor the diff renderer owns, so only the presentation
+   lives here. */
+.code-intel-popover {
+  position: fixed;
+  z-index: 1600;
+  max-width: 520px;
+  max-height: 320px;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  font-family: var(--font-sans);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-normal);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  overscroll-behavior: contain;
+}
+.code-intel-popover-status {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.code-intel-popover-body > :first-child {
+  margin-top: 0;
+}
+.code-intel-popover-body > :last-child {
+  margin-bottom: 0;
+}
+.code-intel-popover-body pre {
+  margin: var(--space-1) 0;
+  white-space: pre-wrap;
+}
+.code-intel-signatures {
+  margin-top: var(--space-2);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-normal);
+}
+.code-intel-signature code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  white-space: pre-wrap;
+}
+.code-intel-highlight-count {
+  margin-top: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+.code-intel-occurrence {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-radius: 2px;
+}
+
 .ui-tooltip-positioner {
   z-index: 1500;
 }

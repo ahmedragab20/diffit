@@ -92,6 +92,22 @@ describe('settings', () => {
       const { loadSettings } = await import('../lib/settings.js')
       expect(loadSettings().defaultMode).toBe('web')
     })
+
+    it('accepts languageServers as an alias for aiLanguageServers', async () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          languageServers: {
+            ts: { command: 'typescript-language-server', args: ['--stdio'] },
+          },
+        }),
+      )
+      const { loadSettings } = await import('../lib/settings.js')
+      const settings = loadSettings()
+      expect(settings.aiLanguageServers).toEqual({
+        ts: { command: 'typescript-language-server', args: ['--stdio'] },
+      })
+      expect(settings.languageServers).toBeUndefined()
+    })
   })
 
   describe('saveSettings', () => {

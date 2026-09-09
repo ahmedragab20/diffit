@@ -21,7 +21,7 @@ given.
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `aiEvidenceTools` | `true` | `false` answers every `/api/ai/evidence*` route `404`, which also disables the matching MCP tools since they call those routes. |
-| `aiLanguageServers` | `{}` | Empty means definition/reference lookups report themselves unavailable. |
+| `aiLanguageServers` | `{}` | Empty means definition/reference lookups report themselves unavailable. `languageServers` is accepted as an alias. |
 
 Both live in the settings file (`diffing config` or the settings UI). The
 evidence flag is read per request, so **rollback takes effect immediately and
