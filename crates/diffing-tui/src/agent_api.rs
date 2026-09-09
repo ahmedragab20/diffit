@@ -145,7 +145,13 @@ impl AgentApi {
 }
 
 fn handle_connection(mut stream: TcpStream, state: &ApiState) -> Result<()> {
+    // Accepted sockets inherit the listener's O_NONBLOCK.  A WouldBlock on the
+    // first read used to drop the connection with no HTTP response.
+    stream
+        .set_nonblocking(false)
+        .context("configuring TUI agent API connection")?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
     let request = read_request(&mut stream)?;
     let authorized = request
         .headers
@@ -830,6 +836,9 @@ mod tests {
 
     fn raw_get(port: u16, path: &str, capability: Option<&str>) -> String {
         let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        // Pause after accept so the handler must wait for headers.  Without a
+        // blocking socket this used to close the connection with an empty body.
+        thread::sleep(Duration::from_millis(20));
         let capability = capability
             .map(|value| format!("X-Diffing-Capability: {value}\r\n"))
             .unwrap_or_default();
