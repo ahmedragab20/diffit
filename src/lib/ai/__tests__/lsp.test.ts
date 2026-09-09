@@ -646,3 +646,147 @@ describe("LspSession", () => {
 		}
 	});
 });
+
+/** Answers each method with a distinct, well-formed payload. */
+function useActionServer() {
+	const range = {
+		start: { line: 2, character: 0 },
+		end: { line: 2, character: 4 },
+	};
+	const serverScript = `
+let buffer = Buffer.alloc(0);
+const send = (message) => {
+	const body = JSON.stringify(message);
+	process.stdout.write('Content-Length: ' + Buffer.byteLength(body) + '\\r\\n\\r\\n' + body);
+};
+const range = ${JSON.stringify(range)};
+process.stdin.on('data', (chunk) => {
+	buffer = Buffer.concat([buffer, chunk]);
+	while (true) {
+		const split = buffer.indexOf('\\r\\n\\r\\n');
+		if (split === -1) return;
+		const length = Number(/content-length:\\s*(\\d+)/i.exec(buffer.slice(0, split).toString())[1]);
+		const start = split + 4;
+		if (buffer.length < start + length) return;
+		const message = JSON.parse(buffer.slice(start, start + length).toString());
+		buffer = buffer.slice(start + length);
+		if (message.method === 'initialize') {
+			send({ jsonrpc: '2.0', id: message.id, result: { capabilities: {} } });
+			continue;
+		}
+		if (message.id === undefined) continue;
+		let result = null;
+		if (message.method === 'textDocument/prepareRename') result = range;
+		else if (message.method === 'textDocument/rename') result = {
+			changes: {
+				'file:///a.ts': [{ range, newText: 'renamed' }],
+				'file:///b.ts': [{ range, newText: 'renamed' }],
+			},
+		};
+		else if (message.method === 'textDocument/formatting' || message.method === 'textDocument/rangeFormatting')
+			result = [{ range, newText: 'formatted' }];
+		else if (message.method === 'textDocument/codeAction') result = [
+			{ title: 'Fix this', kind: 'quickfix', edit: { changes: { 'file:///a.ts': [{ range, newText: 'fixed' }] } } },
+			{ title: 'Organize imports', command: 'editor.action.organizeImports' },
+		];
+		else if (message.method === 'textDocument/signatureHelp') result = {
+			signatures: [{ label: 'fn(x: number)', documentation: { value: 'docs' } }],
+			activeParameter: 0,
+		};
+		else if (message.method === 'textDocument/documentHighlight') result = [{ range }];
+		send({ jsonrpc: '2.0', id: message.id, result });
+	}
+});
+`;
+	mocks.spawn.mockImplementation(() =>
+		realSpawn(process.execPath, ["-e", serverScript], {
+			stdio: ["pipe", "pipe", "pipe"],
+		}),
+	);
+}
+
+describe("LspSession actions", () => {
+	it("returns a multi-file rename, formatting edits, and mixed code actions", async () => {
+		useActionServer();
+		const lsp = await LspSession.start("synthetic-lsp", [], "file:///repo");
+		try {
+			expect(await lsp.prepareRename("file:///a.ts", 3, 0)).toEqual({
+				startLine: 2,
+				startCharacter: 0,
+				endLine: 2,
+				endCharacter: 4,
+			});
+			expect(await lsp.rename("file:///a.ts", 3, 0, "renamed")).toEqual({
+				changes: [
+					{
+						uri: "file:///a.ts",
+						edits: [
+							{
+								startLine: 2,
+								startCharacter: 0,
+								endLine: 2,
+								endCharacter: 4,
+								newText: "renamed",
+							},
+						],
+					},
+					{
+						uri: "file:///b.ts",
+						edits: [
+							{
+								startLine: 2,
+								startCharacter: 0,
+								endLine: 2,
+								endCharacter: 4,
+								newText: "renamed",
+							},
+						],
+					},
+				],
+			});
+			expect(await lsp.formatting("file:///a.ts", 2, true)).toEqual([
+				{
+					startLine: 2,
+					startCharacter: 0,
+					endLine: 2,
+					endCharacter: 4,
+					newText: "formatted",
+				},
+			]);
+			const actions = await lsp.codeActions("file:///a.ts", {
+				startLine: 2,
+				startCharacter: 0,
+				endLine: 2,
+				endCharacter: 4,
+			});
+			expect(actions[0]).toMatchObject({
+				title: "Fix this",
+				kind: "quickfix",
+				commandOnly: false,
+			});
+			expect(actions[1]).toEqual({
+				title: "Organize imports",
+				kind: undefined,
+				edit: undefined,
+				commandOnly: true,
+			});
+			expect(await lsp.signatureHelp("file:///a.ts", 3, 1)).toEqual([
+				{
+					label: "fn(x: number)",
+					documentation: "docs",
+					activeParameter: 0,
+				},
+			]);
+			expect(await lsp.documentHighlights("file:///a.ts", 3, 0)).toEqual([
+				{
+					startLine: 2,
+					startCharacter: 0,
+					endLine: 2,
+					endCharacter: 4,
+				},
+			]);
+		} finally {
+			await lsp.close();
+		}
+	});
+});

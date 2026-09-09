@@ -1,5 +1,5 @@
 /**
- * Bounded LSP client for definition, reference, hover and diagnostic work.
+ * Bounded LSP client for the language intelligence the review surfaces use.
  *
  * A language server is discovered on PATH, exactly like the provider runtimes:
  * when it is absent the feature reports itself unavailable rather than
@@ -32,6 +32,10 @@ export const LSP_LIMITS = Object.freeze({
 	hoverBytes: 8 * 1024,
 	/** Diagnostics kept from one publish; a broken build can report thousands. */
 	diagnostics: 1000,
+	/** Text edits accepted from one rename, format or code action. */
+	edits: 5000,
+	/** Code actions offered for one selection. */
+	codeActions: 64,
 	requestMs: 10_000,
 	startupMs: 20_000,
 });
@@ -85,6 +89,114 @@ export interface LspDiagnostics {
 	 */
 	version?: number;
 	diagnostics: LspDiagnostic[];
+}
+
+/** A replacement of one range, with zero-based positions as the wire has them. */
+export interface LspTextEdit {
+	startLine: number;
+	startCharacter: number;
+	endLine: number;
+	endCharacter: number;
+	newText: string;
+}
+
+export interface LspWorkspaceEdit {
+	/** Edits grouped by the document they apply to. */
+	changes: { uri: string; edits: LspTextEdit[] }[];
+}
+
+export interface LspCodeAction {
+	title: string;
+	kind?: string;
+	/** Absent when the action has no edit — see `commandOnly`. */
+	edit?: LspWorkspaceEdit;
+	/**
+	 * True when the only way to apply this action is to ask the server to run a
+	 * command. This client does not do that, so such an action is offered as
+	 * unavailable rather than silently dropped.
+	 */
+	commandOnly: boolean;
+}
+
+export interface LspSignature {
+	label: string;
+	documentation?: string;
+	activeParameter?: number;
+}
+
+export interface LspRange {
+	startLine: number;
+	startCharacter: number;
+	endLine: number;
+	endCharacter: number;
+}
+
+function range(value: unknown): LspRange | undefined {
+	const item = value as
+		| {
+				start?: { line?: unknown; character?: unknown };
+				end?: { line?: unknown; character?: unknown };
+		  }
+		| undefined;
+	const start = item?.start;
+	const end = item?.end;
+	if (
+		!Number.isSafeInteger(start?.line) ||
+		!Number.isSafeInteger(start?.character) ||
+		!Number.isSafeInteger(end?.line) ||
+		!Number.isSafeInteger(end?.character)
+	)
+		return undefined;
+	return {
+		startLine: start!.line as number,
+		startCharacter: start!.character as number,
+		endLine: end!.line as number,
+		endCharacter: end!.character as number,
+	};
+}
+
+function textEdits(value: unknown): LspTextEdit[] {
+	if (!Array.isArray(value)) return [];
+	if (value.length > LSP_LIMITS.edits) throw new LspError("resource_limit");
+	const edits: LspTextEdit[] = [];
+	for (const entry of value) {
+		const item = entry as Record<string, unknown>;
+		const span = range(item?.range);
+		// An AnnotatedTextEdit carries the same shape plus an annotation id.
+		if (!span || typeof item?.newText !== "string") continue;
+		edits.push({ ...span, newText: item.newText as string });
+	}
+	return edits;
+}
+
+/**
+ * Normalize both `WorkspaceEdit` shapes: the older `changes` map keyed by uri,
+ * and `documentChanges`, which may also carry create/rename/delete operations.
+ * Those file operations are ignored — this client applies text, nothing else.
+ */
+function workspaceEdit(result: unknown): LspWorkspaceEdit | null {
+	if (result === null || result === undefined) return null;
+	const item = result as Record<string, unknown>;
+	const changes: { uri: string; edits: LspTextEdit[] }[] = [];
+	const documentChanges = item.documentChanges;
+	if (Array.isArray(documentChanges)) {
+		for (const entry of documentChanges) {
+			const change = entry as Record<string, unknown>;
+			const document = change?.textDocument as { uri?: unknown } | undefined;
+			// A create/rename/delete operation has `kind` and no textDocument.
+			if (typeof document?.uri !== "string") continue;
+			const edits = textEdits(change.edits);
+			if (edits.length > 0) changes.push({ uri: document.uri, edits });
+		}
+	}
+	const map = item.changes;
+	if (typeof map === "object" && map !== null) {
+		for (const [uri, value] of Object.entries(map)) {
+			const edits = textEdits(value);
+			if (edits.length > 0) changes.push({ uri, edits });
+		}
+	}
+	return changes.length > 0 ? { changes } : null;
 }
 
 const SEVERITIES: Record<number, LspSeverity> = {
@@ -329,6 +441,18 @@ export class LspSession {
 							// contains; it is never asked to change one.
 							synchronization: { dynamicRegistration: false },
 							publishDiagnostics: { relatedInformation: false },
+							documentHighlight: {},
+							signatureHelp: {},
+							// Every one of these returns edits for the client to apply
+							// or refuse. None of them lets the server act on its own.
+							rename: { prepareSupport: true },
+							formatting: {},
+							rangeFormatting: {},
+							codeAction: {
+								codeActionLiteralSupport: {
+									codeActionKind: { valueSet: [] },
+								},
+							},
 						},
 					},
 					workspaceFolders: null,
@@ -447,6 +571,149 @@ export class LspSession {
 				position: { line: line - 1, character },
 			}),
 		);
+	}
+
+	/** Whether a symbol at this position can be renamed at all. */
+	async prepareRename(
+		uri: string,
+		line: number,
+		character: number,
+	): Promise<LspRange | null> {
+		const result = await this.request("textDocument/prepareRename", {
+			textDocument: { uri },
+			position: { line: line - 1, character },
+		});
+		if (result === null || result === undefined) return null;
+		const item = result as Record<string, unknown>;
+		// Servers answer with a Range, {range, placeholder}, or {defaultBehavior}.
+		return range(item.range ?? result) ?? null;
+	}
+
+	/** The edits a rename would make, across every file it touches. */
+	async rename(
+		uri: string,
+		line: number,
+		character: number,
+		newName: string,
+	): Promise<LspWorkspaceEdit | null> {
+		return workspaceEdit(
+			await this.request("textDocument/rename", {
+				textDocument: { uri },
+				position: { line: line - 1, character },
+				newName,
+			}),
+		);
+	}
+
+	/** Edits that reformat the whole document. */
+	async formatting(
+		uri: string,
+		tabSize: number,
+		insertSpaces: boolean,
+	): Promise<LspTextEdit[]> {
+		return textEdits(
+			await this.request("textDocument/formatting", {
+				textDocument: { uri },
+				options: { tabSize, insertSpaces },
+			}),
+		);
+	}
+
+	/** Edits that reformat one range. */
+	async rangeFormatting(
+		uri: string,
+		span: LspRange,
+		tabSize: number,
+		insertSpaces: boolean,
+	): Promise<LspTextEdit[]> {
+		return textEdits(
+			await this.request("textDocument/rangeFormatting", {
+				textDocument: { uri },
+				range: {
+					start: { line: span.startLine, character: span.startCharacter },
+					end: { line: span.endLine, character: span.endCharacter },
+				},
+				options: { tabSize, insertSpaces },
+			}),
+		);
+	}
+
+	/** Actions offered for a range, with their edits already normalized. */
+	async codeActions(uri: string, span: LspRange): Promise<LspCodeAction[]> {
+		const result = await this.request("textDocument/codeAction", {
+			textDocument: { uri },
+			range: {
+				start: { line: span.startLine, character: span.startCharacter },
+				end: { line: span.endLine, character: span.endCharacter },
+			},
+			context: { diagnostics: [] },
+		});
+		if (!Array.isArray(result)) return [];
+		const actions: LspCodeAction[] = [];
+		for (const entry of result.slice(0, LSP_LIMITS.codeActions)) {
+			const item = entry as Record<string, unknown>;
+			if (typeof item?.title !== "string") continue;
+			const edit = workspaceEdit(item.edit);
+			actions.push({
+				title: item.title.slice(0, 200),
+				kind: typeof item.kind === "string" ? item.kind : undefined,
+				edit: edit ?? undefined,
+				commandOnly: edit === null,
+			});
+		}
+		return actions;
+	}
+
+	/** Signatures for the call being typed, or an empty list. */
+	async signatureHelp(
+		uri: string,
+		line: number,
+		character: number,
+	): Promise<LspSignature[]> {
+		const result = await this.request("textDocument/signatureHelp", {
+			textDocument: { uri },
+			position: { line: line - 1, character },
+		});
+		const signatures = (result as { signatures?: unknown } | null)?.signatures;
+		if (!Array.isArray(signatures)) return [];
+		const active = (result as { activeParameter?: unknown }).activeParameter;
+		return signatures.slice(0, 16).flatMap((entry) => {
+			const item = entry as Record<string, unknown>;
+			if (typeof item?.label !== "string") return [];
+			const documentation =
+				typeof item.documentation === "string"
+					? item.documentation
+					: typeof (item.documentation as { value?: unknown })?.value ===
+							"string"
+						? ((item.documentation as { value: string }).value as string)
+						: undefined;
+			return [
+				{
+					label: item.label.slice(0, 1024),
+					documentation: documentation?.slice(0, LSP_LIMITS.hoverBytes),
+					activeParameter: Number.isSafeInteger(active)
+						? (active as number)
+						: undefined,
+				},
+			];
+		});
+	}
+
+	/** Other occurrences of the symbol at a position, within this document. */
+	async documentHighlights(
+		uri: string,
+		line: number,
+		character: number,
+	): Promise<LspRange[]> {
+		const result = await this.request("textDocument/documentHighlight", {
+			textDocument: { uri },
+			position: { line: line - 1, character },
+		});
+		if (!Array.isArray(result)) return [];
+		return result.slice(0, LSP_LIMITS.locations).flatMap((entry) => {
+			const span = range((entry as { range?: unknown })?.range);
+			return span ? [span] : [];
+		});
 	}
 
 	async close(): Promise<void> {
