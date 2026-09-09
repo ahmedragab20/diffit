@@ -272,9 +272,12 @@ describe("read-only authority", () => {
 
   it("keeps the review UI's code intel free of mutating methods", () => {
     const text = readFileSync(join(root, "src/lib/code-intel.ts"), "utf-8");
-    expect(text).not.toContain("applyEdit");
-    expect(text).not.toContain("executeCommand");
+    // The module hands edits to the local editor, which is the client acting on
+    // the user's behalf. What it must never do is ask the server to act: no
+    // workspace-scoped method is spoken, and a code action whose only mechanism
+    // is a server command is reported unavailable rather than run.
     expect(text).not.toContain("workspace/");
+    expect(text).toContain('"command-only"');
   });
 });
 

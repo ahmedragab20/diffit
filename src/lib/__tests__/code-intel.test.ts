@@ -693,3 +693,109 @@ describe("markersFromDiagnostics", () => {
 		expect(result).toBeUndefined();
 	});
 });
+
+describe("codeIntel actions", () => {
+	it("keeps only the open file from a multi-file rename", async () => {
+		const here = pathToFileURL(join(ROOT, "src/a.ts")).href;
+		useServer(
+			JSON.stringify({
+				changes: {
+					[here]: [
+						{
+							range,
+							newText: "renamed",
+						},
+					],
+					"file:///elsewhere/b.ts": [
+						{
+							range,
+							newText: "renamed",
+						},
+					],
+				},
+			}),
+		);
+		const servers = configured();
+		try {
+			const result = await codeIntel(
+				servers,
+				ROOT,
+				clean,
+				request({ op: "rename", newName: "renamed" }),
+			);
+			expect(result).toMatchObject({
+				available: true,
+				op: "rename",
+				edits: {
+					edits: [
+						{
+							range: {
+								start: { line: 6, character: 1 },
+								end: { line: 6, character: 9 },
+							},
+							newText: "renamed",
+						},
+					],
+					otherEdits: 1,
+					otherFiles: 1,
+				},
+			});
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("marks a command-only action unavailable rather than hiding it", async () => {
+		useServer(
+			JSON.stringify([
+				{ title: "Organize imports", command: "editor.action.organizeImports" },
+				{
+					title: "Fix this",
+					edit: {
+						changes: {
+							[pathToFileURL(join(ROOT, "src/a.ts")).href]: [
+								{ range, newText: "fixed" },
+							],
+						},
+					},
+				},
+			]),
+		);
+		const servers = configured();
+		try {
+			const result = await codeIntel(
+				servers,
+				ROOT,
+				clean,
+				request({ op: "code-actions" }),
+			);
+			expect(result.available).toBe(true);
+			if (!result.available || result.op !== "code-actions")
+				throw new Error("expected code-actions");
+			expect(result.actions[0]).toEqual({
+				title: "Organize imports",
+				kind: undefined,
+				unavailable: "command-only",
+			});
+			expect(result.actions[1]?.unavailable).toBeUndefined();
+			expect(result.actions[1]?.edits?.edits).toHaveLength(1);
+		} finally {
+			await servers.close();
+		}
+	});
+
+	it("refuses a rename without a new name", async () => {
+		const servers = configured();
+		try {
+			const result = await codeIntel(
+				servers,
+				ROOT,
+				clean,
+				request({ op: "rename" }),
+			);
+			expect(result).toEqual({ available: false, reason: "invalid-request" });
+		} finally {
+			await servers.close();
+		}
+	});
+});

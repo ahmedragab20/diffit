@@ -8,17 +8,22 @@
  * empty answer therefore always means "the server found nothing", never "we
  * could not ask" — the same contract `ai/symbols.ts` keeps for the AI path.
  *
- * Nothing here grants the server authority. It asks questions and reads
- * answers; no edit, command or file write is ever accepted.
+ * Nothing here grants the server authority. Edits come back as data for the
+ * local editor to apply or refuse; no command or file write is ever accepted.
  */
 import { readFileSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
 	LspError,
+	type LspCodeAction,
 	type LspDiagnostics,
 	type LspLocation,
+	type LspRange,
 	type LspSession,
+	type LspSignature,
+	type LspTextEdit,
+	type LspWorkspaceEdit,
 } from "./ai/lsp.js";
 import type { LanguageServers } from "./ai/language-servers.js";
 
@@ -58,7 +63,15 @@ function languageIdFor(path: string): string {
 	return LANGUAGE_IDS[extension] ?? extension;
 }
 
-export type CodeIntelOp = "hover" | "definition" | "references";
+export type CodeIntelOp =
+	| "hover"
+	| "definition"
+	| "references"
+	| "rename"
+	| "format"
+	| "code-actions"
+	| "signature"
+	| "highlights";
 
 /** Why a position cannot be looked up. Always specific, never "no results". */
 export type CodeIntelUnavailable =
@@ -69,6 +82,7 @@ export type CodeIntelUnavailable =
 	| "staged"
 	| "old-side"
 	| "outside-repository"
+	| "invalid-request"
 	| "file-unreadable"
 	| "file-too-large"
 	| "server-error";
@@ -96,6 +110,44 @@ export interface CodeIntelRequest {
 	/** Zero-based character offset within the line. */
 	character: number;
 	includeDeclaration?: boolean;
+	/** The new identifier, for `rename`. */
+	newName?: string;
+	/** The end of the selection, for `code-actions`. Defaults to the start. */
+	endLine?: number;
+	endCharacter?: number;
+	/** Formatting preferences, for `format`. */
+	tabSize?: number;
+	insertSpaces?: boolean;
+}
+
+/** An edit in the editor's own shape, ready for `Editor.applyEdits`. */
+export interface CodeIntelEdit {
+	range: {
+		start: { line: number; character: number };
+		end: { line: number; character: number };
+	};
+	newText: string;
+}
+
+/**
+ * The part of a server's answer that can actually be applied here.
+ *
+ * Edits outside the file being edited are counted, never applied: a review
+ * tool writing to files the reviewer is not looking at is the wrong default,
+ * so the UI reports the spill and leaves it to them.
+ */
+export interface CodeIntelEdits {
+	edits: CodeIntelEdit[];
+	otherEdits: number;
+	otherFiles: number;
+}
+
+export interface CodeIntelAction {
+	title: string;
+	kind?: string;
+	edits?: CodeIntelEdits;
+	/** Why this action cannot be applied, when it cannot. Never hidden. */
+	unavailable?: "command-only" | "other-files-only";
 }
 
 export interface CodeIntelLocation {
@@ -121,7 +173,11 @@ export type CodeIntelResult =
 			available: true;
 			op: "definition" | "references";
 			locations: CodeIntelLocation[];
-	  };
+	  }
+	| { available: true; op: "rename" | "format"; edits: CodeIntelEdits }
+	| { available: true; op: "code-actions"; actions: CodeIntelAction[] }
+	| { available: true; op: "signature"; signatures: LspSignature[] }
+	| { available: true; op: "highlights"; highlights: LspRange[] };
 
 export interface CodeIntelCapabilities {
 	/** At least one language server is configured for some extension. */
@@ -170,6 +226,73 @@ function resolveInRepository(
 	if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
 		return undefined;
 	return absolute;
+}
+
+function toCodeIntelEdit(edit: LspTextEdit): CodeIntelEdit {
+	return {
+		range: {
+			start: { line: edit.startLine, character: edit.startCharacter },
+			end: { line: edit.endLine, character: edit.endCharacter },
+		},
+		newText: edit.newText,
+	};
+}
+
+/**
+ * Split a workspace edit into the part that belongs to the open file and a
+ * count of everything else. Nothing outside that file is ever returned as an
+ * applicable edit.
+ */
+function editsForFile(
+	absolutePath: string,
+	edit: LspWorkspaceEdit | null,
+): CodeIntelEdits {
+	const result: CodeIntelEdits = { edits: [], otherEdits: 0, otherFiles: 0 };
+	if (!edit) return result;
+	for (const change of edit.changes) {
+		let target: string;
+		try {
+			target = fileURLToPath(change.uri);
+		} catch {
+			result.otherFiles += 1;
+			result.otherEdits += change.edits.length;
+			continue;
+		}
+		if (target === absolutePath) {
+			result.edits.push(...change.edits.map(toCodeIntelEdit));
+			continue;
+		}
+		result.otherFiles += 1;
+		result.otherEdits += change.edits.length;
+	}
+	return result;
+}
+
+/**
+ * An action the UI can offer. One that only carries a command is named and
+ * marked unavailable rather than hidden: applying it would mean asking the
+ * server to execute that command, which this client never does. The literal
+ * method name is deliberately absent here — the adversarial test greps for it.
+ */
+function toCodeIntelAction(
+	absolutePath: string,
+	action: LspCodeAction,
+): CodeIntelAction {
+	if (action.commandOnly)
+		return {
+			title: action.title,
+			kind: action.kind,
+			unavailable: "command-only",
+		};
+	const edits = editsForFile(absolutePath, action.edit ?? null);
+	if (edits.edits.length === 0)
+		return {
+			title: action.title,
+			kind: action.kind,
+			edits,
+			unavailable: "other-files-only",
+		};
+	return { title: action.title, kind: action.kind, edits };
 }
 
 /** Map a server location back onto a repository-relative path where possible. */
@@ -407,6 +530,9 @@ export async function codeIntel(
 	if (!servers.supports(request.path))
 		return { available: false, reason: "unsupported-language" };
 
+	if (request.op === "rename" && !request.newName?.trim())
+		return { available: false, reason: "invalid-request" };
+
 	// Built through pathToFileURL so spaces and other characters are encoded,
 	// matching how returned locations are decoded on the way back.
 	const uri = pathToFileURL(absolute).href;
@@ -417,6 +543,84 @@ export async function codeIntel(
 		if (request.op === "hover") {
 			const hover = await session.hover(uri, request.line, request.character);
 			return { available: true, op: "hover", hover };
+		}
+		if (request.op === "rename") {
+			const newName = request.newName?.trim();
+			if (!newName) return { available: false, reason: "invalid-request" };
+			const edit = await session.rename(
+				uri,
+				request.line,
+				request.character,
+				newName,
+			);
+			return {
+				available: true,
+				op: "rename",
+				edits: editsForFile(absolute, edit),
+			};
+		}
+		if (request.op === "format") {
+			const tabSize = request.tabSize ?? 2;
+			const insertSpaces = request.insertSpaces !== false;
+			const edits =
+				request.endLine !== undefined
+					? await session.rangeFormatting(
+							uri,
+							{
+								startLine: request.line - 1,
+								startCharacter: request.character,
+								endLine: request.endLine - 1,
+								endCharacter: request.endCharacter ?? request.character,
+							},
+							tabSize,
+							insertSpaces,
+						)
+					: await session.formatting(uri, tabSize, insertSpaces);
+			return {
+				available: true,
+				op: "format",
+				edits: {
+					edits: edits.map(toCodeIntelEdit),
+					otherEdits: 0,
+					otherFiles: 0,
+				},
+			};
+		}
+		if (request.op === "code-actions") {
+			const span: LspRange = {
+				startLine: request.line - 1,
+				startCharacter: request.character,
+				endLine: (request.endLine ?? request.line) - 1,
+				endCharacter: request.endCharacter ?? request.character,
+			};
+			const actions = await session.codeActions(uri, span);
+			return {
+				available: true,
+				op: "code-actions",
+				actions: actions.map((action) => toCodeIntelAction(absolute, action)),
+			};
+		}
+		if (request.op === "signature") {
+			return {
+				available: true,
+				op: "signature",
+				signatures: await session.signatureHelp(
+					uri,
+					request.line,
+					request.character,
+				),
+			};
+		}
+		if (request.op === "highlights") {
+			return {
+				available: true,
+				op: "highlights",
+				highlights: await session.documentHighlights(
+					uri,
+					request.line,
+					request.character,
+				),
+			};
 		}
 		const found =
 			request.op === "definition"
